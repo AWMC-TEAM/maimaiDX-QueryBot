@@ -156,7 +156,7 @@ class DrawScore(ScoreBaseImage):
             self._tb.draw(x + 245, y + 96, 17, f'Ra: {_d.oldra}', self.t_color[_d.level_index], anchor='mm')
             self._tb.draw(x + 370, y + 71, 25, f'{_d.achievements:.4f}%', self.t_color[_d.level_index], anchor='mm')
             self._tb.draw(x + 415, y + 96, 17, f'Ra: {_d.ra}', self.t_color[_d.level_index], anchor='mm')
-            self._tb.draw(x + 315, y + 124, 18, f'ds:{_d.ds}', self.id_color[_d.level_index], anchor='lm')
+            self._tb.draw(x + 315, y + 124, 18, f'ds:{_d.ds:.1f}', self.id_color[_d.level_index], anchor='lm')
             if _d.oldra > low_score:
                 new_ra = _d.ra - _d.oldra
             else:
@@ -331,7 +331,7 @@ def get_rise_score_list(
     else:
         ss_ds = round((ra + int(score)) / 20.8, 1)
     sssp_ds = round(ra / 22.4, 1)
-    ds = (sssp_ds + 0.1, ss_ds + 0.1)
+    ds = (round(sssp_ds + 0.1, 1), round(ss_ds + 0.1, 1))
     version = list(plate_to_dx_version.values())[-2:] if chart_type == 'DX' else list(plate_to_dx_version.values())[:-2]
     musiclist = mai.total_list.filter(level=level, ds=ds, version=version)
     for _m in musiclist:
@@ -452,7 +452,7 @@ def plate_message(
                 self_record = m.fc
             if plan in '舞舞':
                 self_record = m.fs
-        result += f'No.{n + 1:02d} {f"「{m.song_id}」":>7} {f"「{diffs[m.level_index]}」":>11} 「{m.ds}」 {m.title}  {self_record}\n'
+        result += f'No.{n + 1:02d} {f"「{m.song_id}」":>7} {f"「{diffs[m.level_index]}」":>11} 「{m.ds:.1f}」 {m.title}  {self_record}\n'
     if len(music_list) > 10:
         result = MessageSegment.image(text_to_bytes_io((result.strip())))
     return result
@@ -538,7 +538,7 @@ async def player_plate_data(
             if (m := (info.song_id, level_index)) not in played or m in unfinished:
                 _info = info.model_copy()
                 _info.level = music.level[level_index]
-                _info.ds = music.ds[level_index]
+                _info.ds = round(float(music.ds[level_index]), 1)
                 _info.level_index = level_index
                 unfinished_model_list[level_index].append(_info)
 
@@ -743,7 +743,7 @@ async def level_achievement_list_data(
             obj = await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
             for _d in obj:
                 music = mai.total_list.by_id(_d.song_id)
-                _d.ds = music.ds[_d.level_index]
+                _d.ds = round(float(music.ds[_d.level_index]), 1)
                 _d.ra, _d.rate = computeRa(_d.ds, _d.achievements, israte=True)
             data = obj
 

@@ -437,7 +437,7 @@ async def draw_music_info(
             color = (255, 255, 255, 255)
         else:
             color = (255, 255, 255, 255)
-        tb.draw(181, 610 + 73 * num, 30, f'{music.level[num]}({music.ds[num]})', color, 'mm')
+        tb.draw(181, 610 + 73 * num, 30, f'{music.level[num]}({music.ds[num]:.1f})', color, 'mm')
         tb.draw(
             315, 600 + 73 * num, 30, 
             f'{round(music.stats[num].fit_diff, 2):.2f}' if music.stats and music.stats[num] else '-', 
@@ -788,7 +788,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                 continue
             _music = mai.total_list.by_id(_d.song_id)
             _d.table_level = _music.level
-            _d.ds = _music.ds[_d.level_index]
+            _d.ds = round(float(_music.ds[_d.level_index]), 1)
             playerdata.append(_d)
 
         ra: Dict[str, Dict[str, List[Optional[PlayInfoDefault]]]] = {}

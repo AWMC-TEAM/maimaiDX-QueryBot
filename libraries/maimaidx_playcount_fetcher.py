@@ -266,7 +266,7 @@ class PlayCountFetcher:
             try:
                 from .maimaidx_music import mai as _mai
                 music = _mai.total_list.by_id(str(music_id))
-                ds = float(music.ds[level_index]) if music and level_index < len(music.ds) else 0.0
+                ds = round(float(music.ds[level_index]), 1) if music and level_index < len(music.ds) else 0.0
             except Exception:
                 ds = 0.0
 

@@ -862,7 +862,7 @@ async def _storage_snapshot(event: MessageEvent, message: Message = CommandArg()
         'Top5 单曲：',
     ]
     for i, r in enumerate(top_records, 1):
-        lines.append(f'{i}. {r.title} [{r.level}] {r.achievements:.4f}% {r.ds}->{r.ra} {r.rate}')
+        lines.append(f'{i}. {r.title} [{r.level}] {r.achievements:.4f}% {r.ds:.1f}->{r.ra} {r.rate}')
     await storage_snapshot.finish('\n'.join(lines), reply_message=True)
 
 

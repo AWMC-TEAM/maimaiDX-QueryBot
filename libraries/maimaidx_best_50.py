@@ -19,13 +19,31 @@ from .maimaidx_playcount_db import pc_db
 def _is_utage_song(song_id: Union[str, int]) -> bool:
     """
     判断歌曲是否为宴谱（宴会場/utage 类型）。
-    
+
+    判定规则（任一满足即视为宴谱）：
+        1. 歌曲 ID（internalId）>= 100000 —— maimaiDX 约定 utage 谱面占用此 ID 段，
+           是最可靠的判断方式，且不依赖曲目表能否查到（maimaidx_music.py、image.py
+           等处也是同样约定）。
+        2. 在曲目表中可查到且 basic_info.genre == "宴会場"。
+
+    为何需要 ID 段判断：
+        当 maimaidx_data_source = "dxdata"（使用本地 dxdata.json）时，
+        DxDataSource._convert_song 只处理 type ∈ {dx, sd, std} 的 sheet，
+        utage / utage2p 会被整体丢弃，于是 mai.total_list 根本不包含这些条目，
+        基于 genre 的判断会漏过宴谱，导致宴谱成绩混入 b50 / b35 等统计。
+        改为优先用 ID 段判断后，无论使用哪种数据源都能正确过滤宴谱。
+
     Args:
         song_id: 歌曲 ID
-    
+
     Returns:
         True 如果是宴谱，False 否则
     """
+    try:
+        if int(str(song_id)) >= 100000:
+            return True
+    except (TypeError, ValueError):
+        pass
     try:
         music = mai.total_list.by_id(str(song_id))
         if music and music.basic_info.genre == "宴会場":
@@ -219,7 +237,7 @@ class ScoreBaseImage:
                 title = changeColumnWidth(title, max_title_width - 1) + '...'
             self._sy.draw(x + 93, y + 14, 14, title, self.t_color[info.level_index], anchor='lm')
             self._tb.draw(x + 93, y + 38, 30, f'{info.achievements:.4f}%', self.t_color[info.level_index], anchor='lm')
-            self._tb.draw(x + 93, y + 65, 15, f'{info.ds} -> {info.ra}', self.t_color[info.level_index], anchor='lm')
+            self._tb.draw(x + 93, y + 65, 15, f'{info.ds:.1f} -> {info.ra}', self.t_color[info.level_index], anchor='lm')
             if pc_count:
                 self._sy.draw(x + 258, y + 14, 14, f'pc:{pc_count}', self.t_color[info.level_index], anchor='rm')
 
@@ -285,7 +303,7 @@ class ScoreBaseImage:
                 source_text = truncate_nickname(source_nick, 8)
                 self._sy.draw(x + 258, y + 15, 12, source_text, (0, 0, 0, 255), anchor='rm')
             self._tb.draw(x + 93, y + 38, 30, f'{info.achievements:.4f}%', self.t_color[info.level_index], anchor='lm')
-            self._tb.draw(x + 93, y + 65, 15, f'{info.ds} -> {info.ra}', self.t_color[info.level_index], anchor='lm')
+            self._tb.draw(x + 93, y + 65, 15, f'{info.ds:.1f} -> {info.ra}', self.t_color[info.level_index], anchor='lm')
 
 
 class DrawBest(ScoreBaseImage):
@@ -953,7 +971,7 @@ async def _fc_ap_b50_common(
             try:
                 music = mai.total_list.by_id(str(r.song_id))
                 if music and r.level_index < len(music.ds):
-                    current_ds = float(music.ds[r.level_index])
+                    current_ds = round(float(music.ds[r.level_index]), 1)
                 else:
                     current_ds = r.ds
             except Exception:
@@ -1067,7 +1085,7 @@ async def _sun_b50_common(
             try:
                 music = mai.total_list.by_id(str(r.song_id))
                 if music and r.level_index < len(music.ds):
-                    current_ds = float(music.ds[r.level_index])
+                    current_ds = round(float(music.ds[r.level_index]), 1)
                 else:
                     current_ds = r.ds
             except Exception:
@@ -1147,7 +1165,7 @@ async def _lock_b50_common(
             try:
                 music = mai.total_list.by_id(str(r.song_id))
                 if music and r.level_index < len(music.ds):
-                    current_ds = float(music.ds[r.level_index])
+                    current_ds = round(float(music.ds[r.level_index]), 1)
                 else:
                     current_ds = r.ds
             except Exception:
@@ -1334,7 +1352,7 @@ async def generate_all(qqid: Optional[int] = None, username: Optional[str] = Non
             try:
                 music = mai.total_list.by_id(str(r.song_id))
                 if music and r.level_index < len(music.ds):
-                    current_ds = float(music.ds[r.level_index])
+                    current_ds = round(float(music.ds[r.level_index]), 1)
                 else:
                     current_ds = r.ds
             except Exception:
@@ -1445,7 +1463,7 @@ def _playinfo_to_chartinfo(play: PlayInfoDefault) -> ChartInfo:
             title = music.title
             type_ = music.type
             level = music.level[level_index] if level_index < len(music.level) else level
-            ds = float(music.ds[level_index])
+            ds = round(float(music.ds[level_index]), 1)
             # dxScore 仅使用接口返回的 play.dxScore，不再用达成率推算
     except Exception:
         pass
@@ -1800,7 +1818,7 @@ async def _ideal_b50_common(
             try:
                 music = mai.total_list.by_id(str(r.song_id))
                 if music and r.level_index < len(music.ds):
-                    current_ds = float(music.ds[r.level_index])
+                    current_ds = round(float(music.ds[r.level_index]), 1)
                     current_level = music.level[r.level_index] if r.level_index < len(music.level) else r.level
                     current_title = music.title
                     current_type = music.type

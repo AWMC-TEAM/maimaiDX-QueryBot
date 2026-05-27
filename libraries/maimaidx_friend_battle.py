@@ -128,7 +128,7 @@ def _score_record_to_playinfo_dev(rec: ScoreRecord, music_id: int) -> PlayInfoDe
         fc=rec.fc or "",
         fs=rec.fs or "",
         type="SD",
-        ds=float(rec.ds),
+        ds=round(float(rec.ds), 1),
         dxScore=int(rec.dxScore or 0),
         ra=int(rec.ra),
         rate=rec.rate or "",

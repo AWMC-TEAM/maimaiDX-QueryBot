@@ -86,12 +86,12 @@ def _recalculate_rating(records: List[PlayInfoDev], ds_map: Optional[dict] = Non
         if ds_map:
             custom = ds_map.get((str(r.song_id), r.level_index))
             if custom is not None:
-                current_ds = float(custom)
+                current_ds = round(float(custom), 1)
         if ds_map is None or (str(r.song_id), r.level_index) not in (ds_map or {}):
             try:
                 music = mai.total_list.by_id(str(r.song_id))
                 if music and r.level_index < len(music.ds):
-                    current_ds = float(music.ds[r.level_index])
+                    current_ds = round(float(music.ds[r.level_index]), 1)
             except Exception:
                 pass
 
