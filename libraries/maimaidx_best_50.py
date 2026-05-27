@@ -16,6 +16,38 @@ from .maimaidx_music import mai
 from .maimaidx_playcount_db import pc_db
 
 
+def _is_utage_song(song_id: Union[str, int]) -> bool:
+    """
+    判断歌曲是否为宴谱（宴会場/utage 类型）。
+    
+    Args:
+        song_id: 歌曲 ID
+    
+    Returns:
+        True 如果是宴谱，False 否则
+    """
+    try:
+        music = mai.total_list.by_id(str(song_id))
+        if music and music.basic_info.genre == "宴会場":
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def filter_utage_records(records: List[PlayInfoDev]) -> List[PlayInfoDev]:
+    """
+    过滤掉宴谱成绩。
+    
+    Args:
+        records: 成绩记录列表
+    
+    Returns:
+        过滤后的成绩记录列表（不含宴谱）
+    """
+    return [r for r in records if not _is_utage_song(r.song_id)]
+
+
 class ScoreBaseImage:
     
     text_color = (124, 129, 255, 255)
@@ -674,7 +706,7 @@ def computeRa(
     else:
         ratio = achievement / 100
     raw_ra = ds * ratio * baseRa
-    ra = round(raw_ra)
+    ra = int(raw_ra)
     if israte:
         data = (ra, rate)
     elif onlyrate:
@@ -848,6 +880,7 @@ async def _fit_b50_common(
         userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
         dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
         records = list(dev.records or [])
+        records = filter_utage_records(records)
         with_fit = _apply_fit_ra(records)
         if not with_fit:
             return '没有可用的拟合难度数据（需开发者 Token 获取全量成绩，且曲目 chart_stats 含 fit_diff）'
@@ -908,6 +941,7 @@ async def _fc_ap_b50_common(
         userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
         dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
         records = list(dev.records or [])
+        records = filter_utage_records(records)
         filtered = filter_fn(records)
         if not filtered:
             return '没有符合条件的成绩数据（需开发者 Token 获取全量成绩）'
@@ -1017,6 +1051,7 @@ async def _sun_b50_common(
         userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
         dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
         records = list(dev.records or [])
+        records = filter_utage_records(records)
         if threshold is None:
             filtered = _sun_b50_records(records)
         else:
@@ -1101,6 +1136,7 @@ async def _lock_b50_common(
         userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
         dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
         records = list(dev.records or [])
+        records = filter_utage_records(records)
         filtered = _lock_b50_records(records)
         if not filtered:
             return '没有达成率在任一 [门槛, 门槛+步长) 内的成绩。（需开发者 Token 获取全量成绩）'
@@ -1286,7 +1322,8 @@ async def generate_all(qqid: Optional[int] = None, username: Optional[str] = Non
         # 使用开发者Token获取全量成绩
         dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
         records = list(dev.records or [])
-        
+        records = filter_utage_records(records)
+
         if not records:
             return '没有成绩数据（需开发者 Token 获取全量成绩）'
         
@@ -1519,6 +1556,7 @@ async def _yueji_b50_common(
         userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
         dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
         records = list(dev.records or [])
+        records = filter_utage_records(records)
         filtered = _yueji_b50_records(records, threshold)
         if not filtered:
             return (
@@ -1744,10 +1782,11 @@ async def _ideal_b50_common(
         userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
         dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
         records = list(dev.records or [])
-        
+        records = filter_utage_records(records)
+
         if not records:
             return '没有成绩数据（需开发者 Token 获取全量成绩）'
-        
+
         # 提升每个成绩的评级
         upgraded_records: List[ChartInfo] = []
         for r in records:

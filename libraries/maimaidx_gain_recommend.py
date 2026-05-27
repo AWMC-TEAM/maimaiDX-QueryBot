@@ -134,6 +134,8 @@ async def generate_today_gain_recommendation(qqid: int, top_n: int = 12) -> str:
 
     dev = await maiApi.query_user_get_dev(qqid=qqid)
     records = list(dev.records or [])
+    from .maimaidx_best_50 import filter_utage_records
+    records = filter_utage_records(records)
     if not records:
         return "未读取到全量成绩，无法推荐。"
 

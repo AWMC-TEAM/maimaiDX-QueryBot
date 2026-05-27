@@ -372,6 +372,8 @@ async def group_sun_lock_ranking(
                 try:
                     dev = await maiApi.query_user_get_dev(qqid=int(uid))
                     recs = list(dev.records or [])
+                    from .maimaidx_best_50 import filter_utage_records
+                    recs = filter_utage_records(recs)
                 except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError, ValueError, TypeError):
                     return None
                 except Exception:

@@ -27,7 +27,7 @@ from nonebot.adapters.onebot.v11 import MessageSegment
 from ..config import log
 from .image import image_to_base64
 from .maimaidx_api_data import maiApi
-from .maimaidx_best_50 import DrawBest, _is_latest_version, computeRa
+from .maimaidx_best_50 import DrawBest, _is_latest_version, computeRa, filter_utage_records
 from .maimaidx_error import UserDisabledQueryError, UserNotExistsError, UserNotFoundError
 from .maimaidx_model import ChartInfo, Data, PlayInfoDev, UserInfo
 
@@ -59,6 +59,11 @@ async def _fetch_user_data(
     dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
     records = list(dev.records or [])
     log.debug(f"[b50_pipeline] 获取到 {len(records)} 条成绩记录")
+
+    # 过滤掉宴谱成绩
+    records = filter_utage_records(records)
+    log.debug(f"[b50_pipeline] 过滤宴谱后剩余 {len(records)} 条成绩记录")
+
     return userinfo, records
 
 
