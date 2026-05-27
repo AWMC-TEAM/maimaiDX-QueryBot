@@ -1,0 +1,497 @@
+import random
+import re
+from textwrap import dedent
+from typing import List, Tuple
+
+from nonebot import on_command, on_endswith, on_regex
+from nonebot.adapters.onebot.v11 import (
+    Bot,
+    GroupMessageEvent,
+    Message,
+    MessageEvent,
+    MessageSegment,
+)
+from nonebot.exception import IgnoredException
+from nonebot.params import CommandArg, Endswith, RegexMatched
+
+from ..config import SONGS_PER_PAGE, diffs, log, maiconfig
+from ..libraries.image import image_to_base64, text_to_bytes_io
+from ..libraries.maimaidx_model import AliasStatus
+from ..libraries.maimaidx_music import feature_manager, guess, mai, maiApi
+from ..libraries.maimaidx_music_info import build_tags_forward_nodes, draw_music_info
+from ..libraries.maimaidx_multiver_chart import draw_multiver_chart
+from ..libraries.maimaidx_pmyx_api import PmyxAPI
+
+search_music        = on_command('查歌', aliases={'search'})
+search_base         = on_command('定数查歌', aliases={'search base'})
+search_bpm          = on_command('bpm查歌', aliases={'search bpm'})
+search_artist       = on_command('曲师查歌', aliases={'search artist'})
+search_charter      = on_command('谱师查歌', aliases={'search charter'})
+search_alias_song   = on_endswith(('是什么歌', '是啥歌'))
+query_chart         = on_regex(r'^id\s?([0-9]+)$', re.IGNORECASE)
+chart_preview       = on_regex(r'^谱面\s?([0-9]+)(绿|黄|红|紫|白)$')
+
+
+def _bot_nickname(bot: Bot) -> str:
+    """从 bot 配置取昵称，保证返回可 JSON 序列化的 str（config.nickname 可能是 set）。"""
+    try:
+        nick = getattr(bot.config, 'nickname', None)
+        if isinstance(nick, (list, tuple)) and nick:
+            return str(nick[0])
+        if isinstance(nick, (set, frozenset)) and nick:
+            return str(next(iter(nick)))
+        if nick and isinstance(nick, str):
+            return nick
+    except Exception:
+        pass
+    return 'kndbot'
+
+
+def _pmyx_node(self_id: int, nickname: str, text: str) -> dict:
+    return {
+        'type': 'node',
+        'data': {'user_id': str(self_id), 'nickname': nickname, 'content': text},
+    }
+
+
+async def _build_chart_preview_nodes(music, self_id: int, nickname: str) -> List[dict]:
+    """构建谱面预览链接的合并转发节点列表"""
+    diff_names = ['绿谱', '黄谱', '红谱', '紫谱', '白谱']
+    kind = 'standard' if music.type == 'SD' else 'dx'
+    song_id = music.id[1:] if music.type == 'DX' and music.id.startswith('1') else music.id
+    nodes = []
+    nodes.append(_pmyx_node(self_id, nickname, f"ID {music.id} 的谱面预览链接："))
+    for i, diff_name in enumerate(diff_names):
+        if i < len(music.ds):
+            url = f"https://chartpreview.mai.07210700.xyz/preview?song={song_id}&kind={kind}&diff={i + 2}"
+            nodes.append(_pmyx_node(self_id, nickname, f"{diff_name} {url}"))
+    return nodes
+
+
+async def _build_pmyx_forward_nodes(music_id: str, self_id: int, nickname: str) -> List[dict]:
+    """拉取该曲谱面印象（pmyx API），构建合并转发 node 列表；无数据时也返回一条「暂无谱面印象」节点。"""
+    base = maiconfig.pmyx_api_base_url or "https://mai.mai2dx.shop"
+    api = PmyxAPI(base)
+    try:
+        items = await api.get_impressions(music_id)
+        log.debug(f"Pmyx API response for music_id={music_id}: {items}")
+    except Exception as e:
+        log.warning(f'[maimai] 谱面印象请求失败 id={music_id} err={type(e).__name__}: {e}')
+        return [_pmyx_node(self_id, nickname, f"ID {music_id} 谱面印象：请求失败（{type(e).__name__}）")]
+    if not items:
+        return [_pmyx_node(self_id, nickname, f"ID {music_id} 暂无谱面印象")]
+    
+    random.shuffle(items)
+
+    nodes = [_pmyx_node(self_id, nickname, f"ID {music_id} 的谱面印象（共 {len(items)} 条）")]
+    for x in items[:10]:
+        diff_idx = x.get("difficulty", 3)
+        diff_name = diffs[diff_idx] if 0 <= diff_idx < len(diffs) else str(diff_idx)
+        nick = x.get("nickname", "?")
+        rating = x.get("rating", 0)
+        adm = x.get("admiration", 0)
+        date = x.get("date", "")
+        imp = (x.get("impression") or "").strip()
+        line = f"[{diff_name}] {nick} 评分{rating} 👍{adm} {date}"
+        if imp:
+            line += f"\n{imp[:200]}{'…' if len(imp) > 200 else ''}"
+        replies = x.get("replies") or []
+        if replies:
+            line += f"\n（{len(replies)} 条回复）"
+        nodes.append(_pmyx_node(self_id, nickname, line))
+    if len(items) > 10:
+        nodes.append(_pmyx_node(self_id, nickname, f"… 随机展示 10 条，共 {len(items)} 条"))
+    return nodes
+
+
+def _build_nested_forward_node(self_id: int, title: str, sub_nodes: List[dict]) -> dict:
+    """构建嵌套合并转发节点，nickname 为标题"""
+    return {
+        'type': 'node',
+        'data': {
+            'user_id': str(self_id),
+            'nickname': title,
+            'content': sub_nodes
+        }
+    }
+
+
+async def _send_forward(bot: Bot, event: MessageEvent, nodes: List[dict]) -> None:
+    if not nodes:
+        return
+    try:
+        if isinstance(event, GroupMessageEvent):
+            await bot.call_api('send_group_forward_msg', group_id=event.group_id, messages=nodes)
+        else:
+            await bot.call_api('send_private_forward_msg', user_id=event.user_id, messages=nodes)
+    except Exception as e:
+        log.warning(f'[maimai] 发送合并转发失败: {type(e).__name__}: {e}')
+
+
+async def _send_song_info_then_pmyx_forward(
+    bot: Bot,
+    event: MessageEvent,
+    music,
+    matcher,
+    prefix: str = '',
+    reply: bool = True,
+):
+    """歌曲信息直接回复用户，再发一个合并转发（包含谱面印象、谱面标签、谱面预览链接三个子合并转发）。"""
+    msg = (prefix + await draw_music_info(music, event.user_id)) if prefix else await draw_music_info(music, event.user_id)
+    await matcher.send(msg, reply_message=reply)
+    nickname = _bot_nickname(bot)
+    all_nodes = []
+    pmyx_nodes = await _build_pmyx_forward_nodes(music.id, event.self_id, nickname)
+    if pmyx_nodes:
+        all_nodes.append(_build_nested_forward_node(event.self_id, "谱面印象", pmyx_nodes))
+    tag_nodes = await build_tags_forward_nodes(music.id, event.self_id, nickname)
+    if tag_nodes:
+        all_nodes.append(_build_nested_forward_node(event.self_id, "谱面标签", tag_nodes))
+    chart_img = draw_multiver_chart(music.id)
+    if chart_img:
+        b64 = image_to_base64(chart_img)
+        all_nodes.append(_build_nested_forward_node(
+            event.self_id, "定数变化",
+            [
+                _pmyx_node(event.self_id, nickname, f"这是{music.title}的各谱面难度变化"),
+                _pmyx_node(event.self_id, nickname, f"[CQ:image,file={b64}]"),
+            ]
+        ))
+    chart_preview_nodes = await _build_chart_preview_nodes(music, event.self_id, nickname)
+    if chart_preview_nodes:
+        all_nodes.append(_build_nested_forward_node(event.self_id, "谱面预览", chart_preview_nodes))
+    await _send_forward(bot, event, all_nodes)
+    await matcher.finish()
+
+
+async def _send_chart_and_tags_forward(bot: Bot, event: MessageEvent, music, prefix: str = '', reply: bool = True):
+    """歌曲信息直接回复，合并转发里发该 id 的谱面印象。"""
+    await _send_song_info_then_pmyx_forward(bot, event, music, search_alias_song, prefix=prefix, reply=reply)
+
+
+def song_level(ds1: float, ds2: float) -> List[Tuple[str, str, float, str]]:
+    """
+    查询定数范围内的乐曲
+    
+    Params:
+        `ds1`: 定数下限
+        `ds2`: 定数上限
+    Return:
+        `result`: 查询结果
+    """
+    result: List[Tuple[str, str, float, str]] = []
+    music_data = mai.total_list.filter(ds=(ds1, ds2))
+    for music in sorted(music_data, key=lambda x: int(x.id)):
+        if int(music.id) >= 100000:
+            continue
+        for i in music.diff:
+            result.append((music.id, music.title, music.ds[i], diffs[i]))
+    return result
+
+
+@search_music.handle()
+async def _(bot: Bot, event: GroupMessageEvent, message: Message = CommandArg()):
+    if not feature_manager.is_enabled(event.group_id, 'search'):
+        raise IgnoredException('功能已禁用')
+    name = message.extract_plain_text().strip()
+    page = 1
+    if not name:
+        await search_music.finish('请输入关键词', reply_message=True)
+    result = mai.total_list.filter(title_search=name)
+    if len(result) == 0:
+        await search_music.finish(
+            '没有找到这样的乐曲。\n※ 如果是别名请使用「xxx是什么歌」指令进行查询哦。', 
+            reply_message=True
+        )
+    if len(result) == 1:
+        music = result[0]
+        await _send_song_info_then_pmyx_forward(bot, event, music, search_music, reply=True)
+        return
+    
+    search_result = ''
+    result.sort(key=lambda i: int(i.id))
+    for i, music in enumerate(result):
+        if (page - 1) * SONGS_PER_PAGE <= i < page * SONGS_PER_PAGE:
+            search_result += f'{f"「{music.id}」":<7} {music.title}\n'
+    search_result += (
+        f'第「{page}」页，'
+        f'共「{len(result) // SONGS_PER_PAGE + 1}」页。'
+        '请使用「id xxxxx」查询指定曲目。'
+    )
+    await search_music.finish(
+        MessageSegment.image(text_to_bytes_io(search_result)), 
+        reply_message=True
+    )
+
+
+@search_base.handle()
+async def _(event: MessageEvent, message: Message = CommandArg()):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'search'):
+        raise IgnoredException('功能已禁用')
+    args = message.extract_plain_text().strip().split()
+    if len(args) > 2 or len(args) == 0:
+        await search_base.finish(
+            dedent('''
+                命令格式：
+                定数查歌 「定数」「页数」
+                定数查歌 「定数下限」「定数上限」「页数」
+            ''')
+        )
+    page = 1
+    if len(args) == 1:
+        ds1, ds2 = args[0], args[0]
+    elif len(args) == 2:
+        if '.' in args[1]:
+            ds1, ds2 = args
+        else:
+            ds1, ds2 = args[0], args[0]
+            page = args[1]
+    else:
+        ds1, ds2, page = args
+    page = int(page)
+    result = song_level(float(ds1), float(ds2))
+    if not result:
+        await search_base.finish('没有找到这样的乐曲。', reply_message=True)
+    
+    search_result = ''
+    for i, _result in enumerate(result):
+        id, title, ds, diff = _result
+        if (page - 1) * SONGS_PER_PAGE <= i < page * SONGS_PER_PAGE:
+            search_result += f'{f"「{id}」":<7}{f"「{diff}」":<11}{f"「{ds}」"} {title}\n'
+    search_result += (
+        f'第「{page}」页，'
+        f'共「{len(result) // SONGS_PER_PAGE + 1}」页。'
+        '请使用「id xxxxx」查询指定曲目。'
+    )
+    await search_base.finish(
+        MessageSegment.image(text_to_bytes_io(search_result)), 
+        reply_message=True
+    )
+
+
+@search_bpm.handle()
+async def _(event: MessageEvent, message: Message = CommandArg()):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'search'):
+        raise IgnoredException('功能已禁用')
+    if isinstance(event, GroupMessageEvent) and str(event.group_id) in guess.Group:
+        await search_bpm.finish('本群正在猜歌，不要作弊哦~', reply_message=True)
+    args = message.extract_plain_text().strip().split()
+    page = 1
+    if len(args) == 1:
+        result = mai.total_list.filter(bpm=int(args[0]))
+    elif len(args) == 2:
+        if (bpm := int(args[0])) > int(args[1]):
+            page = int(args[1])
+            result = mai.total_list.filter(bpm=bpm)
+        else:
+            result = mai.total_list.filter(bpm=(bpm, int(args[1])))
+    elif len(args) == 3:
+        result = mai.total_list.filter(bpm=(int(args[0]), int(args[1])))
+        page = int(args[2])
+    else:
+        await search_bpm.finish(
+            '命令格式：\nbpm查歌 「bpm」\nbpm查歌 「bpm下限」「bpm上限」「页数」', 
+            reply_message=True
+        )
+    if not result:
+        await search_bpm.finish('没有找到这样的乐曲。', reply_message=True)
+    
+    search_result = ''
+    page = max(min(page, len(result) // SONGS_PER_PAGE + 1), 1)
+    result.sort(key=lambda x: int(x.basic_info.bpm))
+    
+    for i, m in enumerate(result):
+        if (page - 1) * SONGS_PER_PAGE <= i < page * SONGS_PER_PAGE:
+            search_result += f'{f"「{m.id}」":<7}{f"「BPM {m.basic_info.bpm}」":<9} {m.title} \n'
+    search_result += (
+        f'第「{page}」页，'
+        f'共「{len(result) // SONGS_PER_PAGE + 1}」页。'
+        '请使用「id xxxxx」查询指定曲目。'
+    )
+    await search_bpm.finish(
+        MessageSegment.image(text_to_bytes_io(search_result)), 
+        reply_message=True
+    )
+
+
+@search_artist.handle()
+async def _(event: MessageEvent, message: Message = CommandArg()):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'search'):
+        raise IgnoredException('功能已禁用')
+    if isinstance(event, GroupMessageEvent) and str(event.group_id) in guess.Group:
+        await search_artist.finish('本群正在猜歌，不要作弊哦~', reply_message=True)
+    args = message.extract_plain_text().strip().split()
+    page = 1
+    if len(args) == 1:
+        name = args[0]
+    elif len(args) == 2:
+        name = args[0]
+        if args[1].isdigit():
+            page = int(args[1])
+        else:
+            await search_artist.finish('命令格式：\n曲师查歌「曲师名称」「页数」', reply_message=True)
+    else:
+        await search_artist.finish('命令格式：\n曲师查歌「曲师名称」「页数」', reply_message=True)
+
+    result = mai.total_list.filter(artist_search=name)
+    if not result:
+        await search_artist.finish('没有找到这样的乐曲。', reply_message=True)
+
+    search_result = ''
+    page = max(min(page, len(result) // SONGS_PER_PAGE + 1), 1)
+    for i, m in enumerate(result):
+        if (page - 1) * SONGS_PER_PAGE <= i < page * SONGS_PER_PAGE:
+            search_result += f'{f"「{m.id}」":<7}{f"「{m.basic_info.artist}」"} - {m.title}\n'
+    search_result += (
+        f'第「{page}」页，'
+        f'共「{len(result) // SONGS_PER_PAGE + 1}」页。'
+        '请使用「id xxxxx」查询指定曲目。'
+    )
+    await search_artist.finish(
+        MessageSegment.image(text_to_bytes_io(search_result)), 
+        reply_message=True
+    )
+
+
+@search_charter.handle()
+async def _(event: MessageEvent, message: Message = CommandArg()):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'search'):
+        raise IgnoredException('功能已禁用')
+    if isinstance(event, GroupMessageEvent) and str(event.group_id) in guess.Group:
+        await search_bpm.finish('本群正在猜歌，不要作弊哦~', reply_message=True)
+    args = message.extract_plain_text().strip().split()
+    page = 1
+    if len(args) == 1:
+        name = args[0]
+    elif len(args) == 2:
+        name = args[0]
+        if args[1].isdigit():
+            page = int(args[1])
+        else:
+            await search_charter.finish('命令格式：\n谱师查歌「谱师名称」「页数」', reply_message=True)
+    else:
+        await search_charter.finish('命令格式：\n谱师查歌「谱师名称」「页数」', reply_message=True)
+    
+    result = mai.total_list.filter(charter_search=name)
+    if not result:
+        await search_charter.finish('没有找到这样的乐曲。', reply_message=True)
+    
+    search_result = ''
+    page = max(min(page, len(result) // SONGS_PER_PAGE + 1), 1)
+    for i, m in enumerate(result):
+        if (page - 1) * SONGS_PER_PAGE <= i < page * SONGS_PER_PAGE:
+            diff_charter = zip([diffs[d] for d in m.diff], [m.charts[d].charter for d in m.diff])
+            diff_parts = [
+                f"{f'「{d}」':<9}{f'「{c}」'}"
+                for d, c in diff_charter
+            ]
+            diff_str = " ".join(diff_parts)
+            line = f"{f'「{m.id}」':<7}{diff_str} {m.title}\n"
+            search_result += line
+    search_result += (
+        f'第「{page}」页，'
+        f'共「{len(result) // SONGS_PER_PAGE + 1}」页。'
+        '请使用「id xxxxx」查询指定曲目。'
+    )
+    await search_charter.finish(
+        MessageSegment.image(text_to_bytes_io(search_result)), 
+        reply_message=True
+    )
+
+
+@search_alias_song.handle()
+async def _(bot: Bot, event: MessageEvent, end: str = Endswith()):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'search'):
+        raise IgnoredException('功能已禁用')
+    name = event.get_plaintext().lower()[0:-len(end)].strip()
+    error_msg = (
+        f'未找到别名为「{name}」的歌曲\n'
+        '※ 可以使用「添加别名」指令给该乐曲添加别名\n'
+        '※ 如果是歌名的一部分，请使用「查歌」指令查询哦。'
+    )
+    # 别名
+    alias_data = mai.total_alias_list.by_alias(name)
+    if not alias_data:
+        obj = await maiApi.get_songs(name)
+        if obj:
+            if type(obj[0]) == AliasStatus:
+                msg = f'未找到别名为「{name}」的歌曲，但找到与此相同别名的投票：\n'
+                for _s in obj:
+                    msg += f'- {_s.Tag}\n    ID {_s.SongID}: {name}\n'
+                msg += f'※ 可以使用指令「同意别名 XXXXX」进行投票'
+                await search_alias_song.finish(msg.strip(), reply_message=True)
+            else:
+                alias_data = obj
+    if alias_data:
+        if len(alias_data) != 1:
+            msg = f'找到{len(alias_data)}个相同别名的曲目：\n'
+            for songs in alias_data:
+                msg += f'{songs.SongID}：{songs.Name}\n'
+            msg += '※ 请使用「id xxxxx」查询指定曲目'
+            await search_alias_song.finish(msg.strip(), reply_message=True)
+        else:
+            music = mai.total_list.by_id(str(alias_data[0].SongID))
+            if music:
+                await _send_chart_and_tags_forward(bot, event, music, '您要找的是不是：', reply=True)
+            else:
+                await search_alias_song.finish(error_msg, reply_message=True)
+    
+    # id
+    if name.isdigit() and (music := mai.total_list.by_id(name)):
+        await _send_chart_and_tags_forward(bot, event, music, '您要找的是不是：', reply=True)
+    if search_id := re.search(r'^id([0-9]*)$', name, re.IGNORECASE):
+        music = mai.total_list.by_id(search_id.group(1))
+        if music:
+            await _send_chart_and_tags_forward(bot, event, music, '您要找的是不是：', reply=True)
+    
+    # 标题
+    result = mai.total_list.filter(title_search=name)
+    if len(result) == 0:
+        await search_alias_song.finish(error_msg, reply_message=True)
+    elif len(result) == 1:
+        music = result.random()
+        await _send_chart_and_tags_forward(bot, event, music, '您要找的是不是：', reply=True)
+    elif len(result) < 50:
+        msg = f'未找到别名为「{name}」的歌曲，但找到「{len(result)}」个相似标题的曲目：\n'
+        for music in sorted(result, key=lambda x: int(x.id)):
+            msg += f'{f"「{music.id}」":<7} {music.title}\n'
+        msg += '请使用「id xxxxx」查询指定曲目。'
+        await search_alias_song.finish(msg.strip(), reply_message=True)
+    else:
+        await search_alias_song.finish(
+            f'结果过多「{len(result)}」条，请缩小查询范围。', 
+            reply_message=True
+        )
+
+
+@query_chart.handle()
+async def _(bot: Bot, event: MessageEvent, match=RegexMatched()):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'query'):
+        raise IgnoredException('功能已禁用')
+    id = match.group(1)
+    music = mai.total_list.by_id(id)
+    if not music:
+        await query_chart.finish(f'未找到ID「{id}」的乐曲')
+        return
+    await _send_song_info_then_pmyx_forward(bot, event, music, query_chart, reply=True)
+
+
+@chart_preview.handle()
+async def _(event: MessageEvent, match=RegexMatched()):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'query'):
+        raise IgnoredException('功能已禁用')
+    song_id = match.group(1)
+    diff_name = match.group(2)
+    diff_map = {'绿': 2, '黄': 3, '红': 4, '紫': 5, '白': 6}
+    diff_index = diff_map[diff_name] - 2
+    music = mai.total_list.by_id(song_id)
+    if not music:
+        await chart_preview.finish(f'未找到ID「{song_id}」的乐曲', reply_message=True)
+        return
+    if diff_index >= len(music.ds):
+        await chart_preview.finish(f'ID「{song_id}」没有{diff_name}谱', reply_message=True)
+        return
+    kind = 'standard' if music.type == 'SD' else 'dx'
+    preview_id = music.id[1:] if music.type == 'DX' and music.id.startswith('1') else music.id
+    url = f"https://chartpreview.mai.07210700.xyz/preview?song={preview_id}&kind={kind}&diff={diff_map[diff_name]}"
+    await chart_preview.finish(f"{music.title} {diff_name}谱预览：\n{url}", reply_message=True)
