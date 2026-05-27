@@ -35,12 +35,12 @@ def _is_utage_song(song_id: Union[str, int]) -> bool:
     return False
 
 
-def filter_utage_records(records: List[PlayInfoDev]) -> List[PlayInfoDev]:
+def filter_utage_records(records: List[Union[PlayInfoDev, PlayInfoDefault]]) -> List[Union[PlayInfoDev, PlayInfoDefault]]:
     """
     过滤掉宴谱成绩。
     
     Args:
-        records: 成绩记录列表
+        records: 成绩记录列表（支持 PlayInfoDev 或 PlayInfoDefault）
     
     Returns:
         过滤后的成绩记录列表（不含宴谱）
@@ -1499,6 +1499,9 @@ async def generate_version_b50(
         all_records = await maiApi.query_user_plate(qqid=qqid, username=username, version=version_list)
         if not all_records:
             return f'未找到 {display_name} 版本的曲目记录'
+        
+        # 过滤宴谱
+        all_records = filter_utage_records(all_records)
         
         # 仅此处无视分组：先转 ChartInfo（含重算的 ra），再按单曲 rating 倒序取前 50，保证顺序与显示一致
         all_charts = [_playinfo_to_chartinfo(r) for r in all_records]
