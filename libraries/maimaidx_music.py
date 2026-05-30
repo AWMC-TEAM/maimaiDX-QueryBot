@@ -236,31 +236,40 @@ aliaserror = dedent('''
 ''').strip()
 
 
-async def get_music_list() -> MusicList:
-    """获取所有数据"""
+async def get_music_list(force: bool = False) -> MusicList:
+    """获取所有数据。force=True 时忽略本地缓存，强制从网络刷新。"""
     from .maimaidx_data_source import get_data_source
+    from .tool import is_cache_fresh
     datasource = get_data_source()
+    cache_ttl = 0 if force else getattr(maiconfig, 'maimaidx_music_cache_seconds', 3600)
 
     # MusicData
     try:
-        try: 
-            music_data = await datasource.get_music_data()
-            await writefile(music_file, music_data)
-        except asyncio.exceptions.TimeoutError:
-            log.error('maimaiDX曲库数据获取失败，请检查网络环境。已切换至本地暂存文件')
+        if is_cache_fresh(music_file, cache_ttl):
+            log.opt(colors=True).info('曲库数据使用<g>本地缓存</g>（未过期，跳过网络请求）')
             music_data = await openfile(music_file)
+        else:
+            try:
+                music_data = await datasource.get_music_data()
+                await writefile(music_file, music_data)
+            except asyncio.exceptions.TimeoutError:
+                log.error('maimaiDX曲库数据获取失败，请检查网络环境。已切换至本地暂存文件')
+                music_data = await openfile(music_file)
     except FileNotFoundError:
         log.error(dataerror)
         raise FileNotFoundError
-    
+
     # ChartStats
     try:
-        try:
-            chart_stats = await datasource.get_chart_stats()
-            await writefile(chart_file, chart_stats)
-        except asyncio.exceptions.TimeoutError:
-            log.error('maimaiDX数据获取错误，请检查网络环境，已切换至本地暂存文件')
+        if is_cache_fresh(chart_file, cache_ttl):
             chart_stats = await openfile(chart_file)
+        else:
+            try:
+                chart_stats = await datasource.get_chart_stats()
+                await writefile(chart_file, chart_stats)
+            except asyncio.exceptions.TimeoutError:
+                log.error('maimaiDX数据获取错误，请检查网络环境，已切换至本地暂存文件')
+                chart_stats = await openfile(chart_file)
     except FileNotFoundError:
         log.error(charterror)
         raise FileNotFoundError
@@ -280,31 +289,43 @@ async def get_music_list() -> MusicList:
     return total_list
 
 
-async def get_music_alias_list() -> AliasList:
-    """获取所有别名"""
+async def get_music_alias_list(force: bool = False) -> AliasList:
+    """获取所有别名。force=True 时忽略本地缓存，强制从网络刷新。"""
+    from .tool import is_cache_fresh
+    cache_ttl = 0 if force else getattr(maiconfig, 'maimaidx_music_cache_seconds', 3600)
+
     if local_alias_file.exists():
         local_alias_data = await openfile(local_alias_file)
     else:
         local_alias_data = {}
     alias_data: List[Dict[str, Union[int, str, List[str]]]] = []
-    try:
-        alias_data = await maiApi.get_alias()
-        await writefile(alias_file, alias_data)
-    except asyncio.exceptions.TimeoutError:
-        log.error('获取别名超时，已切换至本地暂存文件')
-        alias_data = await openfile(alias_file)
-        if not alias_data:
-            log.error(aliaserror)
-            raise ValueError
-    except ServerError as e:
-        log.error(str(e) + '。已切换至本地暂存文件')
-        alias_data = await openfile(alias_file)
-    except UnknownError:
-        log.error('获取所有曲目别名信息错误，请检查网络环境。已切换至本地暂存文件')
-        alias_data = await openfile(alias_file)
-        if not alias_data:
-            log.error(aliaserror)
-            raise ValueError
+
+    # 本地别名缓存未过期则直接使用，跳过网络请求
+    if is_cache_fresh(alias_file, cache_ttl):
+        try:
+            alias_data = await openfile(alias_file)
+        except FileNotFoundError:
+            alias_data = []
+
+    if not alias_data:
+        try:
+            alias_data = await maiApi.get_alias()
+            await writefile(alias_file, alias_data)
+        except asyncio.exceptions.TimeoutError:
+            log.error('获取别名超时，已切换至本地暂存文件')
+            alias_data = await openfile(alias_file)
+            if not alias_data:
+                log.error(aliaserror)
+                raise ValueError
+        except ServerError as e:
+            log.error(str(e) + '。已切换至本地暂存文件')
+            alias_data = await openfile(alias_file)
+        except UnknownError:
+            log.error('获取所有曲目别名信息错误，请检查网络环境。已切换至本地暂存文件')
+            alias_data = await openfile(alias_file)
+            if not alias_data:
+                log.error(aliaserror)
+                raise ValueError
 
     total_alias_list = AliasList()
     for _a in filter(lambda x: mai.total_list.by_id(x['SongID']), alias_data):
@@ -351,14 +372,14 @@ class MaiMusic:
     def __init__(self) -> None:
         """封装所有曲目信息以及猜歌数据，便于更新"""
 
-    async def get_music(self) -> None:
-        """获取所有曲目数据"""
-        self.total_list = await get_music_list()
+    async def get_music(self, force: bool = False) -> None:
+        """获取所有曲目数据。force=True 时强制从网络刷新，忽略本地缓存。"""
+        self.total_list = await get_music_list(force=force)
         self.total_level_data = self.total_list.by_level_list()
 
-    async def get_music_alias(self) -> None:
-        """获取所有曲目别名"""
-        self.total_alias_list = await get_music_alias_list()
+    async def get_music_alias(self, force: bool = False) -> None:
+        """获取所有曲目别名。force=True 时强制从网络刷新，忽略本地缓存。"""
+        self.total_alias_list = await get_music_alias_list(force=force)
         
     async def get_plate_json(self) -> None:
         """获取所有牌子数据"""

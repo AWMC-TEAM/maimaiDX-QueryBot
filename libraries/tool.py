@@ -22,6 +22,26 @@ async def openfile(file: Path) -> Union[dict, list]:
     return data
 
 
+def is_cache_fresh(file: Path, ttl_seconds: int) -> bool:
+    """
+    判断本地缓存文件是否在有效期内。
+
+    Args:
+        file: 缓存文件路径
+        ttl_seconds: 有效期（秒）。<= 0 时始终视为过期（禁用缓存）
+    Returns:
+        True 表示文件存在且未过期，可直接使用本地缓存
+    """
+    if ttl_seconds <= 0:
+        return False
+    try:
+        if not file.exists():
+            return False
+        return (time.time() - file.stat().st_mtime) < ttl_seconds
+    except OSError:
+        return False
+
+
 async def writefile(file: Path, data: Any) -> bool:
     async with aiofiles.open(file, 'w', encoding='utf-8') as f:
         await f.write(json.dumps(data, ensure_ascii=False, indent=4))

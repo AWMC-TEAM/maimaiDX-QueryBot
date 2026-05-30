@@ -58,6 +58,10 @@ class Config(BaseModel):
     maimaidx_tag_analysis_bg: Optional[str] = None
     # 我有多菜 / 我在群里有多菜：rating 数据缓存时长（秒），默认 15 分钟；可通过 .env 设置 MAIMAIDX_RATING_CACHE_SECONDS
     maimaidx_rating_cache_seconds: int = 900
+    # 曲库/谱面/别名数据本地缓存时长（秒），默认 1 小时。
+    # 启动时若本地缓存文件未过期则直接读取，跳过网络请求，加快启动速度。
+    # 设为 0 则每次启动都从网络获取（旧行为）。可通过 .env 设置 MAIMAIDX_MUSIC_CACHE_SECONDS
+    maimaidx_music_cache_seconds: int = 3600
 
 
 maiconfig = get_plugin_config(Config)

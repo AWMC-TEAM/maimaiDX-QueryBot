@@ -44,7 +44,7 @@ alias_song          = on_regex(r'^(id)?\s?(.+)\s?有什么别[名称]$', re.IGNO
 @update_alias.handle()
 async def _(event: PrivateMessageEvent):
     try:
-        await mai.get_music_alias()
+        await mai.get_music_alias(force=True)
         log.info('手动更新别名库成功')
         await update_alias.send('手动更新别名库成功')
     except:
@@ -254,7 +254,7 @@ async def push_alias(push: PushAliasStatus):
         return
 
     if not maiconfig.maimaidxaliaspush:
-        await mai.get_music_alias()
+        await mai.get_music_alias(force=True)
         return
     group_list = await bot.get_group_list()
     group_ids: list[int] = list({g['group_id'] for g in group_list})
