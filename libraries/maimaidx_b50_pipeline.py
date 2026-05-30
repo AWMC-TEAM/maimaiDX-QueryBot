@@ -43,21 +43,20 @@ async def _fetch_user_data(
     username: Optional[str] = None,
 ) -> tuple[UserInfo, List[PlayInfoDev]]:
     """
-    获取用户基础信息和全量成绩。
+    获取用户基础信息和全量成绩。根据用户数据源偏好选择水鱼/落雪。
 
     Returns:
         (userinfo, records) 元组
     Raises:
-        UserNotFoundError, UserNotExistsError, UserDisabledQueryError
+        UserNotFoundError, UserNotExistsError, UserDisabledQueryError, LxnsDataError
     """
     log.debug(f"[b50_pipeline] _fetch_user_data: qqid={qqid}, username={username}")
     if username:
         qqid = None
-    userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
-    log.debug(f"[b50_pipeline] 获取到 userinfo: nickname={userinfo.nickname}, rating={userinfo.rating}")
 
-    dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-    records = list(dev.records or [])
+    from .maimaidx_datasource import get_user_records
+    userinfo, records = await get_user_records(qqid=qqid, username=username)
+    log.debug(f"[b50_pipeline] 获取到 userinfo: nickname={userinfo.nickname}, rating={userinfo.rating}")
     log.debug(f"[b50_pipeline] 获取到 {len(records)} 条成绩记录")
 
     # 过滤掉宴谱成绩

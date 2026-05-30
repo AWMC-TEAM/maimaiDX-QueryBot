@@ -123,6 +123,20 @@ def get_at_qq(message: MessageEvent) -> Optional[int]:
     return None
 
 
+def _append_lxns_notice(result, qqid: Optional[int], feature: str):
+    """
+    若用户数据源为落雪，给成功结果（MessageSegment 图片）追加水鱼提示文本。
+    错误字符串原样返回。
+    """
+    from ..libraries.maimaidx_datasource import lxns_unsupported_notice
+    notice = lxns_unsupported_notice(qqid, feature)
+    if not notice:
+        return result
+    if isinstance(result, str):
+        return result  # 错误消息不加提示
+    return result + MessageSegment.text(notice)
+
+
 @best50.handle()
 async def _(
     event: MessageEvent,
@@ -236,7 +250,7 @@ async def _how_weak(
     result = await generate_how_weak(qqid=qqid, username=username)
     if isinstance(result, str):
         await how_weak.finish(result, reply_message=True)
-    await how_weak.finish(result, reply_message=True)
+    await how_weak.finish(_append_lxns_notice(result, qqid if not username else None, '我有多菜'), reply_message=True)
 
 
 @group_weak.handle()
@@ -558,7 +572,8 @@ async def _fit_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await fit_b50.finish(await generate_fit_b50(qqid, username), reply_message=True)
+    result = await generate_fit_b50(qqid, username)
+    await fit_b50.finish(_append_lxns_notice(result, qqid if not username else None, '拟合b50'), reply_message=True)
 
 
 @fit_all_b50.handle()
@@ -571,7 +586,8 @@ async def _fit_all_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await fit_all_b50.finish(await generate_fit_all_b50(qqid, username), reply_message=True)
+    result = await generate_fit_all_b50(qqid, username)
+    await fit_all_b50.finish(_append_lxns_notice(result, qqid if not username else None, '拟合ab50'), reply_message=True)
 
 
 def _parse_threshold_and_username(args: str) -> tuple:
@@ -1011,7 +1027,8 @@ async def _gold_content(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await gold_content.finish(await generate_gold_content(qqid, username), reply_message=True)
+    result = await generate_gold_content(qqid, username)
+    await gold_content.finish(_append_lxns_notice(result, qqid if not username else None, '含金量'), reply_message=True)
 
 
 @water_content.handle()
@@ -1024,7 +1041,8 @@ async def _water_content(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await water_content.finish(await generate_water_content(qqid, username), reply_message=True)
+    result = await generate_water_content(qqid, username)
+    await water_content.finish(_append_lxns_notice(result, qqid if not username else None, '含水量'), reply_message=True)
 
 
 @version_b50.handle()

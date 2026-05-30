@@ -167,3 +167,33 @@ async def user_get_player(access_token: str) -> Optional[Dict[str, Any]]:
         if not result.get('success'):
             raise ValueError(result.get('message', '获取用户信息失败'))
         return result.get('data')
+
+
+async def user_get_scores(access_token: str) -> Optional[list]:
+    """获取当前用户所有成绩（OAuth token）。返回 Score 列表。"""
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f'{_BASE_URL}/api/v0/user/maimai/player/scores',
+            headers=_oauth_headers(access_token),
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        if not result.get('success'):
+            raise ValueError(result.get('message', '获取成绩失败'))
+        return result.get('data')
+
+
+async def dev_get_scores(friend_code: int) -> Optional[list]:
+    """通过好友码获取玩家所有成绩（开发者 Token）。返回 Score 列表。"""
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f'{_BASE_URL}/api/v0/maimai/player/{friend_code}/scores',
+            headers=_dev_headers(),
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        result = resp.json()
+        if not result.get('success'):
+            return None
+        return result.get('data')

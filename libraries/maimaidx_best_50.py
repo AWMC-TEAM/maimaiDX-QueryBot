@@ -956,9 +956,8 @@ async def _fc_ap_b50_common(
     try:
         if username:
             qqid = None
-        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
-        dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-        records = list(dev.records or [])
+        from .maimaidx_datasource import get_user_records
+        userinfo, records = await get_user_records(qqid=qqid, username=username)
         records = filter_utage_records(records)
         filtered = filter_fn(records)
         if not filtered:
@@ -1066,9 +1065,8 @@ async def _sun_b50_common(
     try:
         if username:
             qqid = None
-        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
-        dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-        records = list(dev.records or [])
+        from .maimaidx_datasource import get_user_records
+        userinfo, records = await get_user_records(qqid=qqid, username=username)
         records = filter_utage_records(records)
         if threshold is None:
             filtered = _sun_b50_records(records)
@@ -1151,9 +1149,8 @@ async def _lock_b50_common(
     try:
         if username:
             qqid = None
-        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
-        dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-        records = list(dev.records or [])
+        from .maimaidx_datasource import get_user_records
+        userinfo, records = await get_user_records(qqid=qqid, username=username)
         records = filter_utage_records(records)
         filtered = _lock_b50_records(records)
         if not filtered:
@@ -1335,11 +1332,8 @@ async def generate_all(qqid: Optional[int] = None, username: Optional[str] = Non
     try:
         if username:
             qqid = None
-        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
-        
-        # 使用开发者Token获取全量成绩
-        dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-        records = list(dev.records or [])
+        from .maimaidx_datasource import get_user_records
+        userinfo, records = await get_user_records(qqid=qqid, username=username)
         records = filter_utage_records(records)
 
         if not records:
@@ -1574,9 +1568,8 @@ async def _yueji_b50_common(
     try:
         if username:
             qqid = None
-        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
-        dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-        records = list(dev.records or [])
+        from .maimaidx_datasource import get_user_records
+        userinfo, records = await get_user_records(qqid=qqid, username=username)
         records = filter_utage_records(records)
         filtered = _yueji_b50_records(records, threshold)
         if not filtered:
@@ -1798,11 +1791,10 @@ async def _ideal_b50_common(
     try:
         if username:
             qqid = None
-        
-        # 获取用户所有成绩（需要开发者 Token）
-        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
-        dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-        records = list(dev.records or [])
+
+        # 获取用户所有成绩（需要开发者 Token / 落雪 OAuth）
+        from .maimaidx_datasource import get_user_records
+        userinfo, records = await get_user_records(qqid=qqid, username=username)
         records = filter_utage_records(records)
 
         if not records:

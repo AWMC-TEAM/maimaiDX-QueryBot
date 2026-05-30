@@ -36,8 +36,8 @@ from ..libraries.maimaidx_music import mai
 # ─────────────────────────── helpers ───────────────────────────
 
 _RATE_MAP = {
-    'sssp': 'SSS+', 'sss': 'SSS', 'ssp': 'SS+', 'ss': 'SS',
-    'sp': 'S+', 's': 'S', 'aaa': 'AAA', 'aa': 'AA', 'a': 'A',
+    'sssp': 'SSSp', 'sss': 'SSS', 'ssp': 'SSp', 'ss': 'SS',
+    'sp': 'Sp', 's': 'S', 'aaa': 'AAA', 'aa': 'AA', 'a': 'A',
     'bbb': 'BBB', 'bb': 'BB', 'b': 'B', 'c': 'C', 'd': 'D',
 }
 

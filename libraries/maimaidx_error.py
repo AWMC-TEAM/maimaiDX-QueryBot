@@ -11,6 +11,20 @@ class UserNotFoundError(Exception):
         ''').strip()
 
 
+class LxnsDataError(UserNotFoundError):
+    """
+    落雪数据获取失败（未绑定 / 无授权 / 无数据）。
+    继承 UserNotFoundError 以便被现有 except 捕获并返回自定义消息。
+    """
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
+
+    def __str__(self) -> str:
+        return self.message
+
+
 class UserNotExistsError(Exception):
 
     def __str__(self) -> str:
