@@ -53,14 +53,14 @@ async def get_music():
         ScoreBaseImage._load_image()
         log.success('已将图片保存在内存中')
     
-    if not list(ratingdir.iterdir()):
+    if not ratingdir.exists() or not list(ratingdir.iterdir()):
         log.opt(colors=True).warning(
             '<y>注意！注意！</y>检测到定数表文件夹为空！'
             '可能导致「定数表」「完成表」指令无法使用，'
             '请及时私聊BOT使用指令「更新定数表」进行生成。'
         )
     plate_list = [name for name in list(plate_to_dx_version.keys())[1:]]
-    platedir_list = [f.name.split('.')[0] for f in platedir.iterdir()]
+    platedir_list = [f.name.split('.')[0] for f in platedir.iterdir()] if platedir.exists() else []
     cn_list = [name for name in list(platecn.keys())]
     notin = set(plate_list) - set(platedir_list) - set(cn_list)
     if notin:
@@ -70,5 +70,6 @@ async def get_music():
             '可能导致这些牌子的「完成表」指令无法使用，'
             '请及时私聊BOT使用指令「更新完成表」进行生成。'
         )
+    log.opt(colors=True).success('<g>maimaiDX 插件初始化完成，等待客户端连接</g>')
 
 scheduler.add_job(update_daily, 'cron', hour=4)
