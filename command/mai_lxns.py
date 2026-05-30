@@ -14,7 +14,8 @@ from typing import Optional
 
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Message, MessageSegment, MessageEvent
-from nonebot.params import CommandArg
+from nonebot.matcher import Matcher
+from nonebot.params import Arg, CommandArg
 
 from ..config import log, maiconfig
 from ..libraries.image import image_to_base64
@@ -154,33 +155,39 @@ lxbind = on_command('lxbind', aliases={'绑定落雪', '绑定lx'})
 
 
 @lxbind.handle()
-async def _lxbind(event: MessageEvent, message: Message = CommandArg()):
+async def _lxbind(matcher: Matcher, message: Message = CommandArg()):
     if not maiconfig.lx_client_id or not maiconfig.lx_client_secret:
         await lxbind.finish('Bot 管理员尚未配置落雪 OAuth 信息，无法绑定。', reply_message=True)
 
-    qqid = event.user_id
     args = message.extract_plain_text().strip()
-
-    if not args:
+    if args:
+        # 用户直接 lxbind XXXX-XXXX-XXXX
+        matcher.set_arg('code', message)
+    else:
         url = get_authorize_url(maiconfig.lx_client_id)
-        msg = dedent(f"""\
+        prompt = dedent(f"""\
             请点击以下链接进行落雪查分器授权
             =======================
             {url}
             =======================
             授权后你将看到一个授权码（形如 XXXX-XXXX-XXXX）
-            请复制该授权码，发送给 Bot 完成绑定
+            请直接发送该授权码完成绑定
             =======================
             请注意！你必须在落雪查分器的
             「账号设置 → 常规设置」中的
             「隐私设置」开启允许读取成绩，
             否则 Bot 将无法查询你的成绩
         """).strip()
-        await lxbind.finish(msg, reply_message=True)
+        await lxbind.send(prompt, reply_message=True)
 
-    code = args.strip()
+
+@lxbind.got('code')
+async def _lxbind_got(event: MessageEvent, code_msg: Message = Arg('code')):
+    qqid = event.user_id
+    code = code_msg.extract_plain_text().strip()
+
     if not re.match(r'^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$', code, re.IGNORECASE):
-        await lxbind.finish('授权码格式错误，应为 XXXX-XXXX-XXXX', reply_message=True)
+        await lxbind.reject('授权码格式错误，应为 XXXX-XXXX-XXXX，请重新发送。', reply_message=True)
 
     try:
         token_data = await fetch_token(code)
