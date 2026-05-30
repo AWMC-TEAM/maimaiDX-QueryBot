@@ -2,6 +2,7 @@ from .mai_alias import *
 from .mai_base import *
 from .mai_feature import *
 from .mai_guess import *
+from .mai_lxns import *
 from .mai_playcount import *
 from .mai_song_rank import *
 from .mai_score import *

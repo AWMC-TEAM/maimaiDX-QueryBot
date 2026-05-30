@@ -1,0 +1,145 @@
+"""
+落雪查分器用户绑定数据库（独立 sqlite，不与 playcount.db 混用）。
+
+表结构:
+  lxns_users
+    qqid            INTEGER PRIMARY KEY
+    friend_code     INTEGER        -- 落雪好友码
+    access_token    TEXT           -- OAuth access_token
+    refresh_token   TEXT           -- OAuth refresh_token
+    token_type      TEXT DEFAULT 'Bearer'
+    expires_at      REAL           -- access_token 过期时间戳（秒）
+    scope           TEXT
+    created_at      REAL
+    updated_at      REAL
+"""
+
+import sqlite3
+import time
+from pathlib import Path
+from threading import Lock
+from typing import Optional
+
+DB_DIR = Path(__file__).resolve().parent.parent / 'data' / 'lxns'
+DB_PATH = DB_DIR / 'lxns.db'
+
+_CREATE_SQL = """\
+CREATE TABLE IF NOT EXISTS lxns_users (
+    qqid            INTEGER PRIMARY KEY,
+    friend_code     INTEGER,
+    access_token    TEXT,
+    refresh_token   TEXT,
+    token_type      TEXT DEFAULT 'Bearer',
+    expires_at      REAL,
+    scope           TEXT,
+    created_at      REAL,
+    updated_at      REAL
+);
+"""
+
+_UPSERT_SQL = """\
+INSERT INTO lxns_users (qqid, friend_code, access_token, refresh_token,
+                        token_type, expires_at, scope, created_at, updated_at)
+VALUES (:qqid, :friend_code, :access_token, :refresh_token,
+        :token_type, :expires_at, :scope, :now, :now)
+ON CONFLICT(qqid) DO UPDATE SET
+    friend_code   = COALESCE(excluded.friend_code, lxns_users.friend_code),
+    access_token  = COALESCE(excluded.access_token, lxns_users.access_token),
+    refresh_token = COALESCE(excluded.refresh_token, lxns_users.refresh_token),
+    token_type    = COALESCE(excluded.token_type, lxns_users.token_type),
+    expires_at    = COALESCE(excluded.expires_at, lxns_users.expires_at),
+    scope         = COALESCE(excluded.scope, lxns_users.scope),
+    updated_at    = excluded.updated_at;
+"""
+
+
+class LxnsDatabase:
+    _instance = None
+    _lock = Lock()
+
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+        DB_DIR.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute(_CREATE_SQL)
+        self._conn.commit()
+
+    def upsert_user(
+        self,
+        qqid: int,
+        *,
+        friend_code: Optional[int] = None,
+        access_token: Optional[str] = None,
+        refresh_token: Optional[str] = None,
+        token_type: str = 'Bearer',
+        expires_at: Optional[float] = None,
+        scope: Optional[str] = None,
+    ):
+        now = time.time()
+        self._conn.execute(
+            _UPSERT_SQL,
+            {
+                'qqid': qqid,
+                'friend_code': friend_code,
+                'access_token': access_token,
+                'refresh_token': refresh_token,
+                'token_type': token_type,
+                'expires_at': expires_at,
+                'scope': scope,
+                'now': now,
+            },
+        )
+        self._conn.commit()
+
+    def get_user(self, qqid: int) -> Optional[dict]:
+        """返回用户行 dict，不存在返回 None。"""
+        row = self._conn.execute(
+            'SELECT * FROM lxns_users WHERE qqid = ?', (qqid,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_tokens(
+        self,
+        qqid: int,
+        access_token: str,
+        refresh_token: str,
+        expires_in: int,
+        scope: str,
+        token_type: str = 'Bearer',
+    ):
+        """OAuth 刷新后更新 token 信息。"""
+        now = time.time()
+        self._conn.execute(
+            """\
+            UPDATE lxns_users
+            SET access_token  = ?,
+                refresh_token = ?,
+                token_type    = ?,
+                expires_at    = ?,
+                scope         = ?,
+                updated_at    = ?
+            WHERE qqid = ?;
+            """,
+            (access_token, refresh_token, token_type, now + expires_in, scope, now, qqid),
+        )
+        self._conn.commit()
+
+    def clear_user(self, qqid: int):
+        """解绑：删除用户记录。"""
+        self._conn.execute('DELETE FROM lxns_users WHERE qqid = ?', (qqid,))
+        self._conn.commit()
+
+
+# 全局单例
+lxns_db = LxnsDatabase()

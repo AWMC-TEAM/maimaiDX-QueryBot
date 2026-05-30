@@ -44,6 +44,13 @@ class Config(BaseModel):
     maimaidx_data_source: Optional[str] = None
     # dxdata.json 文件路径（相对于项目根目录或绝对路径），默认 "dxdata.json"
     maimaidx_dxdata_path: Optional[str] = None
+    # ---------- 落雪查分器（Lxns）配置 ----------
+    lxns_dev_token: Optional[str] = None          # 开发者 Token（查曲库/按QQ查别人b50）
+    lx_client_id: Optional[str] = None            # OAuth 应用 Client ID
+    lx_client_secret: Optional[str] = None        # OAuth 应用 Client Secret
+    # redirect_uri 留空 = 无回调模式（用户在落雪页面直接看到授权码）
+    lx_redirect_uri: Optional[str] = None
+
     # ---------- 自定义背景（可选，便于多人协作时统一风格） ----------
     # 我有多菜：自定义背景图路径（相对 static 或绝对路径），未配置则使用常规 B50 背景 b50_bg.png
     maimaidx_how_weak_bg: Optional[str] = None
