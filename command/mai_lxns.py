@@ -19,7 +19,7 @@ from nonebot.params import Arg, CommandArg
 
 from ..config import log, maiconfig
 from ..libraries.image import image_to_base64
-from ..libraries.maimaidx_best_50 import DrawBest, computeRa
+from ..libraries.maimaidx_best_50 import DrawBest
 from ..libraries.maimaidx_lxns_client import (
     fetch_token,
     get_authorize_url,
@@ -30,87 +30,16 @@ from ..libraries.maimaidx_lxns_client import (
     dev_get_player_by_qq,
 )
 from ..libraries.maimaidx_lxns_db import lxns_db
+from ..libraries.maimaidx_datasource import lxns_bests_to_userinfo
 from ..libraries.maimaidx_model import ChartInfo, Data, UserInfo
 from ..libraries.maimaidx_music import mai
 
 # ─────────────────────────── helpers ───────────────────────────
 
-_RATE_MAP = {
-    'sssp': 'SSSp', 'sss': 'SSS', 'ssp': 'SSp', 'ss': 'SS',
-    'sp': 'Sp', 's': 'S', 'aaa': 'AAA', 'aa': 'AA', 'a': 'A',
-    'bbb': 'BBB', 'bb': 'BB', 'b': 'B', 'c': 'C', 'd': 'D',
-}
-
-
-def _lxns_score_to_chartinfo(score: dict) -> Optional[ChartInfo]:
-    """
-    将 lxns API 返回的单个 score dict 转换为本地 ChartInfo。
-    跳过曲目表中查不到的曲目（返回 None）。
-    """
-    song_id = score['id']
-    level_index = score.get('level_index', 0)
-    achievements = score.get('achievements', 0.0)
-    lxns_type = score.get('type', 'standard')
-
-    music = mai.total_list.by_id(str(song_id))
-    if music is None:
-        return None
-
-    if level_index < len(music.ds):
-        ds = round(float(music.ds[level_index]), 1)
-        level_str = music.level[level_index] if level_index < len(music.level) else score.get('level', '')
-        title = music.title
-        level_label = ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master'][min(level_index, 4)]
-    else:
-        ds = float(score.get('level', '0').replace('+', '.5'))
-        level_str = score.get('level', '')
-        title = score.get('song_name', '')
-        level_label = score.get('level', '')
-
-    song_type = 'DX' if lxns_type == 'dx' else 'SD'
-    rate_raw = (score.get('rate') or '').lower()
-    rate = _RATE_MAP.get(rate_raw, rate_raw.upper()) if rate_raw else ''
-    fc = (score.get('fc') or '').lower()
-    fs = (score.get('fs') or '').lower()
-
-    ra, computed_rate = computeRa(ds, achievements, israte=True)
-    if not rate:
-        rate = computed_rate
-
-    return ChartInfo(
-        song_id=song_id,
-        level=level_str,
-        level_index=level_index,
-        ds=ds,
-        ra=ra,
-        rate=rate,
-        achievements=achievements,
-        fc=fc,
-        fs=fs,
-        dxScore=score.get('dx_score', 0),
-        title=title,
-        type=song_type,
-        level_label=level_label,
-    )
-
 
 def _lxns_bests_to_userinfo(bests: dict, nickname: str = '', rating: int = 0) -> UserInfo:
-    """将 lxns Best50 响应转换为本地 UserInfo。"""
-    sd_list = [_lxns_score_to_chartinfo(s) for s in (bests.get('standard') or [])]
-    dx_list = [_lxns_score_to_chartinfo(s) for s in (bests.get('dx') or [])]
-    sd_list = [c for c in sd_list if c is not None]
-    dx_list = [c for c in dx_list if c is not None]
-
-    sd_list.sort(key=lambda x: -x.ra)
-    dx_list.sort(key=lambda x: -x.ra)
-
-    return UserInfo(
-        nickname=nickname or '落雪用户',
-        rating=rating,
-        additional_rating=0,
-        username=nickname or '',
-        charts=Data(sd=sd_list, dx=dx_list),
-    )
+    """将 lxns Best50 响应转换为本地 UserInfo（复用统一数据源层的转换）。"""
+    return lxns_bests_to_userinfo(bests, nickname=nickname, rating=rating)
 
 
 async def _do_token_refresh(qqid: int, db_row: dict) -> Optional[str]:

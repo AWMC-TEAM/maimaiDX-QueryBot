@@ -24,16 +24,7 @@ from .maimaidx_lxns_db import lxns_db
 from .maimaidx_model import ChartInfo, Data, PlayInfoDev, UserInfo
 from .maimaidx_music import mai
 
-_RATE_MAP = {
-    'sssp': 'SSS+', 'sss': 'SSS', 'ssp': 'SS+', 'ss': 'SS',
-    'sp': 'S+', 's': 'S', 'aaa': 'AAA', 'aa': 'AA', 'a': 'A',
-    'bbb': 'BBB', 'bb': 'BB', 'b': 'B', 'c': 'C', 'd': 'D',
-}
 _LEVEL_LABELS = ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master']
-
-
-class LxnsDataError(Exception):
-    """落雪数据获取失败（未绑定 / 无授权 / 无数据）。"""
 
 
 def get_user_source(qqid: int) -> str:
@@ -61,17 +52,53 @@ def _import_compute_ra():
     return computeRa
 
 
+def _resolve_local_music(lxns_id: int, lxns_type: str):
+    """
+    把落雪的 (id, type) 映射到本地（水鱼）曲目。
+
+    落雪约定：标准/DX 谱面共用同一基础 ID（不带 +10000 偏移）。
+    水鱼约定：DX 谱面 ID = 基础 ID + 10000。
+
+    返回 (music, local_id_str)；找不到返回 (None, None)。
+    """
+    is_dx = lxns_type == 'dx'
+    candidates = []
+    if is_dx:
+        # 水鱼 DX 谱面 ID 通常为 基础ID + 10000
+        candidates.append(str(lxns_id + 10000))
+        candidates.append(str(lxns_id))
+    else:
+        candidates.append(str(lxns_id))
+        candidates.append(str(lxns_id + 10000))
+
+    want_type = 'DX' if is_dx else 'SD'
+    # 优先匹配 id 且 type 一致
+    for cid in candidates:
+        m = mai.total_list.by_id(cid)
+        if m and getattr(m, 'type', '').upper() == want_type:
+            return m, cid
+    # 退而求其次：id 命中即可（type 可能缺失）
+    for cid in candidates:
+        m = mai.total_list.by_id(cid)
+        if m:
+            return m, cid
+    return None, None
+
+
 def _lxns_score_to_chartinfo(score: dict):
     """将 lxns score dict 转换为 ChartInfo（也兼容 PlayInfoDev，字段一致）。"""
     computeRa = _import_compute_ra()
-    song_id = score['id']
+    lxns_id = int(score['id'])
     level_index = score.get('level_index', 0)
     achievements = score.get('achievements', 0.0)
     lxns_type = score.get('type', 'standard')
+    song_type = 'DX' if lxns_type == 'dx' else 'SD'
 
-    music = mai.total_list.by_id(str(song_id))
+    music, local_id = _resolve_local_music(lxns_id, lxns_type)
     if music is None:
         return None
+
+    song_id = int(local_id)
 
     if level_index < len(music.ds):
         ds = round(float(music.ds[level_index]), 1)
@@ -84,15 +111,11 @@ def _lxns_score_to_chartinfo(score: dict):
         title = score.get('song_name', '')
         level_label = score.get('level', '')
 
-    song_type = 'DX' if lxns_type == 'dx' else 'SD'
-    rate_raw = (score.get('rate') or '').lower()
-    rate = _RATE_MAP.get(rate_raw, rate_raw.upper()) if rate_raw else ''
     fc = (score.get('fc') or '').lower()
     fs = (score.get('fs') or '').lower()
 
-    ra, computed_rate = computeRa(ds, achievements, israte=True)
-    if not rate:
-        rate = computed_rate
+    # rate 统一由 computeRa 计算，保证与渲染所需格式一致（如 Sp/SSp/SSSp）
+    ra, rate = computeRa(ds, achievements, israte=True)
 
     return dict(
         song_id=song_id,
