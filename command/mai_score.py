@@ -134,16 +134,27 @@ async def _(
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
 
-    # 检查数据源偏好（仅当是自己查自己时走落雪，@别人/指定用户名走水鱼）
     from ..libraries.maimaidx_lxns_db import lxns_db
     from .mai_lxns import generate_lxns_b50
+
+    # 仅自己查自己时走数据源偏好，@别人/指定用户名走水鱼
     if not username and qqid == event.user_id and lxns_db.get_source(qqid) == 'lxns':
         result = await generate_lxns_b50(qqid)
-        if result is not None:
-            await best50.finish(result, reply_message=True)
-        # 落雪失败则 fallback 到水鱼
+        if result is None:
+            await best50.finish(
+                '落雪数据获取失败，请先绑定落雪查分器：发送 lxbind\n'
+                '或切换回水鱼数据源：数据源 水鱼',
+                reply_message=True,
+            )
+        await best50.finish(result + MessageSegment.text('\n[数据源：落雪] | 可使用 数据源 水鱼/落雪 修改'), reply_message=True)
 
-    await best50.finish(await generate(qqid, username), reply_message=True)
+    result = await generate(qqid, username)
+    if isinstance(result, str):
+        # 错误消息，直接发
+        await best50.finish(result, reply_message=True)
+    else:
+        # 成功，加数据源标签
+        await best50.finish(result + MessageSegment.text('\n[数据源：水鱼] | 可使用 数据源 水鱼/落雪 修改'), reply_message=True)
 
 
 @best_all50.handle()

@@ -288,10 +288,10 @@ async def _source_cmd(event: MessageEvent, message: Message = CommandArg()):
 
 # ─────────────────────────── lxb50（供外部调用） ───────────────────────────
 
-async def generate_lxns_b50(qqid: int) -> Optional[Message]:
+async def generate_lxns_b50(qqid: int) -> Optional[MessageSegment]:
     """
     用落雪数据源生成 b50 图片。
-    成功返回 Message（含数据源标签 + 图片），失败返回 None。
+    成功返回 MessageSegment（纯图片），失败返回 None。
     """
     bests = None
     nickname = ''
@@ -329,8 +329,7 @@ async def generate_lxns_b50(qqid: int) -> Optional[Message]:
         return None
 
     draw_best = DrawBest(userinfo, qqid)
-    img_seg = MessageSegment.image(image_to_base64(await draw_best.draw()))
-    return Message(MessageSegment.text('[数据源：落雪]\n')) + img_seg
+    return MessageSegment.image(image_to_base64(await draw_best.draw()))
 
 
 # ─────────────────────────── lxb50 指令 ───────────────────────────
@@ -352,7 +351,7 @@ async def _lxb50(event: MessageEvent):
                 '3. Bot 是否配置了开发者 Token',
                 reply_message=True,
             )
-        await lxb50.finish(result, reply_message=True)
+        await lxb50.finish(result + MessageSegment.text('\n[数据源：落雪] | 可使用 数据源 水鱼/落雪 修改'), reply_message=True)
 
     except Exception as e:
         log.error(f'[lxb50] error: {e}', exc_info=True)
