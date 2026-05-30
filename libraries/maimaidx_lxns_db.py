@@ -10,6 +10,7 @@
     token_type      TEXT DEFAULT 'Bearer'
     expires_at      REAL           -- access_token 过期时间戳（秒）
     scope           TEXT
+    source          TEXT DEFAULT 'divingfish'  -- b50 数据源：divingfish / lxns
     created_at      REAL
     updated_at      REAL
 """
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS lxns_users (
     token_type      TEXT DEFAULT 'Bearer',
     expires_at      REAL,
     scope           TEXT,
+    source          TEXT DEFAULT 'divingfish',
     created_at      REAL,
     updated_at      REAL
 );
@@ -39,9 +41,9 @@ CREATE TABLE IF NOT EXISTS lxns_users (
 
 _UPSERT_SQL = """\
 INSERT INTO lxns_users (qqid, friend_code, access_token, refresh_token,
-                        token_type, expires_at, scope, created_at, updated_at)
+                        token_type, expires_at, scope, source, created_at, updated_at)
 VALUES (:qqid, :friend_code, :access_token, :refresh_token,
-        :token_type, :expires_at, :scope, :now, :now)
+        :token_type, :expires_at, :scope, :source, :now, :now)
 ON CONFLICT(qqid) DO UPDATE SET
     friend_code   = COALESCE(excluded.friend_code, lxns_users.friend_code),
     access_token  = COALESCE(excluded.access_token, lxns_users.access_token),
@@ -49,6 +51,7 @@ ON CONFLICT(qqid) DO UPDATE SET
     token_type    = COALESCE(excluded.token_type, lxns_users.token_type),
     expires_at    = COALESCE(excluded.expires_at, lxns_users.expires_at),
     scope         = COALESCE(excluded.scope, lxns_users.scope),
+    source        = COALESCE(excluded.source, lxns_users.source),
     updated_at    = excluded.updated_at;
 """
 
@@ -74,6 +77,14 @@ class LxnsDatabase:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute(_CREATE_SQL)
         self._conn.commit()
+        self._migrate()
+
+    def _migrate(self):
+        """处理旧版 DB 缺少 source 列的情况。"""
+        cols = {row[1] for row in self._conn.execute('PRAGMA table_info(lxns_users)')}
+        if 'source' not in cols:
+            self._conn.execute("ALTER TABLE lxns_users ADD COLUMN source TEXT DEFAULT 'divingfish'")
+            self._conn.commit()
 
     def upsert_user(
         self,
@@ -85,6 +96,7 @@ class LxnsDatabase:
         token_type: str = 'Bearer',
         expires_at: Optional[float] = None,
         scope: Optional[str] = None,
+        source: Optional[str] = None,
     ):
         now = time.time()
         self._conn.execute(
@@ -97,6 +109,7 @@ class LxnsDatabase:
                 'token_type': token_type,
                 'expires_at': expires_at,
                 'scope': scope,
+                'source': source,
                 'now': now,
             },
         )
@@ -108,6 +121,30 @@ class LxnsDatabase:
             'SELECT * FROM lxns_users WHERE qqid = ?', (qqid,)
         ).fetchone()
         return dict(row) if row else None
+
+    def get_source(self, qqid: int) -> str:
+        """获取用户的 b50 数据源，默认 'divingfish'。"""
+        row = self._conn.execute(
+            'SELECT source FROM lxns_users WHERE qqid = ?', (qqid,)
+        ).fetchone()
+        if row and row['source']:
+            return row['source']
+        return 'divingfish'
+
+    def set_source(self, qqid: int, source: str):
+        """设置用户的 b50 数据源。如果用户不存在则先创建记录。"""
+        existing = self.get_user(qqid)
+        if existing:
+            self._conn.execute(
+                'UPDATE lxns_users SET source = ?, updated_at = ? WHERE qqid = ?',
+                (source, time.time(), qqid),
+            )
+        else:
+            self._conn.execute(
+                'INSERT INTO lxns_users (qqid, source, created_at, updated_at) VALUES (?, ?, ?, ?)',
+                (qqid, source, time.time(), time.time()),
+            )
+        self._conn.commit()
 
     def update_tokens(
         self,

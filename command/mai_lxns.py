@@ -240,64 +240,119 @@ async def _lxunbind(event: MessageEvent):
     await lxunbind.finish('已解绑落雪查分器。', reply_message=True)
 
 
-# ─────────────────────────── lxb50 ───────────────────────────
+# ─────────────────────────── 数据源切换 ───────────────────────────
+
+source_cmd = on_command('数据源', aliases={'切换数据源', 'datasource'})
+
+
+@source_cmd.handle()
+async def _source_cmd(event: MessageEvent, message: Message = CommandArg()):
+    qqid = event.user_id
+    args = message.extract_plain_text().strip().lower()
+
+    source_map = {
+        '水鱼': 'divingfish', 'divingfish': 'divingfish', 'df': 'divingfish',
+        '落雪': 'lxns', 'lxns': 'lxns', 'lx': 'lxns',
+    }
+
+    if not args:
+        current = lxns_db.get_source(qqid)
+        label = '落雪' if current == 'lxns' else '水鱼'
+        await source_cmd.finish(
+            f'当前数据源：{label}\n'
+            f'可选：水鱼 / 落雪\n'
+            f'用法：数据源 落雪',
+            reply_message=True,
+        )
+
+    if args not in source_map:
+        await source_cmd.finish('未知数据源，可选：水鱼 / 落雪', reply_message=True)
+
+    target = source_map[args]
+
+    if target == 'lxns' and not maiconfig.lxns_dev_token:
+        has_oauth = lxns_db.get_user(qqid) and lxns_db.get_user(qqid).get('access_token')
+        if not has_oauth:
+            await source_cmd.finish(
+                '切换到落雪数据源需要满足以下条件之一：\n'
+                '1. Bot 配置了开发者 Token（LXNS_DEV_TOKEN）\n'
+                '2. 你已通过 lxbind 授权绑定落雪账号\n'
+                '当前均不满足，请先完成绑定或联系管理员。',
+                reply_message=True,
+            )
+
+    lxns_db.set_source(qqid, target)
+    label = '落雪' if target == 'lxns' else '水鱼'
+    await source_cmd.finish(f'数据源已切换为：{label}', reply_message=True)
+
+
+# ─────────────────────────── lxb50（供外部调用） ───────────────────────────
+
+async def generate_lxns_b50(qqid: int) -> Optional[Message]:
+    """
+    用落雪数据源生成 b50 图片。
+    成功返回 Message（含数据源标签 + 图片），失败返回 None。
+    """
+    bests = None
+    nickname = ''
+    rating = 0
+
+    access_token = await _get_valid_access_token(qqid)
+    if access_token:
+        try:
+            bests = await user_get_bests(access_token)
+            player = await user_get_player(access_token)
+            if player:
+                nickname = player.get('name', '')
+                rating = player.get('rating', 0)
+        except Exception as e:
+            log.warning(f'[lxb50] OAuth query failed for qq={qqid}: {e}')
+            bests = None
+
+    if bests is None:
+        if not maiconfig.lxns_dev_token:
+            return None
+        player_info = await dev_get_player_by_qq(qqid)
+        if not player_info:
+            return None
+        fc = player_info.get('friend_code')
+        nickname = player_info.get('name', '')
+        rating = player_info.get('rating', 0)
+        if fc:
+            bests = await dev_get_bests(fc)
+        if not bests:
+            return None
+
+    userinfo = _lxns_bests_to_userinfo(bests, nickname=nickname, rating=rating)
+
+    if not userinfo.charts or (not userinfo.charts.sd and not userinfo.charts.dx):
+        return None
+
+    draw_best = DrawBest(userinfo, qqid)
+    img_seg = MessageSegment.image(image_to_base64(await draw_best.draw()))
+    return Message(MessageSegment.text('[数据源：落雪]\n')) + img_seg
+
+
+# ─────────────────────────── lxb50 指令 ───────────────────────────
 
 lxb50 = on_command('lxb50', aliases={'落雪b50', '落雪B50', 'lx50'})
 
 
 @lxb50.handle()
-async def _lxb50(event: MessageEvent, message: Message = CommandArg()):
+async def _lxb50(event: MessageEvent):
     qqid = event.user_id
 
     try:
-        bests = None
-        nickname = ''
-        rating = 0
-
-        # 方式 1：OAuth 用户数据
-        access_token = await _get_valid_access_token(qqid)
-        if access_token:
-            try:
-                bests = await user_get_bests(access_token)
-                player = await user_get_player(access_token)
-                if player:
-                    nickname = player.get('name', '')
-                    rating = player.get('rating', 0)
-            except Exception as e:
-                log.warning(f'[lxb50] OAuth query failed for qq={qqid}: {e}')
-                bests = None
-
-        # 方式 2：开发者 Token 按 QQ 查
-        if bests is None:
-            if not maiconfig.lxns_dev_token:
-                await lxb50.finish(
-                    '你尚未绑定落雪查分器（发送 lxbind 绑定），'
-                    '且 Bot 未配置开发者 Token，无法查询。',
-                    reply_message=True,
-                )
-            player_info = await dev_get_player_by_qq(qqid)
-            if not player_info:
-                await lxb50.finish(
-                    '未在落雪查分器找到你的数据。\n'
-                    '请先在落雪查分器绑定 QQ，或发送 lxbind 进行 OAuth 授权绑定。',
-                    reply_message=True,
-                )
-            fc = player_info.get('friend_code')
-            nickname = player_info.get('name', '')
-            rating = player_info.get('rating', 0)
-            if fc:
-                bests = await dev_get_bests(fc)
-            if not bests:
-                await lxb50.finish('获取落雪 B50 数据失败。', reply_message=True)
-
-        userinfo = _lxns_bests_to_userinfo(bests, nickname=nickname, rating=rating)
-
-        if not userinfo.charts or (not userinfo.charts.sd and not userinfo.charts.dx):
-            await lxb50.finish('落雪查分器中没有你的 B50 数据。', reply_message=True)
-
-        draw_best = DrawBest(userinfo, qqid)
-        msg = MessageSegment.image(image_to_base64(await draw_best.draw()))
-        await lxb50.finish(msg, reply_message=True)
+        result = await generate_lxns_b50(qqid)
+        if result is None:
+            await lxb50.finish(
+                '落雪数据获取失败，请检查：\n'
+                '1. 是否已发送 lxbind 绑定落雪\n'
+                '2. 或在落雪查分器绑定了 QQ\n'
+                '3. Bot 是否配置了开发者 Token',
+                reply_message=True,
+            )
+        await lxb50.finish(result, reply_message=True)
 
     except Exception as e:
         log.error(f'[lxb50] error: {e}', exc_info=True)

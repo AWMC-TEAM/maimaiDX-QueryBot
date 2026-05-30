@@ -133,6 +133,16 @@ async def _(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
+
+    # 检查数据源偏好（仅当是自己查自己时走落雪，@别人/指定用户名走水鱼）
+    from ..libraries.maimaidx_lxns_db import lxns_db
+    from .mai_lxns import generate_lxns_b50
+    if not username and qqid == event.user_id and lxns_db.get_source(qqid) == 'lxns':
+        result = await generate_lxns_b50(qqid)
+        if result is not None:
+            await best50.finish(result, reply_message=True)
+        # 落雪失败则 fallback 到水鱼
+
     await best50.finish(await generate(qqid, username), reply_message=True)
 
 

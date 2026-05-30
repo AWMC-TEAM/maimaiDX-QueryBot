@@ -30,11 +30,13 @@ def _oauth_headers(access_token: str) -> Dict[str, str]:
 
 
 def get_authorize_url(client_id: str, scope: str = 'read_player read_user_profile write_player') -> str:
-    """生成 OAuth 授权链接（无回调模式）。"""
+    """生成 OAuth 授权链接。无回调模式使用 lxns 官方页展示授权码。"""
+    redirect_uri = maiconfig.lx_redirect_uri or 'https://maimai.lxns.net'
     return (
         f'{_BASE_URL}/oauth/authorize'
         f'?response_type=code'
         f'&client_id={client_id}'
+        f'&redirect_uri={redirect_uri}'
         f'&scope={scope}'
     )
 
@@ -44,14 +46,14 @@ async def fetch_token(code: str) -> Dict[str, Any]:
     用授权码换取 access_token / refresh_token。
     返回 OAuth2Token 字典：access_token, token_type, expires_in, refresh_token, scope
     """
+    redirect_uri = maiconfig.lx_redirect_uri or 'https://maimai.lxns.net'
     payload = {
         'client_id': maiconfig.lx_client_id,
         'client_secret': maiconfig.lx_client_secret,
         'grant_type': 'authorization_code',
         'code': code,
+        'redirect_uri': redirect_uri,
     }
-    if maiconfig.lx_redirect_uri:
-        payload['redirect_uri'] = maiconfig.lx_redirect_uri
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f'{_BASE_URL}/api/v0/oauth/token', json=payload)
