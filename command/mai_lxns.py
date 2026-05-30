@@ -182,12 +182,28 @@ async def _lxbind(matcher: Matcher, message: Message = CommandArg()):
 
 
 @lxbind.got('code')
-async def _lxbind_got(event: MessageEvent, code_msg: Message = Arg('code')):
+async def _lxbind_got(matcher: Matcher, event: MessageEvent, code_msg: Message = Arg('code')):
     qqid = event.user_id
     code = code_msg.extract_plain_text().strip()
 
+    # 取消机制
+    if code.lower() in ('取消', 'cancel', 'q', '退出'):
+        await lxbind.finish('已取消落雪绑定。', reply_message=True)
+
+    # 格式校验 + 限制重试次数（最多 3 次）
     if not re.match(r'^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$', code, re.IGNORECASE):
-        await lxbind.reject('授权码格式错误，应为 XXXX-XXXX-XXXX，请重新发送。', reply_message=True)
+        retry = matcher.state.get('lxbind_retry', 0) + 1
+        matcher.state['lxbind_retry'] = retry
+        if retry >= 3:
+            await lxbind.finish(
+                '授权码格式错误次数过多，已退出绑定。\n请重新发送 lxbind 再试。',
+                reply_message=True,
+            )
+        await lxbind.reject(
+            f'授权码格式错误，应为 XXXX-XXXX-XXXX，请重新发送。（{retry}/3）\n'
+            f'发送「取消」可退出绑定。',
+            reply_message=True,
+        )
 
     try:
         token_data = await fetch_token(code)
