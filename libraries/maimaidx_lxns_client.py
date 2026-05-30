@@ -8,12 +8,15 @@
 
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 import httpx
 
 from ..config import log, maiconfig
 
 _BASE_URL = 'https://maimai.lxns.net'
+# 落雪「无回调模式」标准 OOB 地址（授权后直接在页面显示授权码）
+_DEFAULT_REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob'
 
 
 def _dev_headers() -> Dict[str, str]:
@@ -30,15 +33,15 @@ def _oauth_headers(access_token: str) -> Dict[str, str]:
 
 
 def get_authorize_url(client_id: str, scope: str = 'read_player read_user_profile write_player') -> str:
-    """生成 OAuth 授权链接。无回调模式使用 lxns 官方页展示授权码。"""
-    redirect_uri = maiconfig.lx_redirect_uri or 'https://maimai.lxns.net'
-    return (
-        f'{_BASE_URL}/oauth/authorize'
-        f'?response_type=code'
-        f'&client_id={client_id}'
-        f'&redirect_uri={redirect_uri}'
-        f'&scope={scope}'
-    )
+    """生成 OAuth 授权链接。无回调模式使用 OOB 地址，授权后页面直接显示授权码。"""
+    redirect_uri = maiconfig.lx_redirect_uri or _DEFAULT_REDIRECT_URI
+    query = urlencode({
+        'response_type': 'code',
+        'client_id': client_id,
+        'redirect_uri': redirect_uri,
+        'scope': scope,
+    })
+    return f'{_BASE_URL}/oauth/authorize?{query}'
 
 
 async def fetch_token(code: str) -> Dict[str, Any]:
@@ -46,7 +49,7 @@ async def fetch_token(code: str) -> Dict[str, Any]:
     用授权码换取 access_token / refresh_token。
     返回 OAuth2Token 字典：access_token, token_type, expires_in, refresh_token, scope
     """
-    redirect_uri = maiconfig.lx_redirect_uri or 'https://maimai.lxns.net'
+    redirect_uri = maiconfig.lx_redirect_uri or _DEFAULT_REDIRECT_URI
     payload = {
         'client_id': maiconfig.lx_client_id,
         'client_secret': maiconfig.lx_client_secret,
