@@ -697,9 +697,9 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
         
         from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
         _theme = _Th.get_default().value
-        rating_bg = Image.open(pic('complete.png'))
-        unfinished_bg = Image.open(pic('unfinished_1.png'))
-        complete_bg = Image.open(pic('complete_1.png'))
+        rating_bg = Image.open(pic('complete.png')).convert('RGBA')
+        unfinished_bg = Image.open(pic('unfinished_1.png')).convert('RGBA')
+        complete_bg = Image.open(pic('complete_1.png')).convert('RGBA')
         
         bg = ratingdir / f'{rating}.png'
         
@@ -833,11 +833,11 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         
         from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
         _theme = _Th.get_default().value
-        finished_bg = [Image.open(pic(f't_{_}.png')) for _ in range(5)]
-        unfinished_bg = Image.open(pic('unfinished_2.png'))
-        complete_bg = Image.open(pic('complete_2.png'))
+        finished_bg = [Image.open(pic(f't_{_}.png')).convert('RGBA') for _ in range(5)]
+        unfinished_bg = Image.open(pic('unfinished_2.png')).convert('RGBA')
+        complete_bg = Image.open(pic('complete_2.png')).convert('RGBA')
 
-        im = Image.open(plate_tabledir / plate_file)
+        im = Image.open(plate_tabledir / plate_file).convert('RGBA')
         draw = ImageDraw.Draw(im)
         tr = DrawText(draw, TBFONT)
         mr = DrawText(draw, SIYUAN)
@@ -850,7 +850,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         
         # 牌子背景 - beta: (200, 45)
         im.alpha_composite(
-            Image.open(plate_versiondir / f'{version}{"極" if plan == "极" else plan}.png').resize((1000, 161)), 
+            Image.open(plate_versiondir / f'{version}{"極" if plan == "极" else plan}.png').convert('RGBA').resize((1000, 161)), 
             (200, 45)
         )
         lv: List[set[int]] = [set() for _ in range(number)]
@@ -892,7 +892,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                         if play is None or not play.fc: continue
                         if n == (number - 1):
                             im.alpha_composite(complete_bg, (x + 1, yy + 1))
-                            fc = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((60, 60))
+                            fc = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).convert('RGBA').resize((60, 60))
                             im.alpha_composite(fc, (x + 10, yy + 12))
                         lv[n].add(play.song_id)
                         f.append(n)
@@ -917,7 +917,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                         if n == (number - 1):
                             im.alpha_composite(complete_bg, (x + 1, yy + 1))
                             rate = computeRa(play.ds, play.achievements, onlyrate=True)
-                            rank = Image.open(_rtp(maimaidir, _theme, f'UI_TTR_Rank_{rate}.png')).resize((80, 36))
+                            rank = Image.open(_rtp(maimaidir, _theme, f'UI_TTR_Rank_{rate}.png')).convert('RGBA').resize((80, 36))
                             im.alpha_composite(rank, (x, yy + 22))
                         lv[n].add(play.song_id)
                         f.append(n)
@@ -942,7 +942,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                         if play is None or play.fc not in _fc: continue
                         if n == (number - 1):
                             im.alpha_composite(complete_bg, (x + 1, yy + 1))
-                            ap = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((60, 60))
+                            ap = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).convert('RGBA').resize((60, 60))
                             im.alpha_composite(ap, (x + 10, yy + 12))
                         lv[n].add(play.song_id)
                         f.append(n)
@@ -968,7 +968,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                             continue
                         if n == (number - 1):
                             im.alpha_composite(complete_bg, (x + 1, yy + 1))
-                            fsd = Image.open(pic(f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).resize((60, 60))
+                            fsd = Image.open(pic(f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).convert('RGBA').resize((60, 60))
                             im.alpha_composite(fsd, (x + 10, yy + 12))
                         lv[n].add(play.song_id)
                         f.append(n)
