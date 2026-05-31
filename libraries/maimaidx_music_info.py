@@ -459,7 +459,10 @@ async def draw_music_info(
             if coloumWidth(charter) > 19:
                 charter = changeColumnWidth(charter, 18) + '...'
             mr.draw(310, 590 + spacing, 20, charter, default_color, 'mm')
-            ra = sorted([computeRa(music.ds[num], r) for r in achievementList[-6:]], reverse=True)
+            ra = sorted(
+                [computeRa(music.ds[num], r) for r in (100.5, 100.5, 100.0, 99.5, 99.0, 98.0, 97.0)],
+                reverse=True,
+            )  # AP / SSS+ … S 共 7 列
             for _n, value in enumerate(ra):
                 size = 22
                 if not calc:
