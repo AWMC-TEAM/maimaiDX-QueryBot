@@ -21,18 +21,22 @@ CONFIG_TAGS_ORDER: List[str] = [
 DIFFICULTY_TAGS_ORDER: List[str] = ['正常谱', '水', '诈称谱']
 EVAL_TAGS_ORDER: List[str] = ['体力谱', '底力谱', '星星谱', '键盘谱', '高物量']
 
-# ---------- 绘图颜色（半透明填充、边框、文字等） ----------
-FILL_COLOR = (173, 216, 230, 180)
-LINE_COLOR = (100, 130, 180, 255)
-TEXT_COLOR = (50, 70, 100, 255)
-TITLE_COLOR = (40, 60, 90, 255)
+# ---------- 绘图颜色（温暖夕阳色系，适配背景） ----------
+# 主题色：温暖的橙粉色系，与夕阳背景协调
+FILL_COLOR = (255, 182, 120, 160)        # 填充色：温暖的橙色半透明
+LINE_COLOR = (220, 100, 80, 255)         # 边框色：深橙红色
+TEXT_COLOR = (80, 40, 30, 255)           # 文字色：深棕色
+TITLE_COLOR = (100, 50, 40, 255)         # 标题色：更深的棕色
+GRID_COLOR = (255, 200, 150, 100)        # 网格线：浅橙色半透明
+AXIS_TEXT_COLOR = (150, 90, 70, 255)     # 坐标轴文字：中棕色
 
 # 渲染精度：先按 scale 倍尺寸绘制再缩回，提高清晰度
 RENDER_SCALE = 2
 
 # 统一字号配置
-FONT_SIZE_TITLE = 18  # 标题字号
-FONT_SIZE_TEXT = 14   # 正文字号（标签、数字、底部署名等）
+FONT_SIZE_TITLE = 20   # 标题字号（加大）
+FONT_SIZE_TEXT = 15    # 正文字号（标签、数字、底部署名等）
+FONT_SIZE_AXIS = 12    # 坐标轴字号
 
 # 源泉圓體：常见文件名（将字体放入 static 目录即可）
 GENWAN_FONT_NAMES = [
@@ -85,60 +89,225 @@ def _font_path_for_analysis():
 
 
 def _draw_radar(dr, cx, cy, radius, labels, values, draw_text, title, title_y, font_size, title_size):
+    """绘制雷达图，优化视觉效果，添加阴影和光晕"""
     n = len(labels)
     if n == 0:
         return
+    
+    # 绘制中心光晕效果（多层渐变圆）
+    for i in range(5, 0, -1):
+        alpha = int(30 * (i / 5))
+        glow_r = int(radius * 0.15 * (i / 5))
+        dr.ellipse(
+            [cx - glow_r, cy - glow_r, cx + glow_r, cy + glow_r],
+            fill=(255, 220, 180, alpha)
+        )
+    
+    # 绘制网格圆圈（3层）- 使用更柔和的线条
+    for r_frac in [0.33, 0.67, 1.0]:
+        r = int(radius * r_frac)
+        pts = []
+        for i in range(n + 1):
+            angle = -math.pi / 2 + 2 * math.pi * i / n
+            pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+        # 绘制阴影
+        shadow_pts = [(x + 2, y + 2) for x, y in pts]
+        dr.line(shadow_pts, fill=(0, 0, 0, 30), width=3)
+        # 绘制主线
+        dr.line(pts, fill=GRID_COLOR, width=2)
+    
+    # 绘制从中心到各顶点的射线
     for i in range(n):
         angle = -math.pi / 2 + 2 * math.pi * i / n
         ex = cx + radius * math.cos(angle)
         ey = cy + radius * math.sin(angle)
-        dr.line([(cx, cy), (ex, ey)], fill=LINE_COLOR, width=1)
-    for r in (radius // 3, 2 * radius // 3, radius):
-        pts = [(cx + r * math.cos(-math.pi / 2 + 2 * math.pi * i / n), cy + r * math.sin(-math.pi / 2 + 2 * math.pi * i / n)) for i in range(n + 1)]
-        dr.line(pts, fill=LINE_COLOR, width=1)
+        # 阴影
+        dr.line([(cx + 2, cy + 2), (ex + 2, ey + 2)], fill=(0, 0, 0, 30), width=2)
+        # 主线
+        dr.line([(cx, cy), (ex, ey)], fill=GRID_COLOR, width=2)
+    
+    # 绘制数据多边形
     pts = []
     for i in range(n):
         v = max(0, min(1, values[i] if i < len(values) else 0))
         angle = -math.pi / 2 + 2 * math.pi * i / n
         r = radius * v
         pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+    
     if len(pts) >= 3:
-        dr.polygon(pts, fill=FILL_COLOR, outline=LINE_COLOR)
+        # 绘制阴影
+        shadow_pts = [(x + 3, y + 3) for x, y in pts]
+        dr.polygon(shadow_pts, fill=(0, 0, 0, 40), outline=None)
+        
+        # 绘制填充（带渐变效果的模拟）
+        dr.polygon(pts, fill=FILL_COLOR, outline=None)
+        
+        # 绘制边框（加粗，带高光）
+        pts_closed = pts + [pts[0]]
+        # 阴影边框
+        shadow_closed = [(x + 2, y + 2) for x, y in pts_closed]
+        dr.line(shadow_closed, fill=(0, 0, 0, 50), width=4)
+        # 主边框
+        dr.line(pts_closed, fill=LINE_COLOR, width=4)
+        
+        # 绘制顶点（带光晕）
+        for pt in pts:
+            # 外层光晕
+            dr.ellipse([pt[0]-8, pt[1]-8, pt[0]+8, pt[1]+8], fill=(255, 220, 180, 80), outline=None)
+            # 主圆点
+            dr.ellipse([pt[0]-5, pt[1]-5, pt[0]+5, pt[1]+5], fill=LINE_COLOR, outline=(255, 255, 255, 200))
+    
+    # 绘制标题（带阴影）
+    draw_text.draw(cx + 2, title_y + 2, title_size, title, (0, 0, 0, 60), 'mm')
     draw_text.draw(cx, title_y, title_size, title, TITLE_COLOR, 'mm')
-    label_r = radius + 35
+    
+    # 绘制标签（带阴影）
+    label_r = radius + 45
     for i in range(n):
         angle = -math.pi / 2 + 2 * math.pi * i / n
         lx = cx + label_r * math.cos(angle)
         ly = cy + label_r * math.sin(angle)
+        # 阴影
+        draw_text.draw(int(lx + 1), int(ly + 1), font_size, labels[i] if i < len(labels) else '', (0, 0, 0, 80), 'mm')
+        # 主文字
         draw_text.draw(int(lx), int(ly), font_size, labels[i] if i < len(labels) else '', TEXT_COLOR, 'mm')
-    # 只在第一条射线上标数轴（配置=交互，评价=体力谱），准确百分比 0%, 33.3%, 66.7%, 100%，最后绘制保证在最上层
+    
+    # 绘制百分比刻度（在第一条射线上）
     axis_angle = -math.pi / 2
-    for frac, r_val in [(0, 0), (1 / 3, radius // 3), (2 / 3, 2 * radius // 3), (1, radius)]:
-        tx = cx + (r_val + 12) * math.cos(axis_angle)
-        ty = cy + (r_val + 12) * math.sin(axis_angle)
-        pct = '0%' if frac == 0 else f'{frac * 100:.1f}%'
-        draw_text.draw(int(tx), int(ty), max(10, font_size - 2), pct, TEXT_COLOR, 'mm')
+    axis_font_size = max(10, font_size - 3)
+    for frac, r_val in [(0.33, int(radius * 0.33)), (0.67, int(radius * 0.67)), (1.0, radius)]:
+        tx = cx + (r_val + 18) * math.cos(axis_angle)
+        ty = cy + (r_val + 18) * math.sin(axis_angle)
+        pct = f'{frac * 100:.0f}%'
+        # 背景框
+        bbox = draw_text.get_box(pct, axis_font_size)
+        box_w = bbox[2] - bbox[0] + 8
+        box_h = bbox[3] - bbox[1] + 6
+        dr.rounded_rectangle(
+            [tx - box_w//2, ty - box_h//2, tx + box_w//2, ty + box_h//2],
+            radius=4,
+            fill=(255, 255, 255, 180),
+            outline=AXIS_TEXT_COLOR,
+            width=1
+        )
+        draw_text.draw(int(tx), int(ty), axis_font_size, pct, AXIS_TEXT_COLOR, 'mm')
 
 
 def _draw_bar_chart(dr, x, y, width, bar_height, gap, labels, values, draw_text, title, title_y, font_size, title_size, max_val=None):
-    """绘制水平条形图：左侧标签、条形、右侧数值（难度图不标数轴）。"""
+    """绘制水平条形图：左侧标签、条形、右侧数值，添加阴影和渐变效果"""
     if not labels:
         return
+    
     max_val = max_val or max(values or [1]) or 1
+    
+    # 绘制标题（带阴影）
+    draw_text.draw(x + width // 2 + 2, title_y + 2, title_size, title, (0, 0, 0, 60), 'mm')
     draw_text.draw(x + width // 2, title_y, title_size, title, TITLE_COLOR, 'mm')
-    label_area_w = 85
-    bar_start_x = x + label_area_w + 10
-    num_area_w = 50
+    
+    # 布局参数
+    label_area_w = 95
+    bar_start_x = x + label_area_w + 15
+    num_area_w = 60
     right_margin = 20
-    bar_max_w = width - label_area_w - 10 - num_area_w - right_margin
-    n_bars = len(labels)
+    bar_max_w = width - label_area_w - 15 - num_area_w - right_margin
+    
+    # 绘制每个条形
     for i, (label, val) in enumerate(zip(labels, values)):
         yy = y + i * (bar_height + gap)
+        
+        # 绘制标签（带阴影）
+        draw_text.draw(x + 1, yy + bar_height // 2 + 1, font_size, label, (0, 0, 0, 80), 'lm')
         draw_text.draw(x, yy + bar_height // 2, font_size, label, TEXT_COLOR, 'lm')
+        
+        # 计算条形宽度
         bar_w = int((val / max_val) * bar_max_w) if max_val else 0
-        dr.rounded_rectangle([bar_start_x, yy, bar_start_x + bar_w, yy + bar_height], radius=4, fill=FILL_COLOR, outline=LINE_COLOR)
-        num_x = bar_start_x + bar_w + 5
-        draw_text.draw(num_x, yy + bar_height // 2, font_size, str(val), TEXT_COLOR, 'lm')
+        
+        # 绘制条形背景（浅色，带阴影）
+        # 阴影
+        dr.rounded_rectangle(
+            [bar_start_x + 2, yy + 2, bar_start_x + bar_max_w + 2, yy + bar_height + 2],
+            radius=8,
+            fill=(0, 0, 0, 30),
+            outline=None
+        )
+        # 背景
+        dr.rounded_rectangle(
+            [bar_start_x, yy, bar_start_x + bar_max_w, yy + bar_height],
+            radius=8,
+            fill=(255, 240, 220, 120),
+            outline=GRID_COLOR,
+            width=1
+        )
+        
+        # 绘制条形（带渐变模拟和高光）
+        if bar_w > 0:
+            # 主条形阴影
+            dr.rounded_rectangle(
+                [bar_start_x + 2, yy + 2, bar_start_x + bar_w + 2, yy + bar_height + 2],
+                radius=8,
+                fill=(0, 0, 0, 50),
+                outline=None
+            )
+            
+            # 主条形
+            dr.rounded_rectangle(
+                [bar_start_x, yy, bar_start_x + bar_w, yy + bar_height],
+                radius=8,
+                fill=FILL_COLOR,
+                outline=LINE_COLOR,
+                width=2
+            )
+            
+            # 顶部高光效果
+            highlight_h = bar_height // 3
+            dr.rounded_rectangle(
+                [bar_start_x + 4, yy + 4, bar_start_x + bar_w - 4, yy + highlight_h],
+                radius=4,
+                fill=(255, 255, 255, 60),
+                outline=None
+            )
+            
+            # 左侧光晕
+            if bar_w > 20:
+                for i in range(3):
+                    glow_x = bar_start_x + 8 + i * 2
+                    glow_alpha = 40 - i * 10
+                    dr.line(
+                        [(glow_x, yy + 6), (glow_x, yy + bar_height - 6)],
+                        fill=(255, 255, 255, glow_alpha),
+                        width=2
+                    )
+        
+        # 绘制数值（带背景框和阴影）
+        num_x = bar_start_x + bar_max_w + 10
+        num_str = str(val)
+        
+        # 数值背景框
+        bbox = draw_text.get_box(num_str, font_size)
+        box_w = bbox[2] - bbox[0] + 12
+        box_h = bbox[3] - bbox[1] + 8
+        
+        # 阴影
+        dr.rounded_rectangle(
+            [num_x - 2, yy + bar_height // 2 - box_h // 2 + 2, 
+             num_x + box_w - 2, yy + bar_height // 2 + box_h // 2 + 2],
+            radius=6,
+            fill=(0, 0, 0, 40),
+            outline=None
+        )
+        
+        # 背景框
+        dr.rounded_rectangle(
+            [num_x - 4, yy + bar_height // 2 - box_h // 2, 
+             num_x + box_w - 4, yy + bar_height // 2 + box_h // 2],
+            radius=6,
+            fill=(255, 255, 255, 200),
+            outline=LINE_COLOR,
+            width=2
+        )
+        
+        # 数值文字
+        draw_text.draw(num_x + box_w // 2 - 4, yy + bar_height // 2, font_size, num_str, TEXT_COLOR, 'mm')
 
 
 def draw_analysis(stats: dict[str, dict[str, float]]):
