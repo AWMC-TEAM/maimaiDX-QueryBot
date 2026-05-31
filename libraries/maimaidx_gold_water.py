@@ -197,7 +197,7 @@ async def _draw_gold_water_image(
     if userinfo.plate:
         plate = Image.open(platedir / f'{userinfo.plate}.png').resize((800, 130))
     else:
-        plate = Image.open(_tp('UI_Plate_300501.png')).resize((800, 130))
+        plate = Image.open(_tp('UI_Plate_550101.png')).resize((800, 130))
     im.alpha_composite(plate, (left, 60))
     icon = Image.open(_tp('UI_Icon_309503.png')).resize((120, 120))
     im.alpha_composite(icon, (left + 5, 65))

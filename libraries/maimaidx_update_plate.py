@@ -6,13 +6,16 @@ import aiofiles
 from .image import tricolor_gradient
 from .maimaidx_best_50 import *
 from .maimaidx_music import Music, mai
+from .maimaidx_theme import pic
 
 
 async def update_rating_table() -> str:
     """更新定数表"""
     try:
         ratingdir.mkdir(parents=True, exist_ok=True)
-        dx = Image.open(pic('DX.png')).convert('RGBA').resize((44, 16))
+        from .maimaidx_theme import Theme, resolve_theme_path
+        _theme = Theme.get_default().value
+        dx = Image.open(resolve_theme_path(maimaidir, _theme, 'DX.png')).convert('RGBA').resize((44, 16))
         diff = [Image.new('RGBA', (75, 16), color) for color in ScoreBaseImage.bg_color]
         sbi = ScoreBaseImage if maiconfig.saveinmem else ScoreBaseImage()
         atime = 0
@@ -62,8 +65,6 @@ async def update_rating_table() -> str:
             dr = ImageDraw.Draw(im)
             sy = DrawText(dr, SIYUAN)
             ts = DrawText(dr, TBFONT)
-            from .maimaidx_theme import Theme, resolve_theme_path
-            _theme = Theme.get_default().value
             _design = resolve_theme_path(maimaidir, _theme, 'design.png')
             if _design.exists():
                 im.alpha_composite(Image.open(_design), (200, height - 113))
@@ -79,7 +80,7 @@ async def update_rating_table() -> str:
             for _lv in lvlist: 
                 x = 160
                 y += 20
-                _chara_lv = pic('UI_CMN_Chara_Level_S_01.png')
+                _chara_lv = resolve_theme_path(maimaidir, _theme, 'UI_CMN_Chara_Level_S_01.png')
                 if _chara_lv.exists():
                     im.alpha_composite(
                         Image.open(_chara_lv).resize((80, 80)), (50, y + 80)
@@ -126,6 +127,8 @@ async def update_plate_table() -> str:
         for _ in list(reversed(levelList)):
             rlv[_] = []
         sbi = ScoreBaseImage if maiconfig.saveinmem else ScoreBaseImage()
+        from .maimaidx_theme import Theme as _Theme, resolve_theme_path as _rtp
+        _t = _Theme.get_default().value
         for _v in version:
             if _v in platecn:
                 _v = platecn[_v]
@@ -176,8 +179,6 @@ async def update_plate_table() -> str:
             dr = ImageDraw.Draw(im)
             ts = DrawText(dr, TBFONT)
             sy = DrawText(dr, SIYUAN)
-            from .maimaidx_theme import Theme as _Theme, resolve_theme_path as _rtp
-            _t = _Theme.get_default().value
             _des = _rtp(maimaidir, _t, 'design.png')
             if _des.exists():
                 im.alpha_composite(Image.open(_des), (200, height - 113))
@@ -197,7 +198,7 @@ async def update_plate_table() -> str:
                     ralv[r].sort(key=lambda x: x.ds[3], reverse=True)
                 if ralv[r]:
                     y += 15
-                    _chara_lv2 = pic('UI_CMN_Chara_Level_S_01.png')
+                    _chara_lv2 = _rtp(maimaidir, _t, 'UI_CMN_Chara_Level_S_01.png')
                     if _chara_lv2.exists():
                         im.alpha_composite(
                             Image.open(_chara_lv2), (65, y + 115)

@@ -432,7 +432,7 @@ class DrawBest(ScoreBaseImage):
         if self.plate:
             plate = Image.open(platedir / f'{self.plate}.png').resize((800, 130))
         else:
-            plate = Image.open(_tp('UI_Plate_300501.png')).resize((800, 130))
+            plate = Image.open(_tp('UI_Plate_550101.png')).resize((800, 130))
         self._im.alpha_composite(plate, (300, 60))
         icon = Image.open(_tp('UI_Icon_309503.png')).resize((120, 120))
         self._im.alpha_composite(icon, (305, 65))
@@ -562,7 +562,7 @@ class DrawCoopB50(ScoreBaseImage):
         rating = Image.open(_tp('UI_CMN_Shougou_Rainbow.png')).resize((270, 27))
 
         self._im.alpha_composite(logo, (14, 60))
-        plate = Image.open(_tp('UI_Plate_300501.png')).resize((800, 130))
+        plate = Image.open(_tp('UI_Plate_550101.png')).resize((800, 130))
         self._im.alpha_composite(plate, (300, 60))
         icon = Image.open(_tp('UI_Icon_309503.png')).resize((120, 120))
         self._im.alpha_composite(icon, (305, 65))

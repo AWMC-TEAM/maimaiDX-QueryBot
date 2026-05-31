@@ -86,7 +86,7 @@ async def _draw_b50_style_info_block(userinfo: UserInfo, qqid: Optional[int]) ->
     if userinfo.plate and (platedir / f'{userinfo.plate}.png').exists():
         plate = Image.open(platedir / f'{userinfo.plate}.png').resize((800, 130)).convert('RGBA')
     else:
-        plate = Image.open(_tp('UI_Plate_300501.png')).resize((800, 130)).convert('RGBA')
+        plate = Image.open(_tp('UI_Plate_550101.png')).resize((800, 130)).convert('RGBA')
     im.paste(plate, (left, 60))
     icon = Image.open(_tp('UI_Icon_309503.png')).resize((120, 120)).convert('RGBA')
     im.paste(icon, (left + 5, 65), icon)

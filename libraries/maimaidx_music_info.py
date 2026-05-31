@@ -405,20 +405,22 @@ async def draw_music_info(
     except Exception:
         calc = False
 
-    im = Image.open(pic('song_bg.png')).convert('RGBA')
+    from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
+    _theme = _Th.get_default().value
+    im = Image.open(_rtp(maimaidir, _theme, 'song_bg.png')).convert('RGBA')
     dr = ImageDraw.Draw(im)
     mr = DrawText(dr, SIYUAN)
     tb = DrawText(dr, TBFONT)
 
     default_color = (124, 130, 255, 255)
 
-    im.alpha_composite(Image.open(pic('logo.png')).resize((249, 120)), (65, 25))
+    im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'logo.png')).resize((249, 120)), (65, 25))
     if music.basic_info.is_new:
-        im.alpha_composite(Image.open(pic('UI_CMN_TabTitle_NewSong.png')).resize((249, 120)), (940, 100))
+        im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'UI_CMN_TabTitle_NewSong.png')).resize((249, 120)), (940, 100))
     songbg = Image.open(music_picture(music.id)).resize((280, 280))
     im.alpha_composite(rounded_corners(songbg, 17, (True, False, False, True)), (110, 180))
-    im.alpha_composite(Image.open(pic(f'{music.basic_info.version}.png')).resize((182, 90)), (800, 370))
-    im.alpha_composite(Image.open(pic(f'{music.type}.png')).resize((80, 30)), (410, 375))
+    im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'{music.basic_info.version}.png')).resize((182, 90)), (800, 370))
+    im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'{music.type}.png')).resize((80, 30)), (410, 375))
 
     title = music.title
     if coloumWidth(title) > 40:
@@ -513,18 +515,20 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
                 raise MusicNotPlayError
             dev = False
 
-        im = Image.open(pic('info_bg.png')).convert('RGBA')
+        from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
+        _theme = _Th.get_default().value
+        im = Image.open(_rtp(maimaidir, _theme, 'info_bg.png')).convert('RGBA')
     
         dr = ImageDraw.Draw(im)
         tb = DrawText(dr, TBFONT)
         mr = DrawText(dr, SIYUAN)
 
-        im.alpha_composite(Image.open(pic('logo.png')).resize((249, 120)), (0, 34))
+        im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'logo.png')).resize((249, 120)), (0, 34))
         cover = Image.open(music_picture(music_id))
         im.alpha_composite(cover.resize((300, 300)), (100, 260))
-        im.alpha_composite(Image.open(pic(f'info-{category[music.basic_info.genre]}.png')), (100, 260))
-        im.alpha_composite(Image.open(pic(f'{music.basic_info.version}.png')).resize((183, 90)), (295, 205))
-        im.alpha_composite(Image.open(pic(f'{music.type}.png')).resize((55, 20)), (350, 560))
+        im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'info-{category[music.basic_info.genre]}.png')), (100, 260))
+        im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'{music.basic_info.version}.png')).resize((183, 90)), (295, 205))
+        im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'{music.type}.png')).resize((55, 20)), (350, 560))
         
         color = (124, 129, 255, 255)
         artist = music.basic_info.artist
@@ -540,9 +544,9 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
 
         y = 100
         for num, info in enumerate(diff):
-            im.alpha_composite(Image.open(pic(f'd-{num}.png')), (650, 235 + y * num))
+            im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'd-{num}.png')), (650, 235 + y * num))
             if info:
-                im.alpha_composite(Image.open(pic('ra-dx.png')), (850, 272 + y * num))
+                im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'ra-dx.png')), (850, 272 + y * num))
                 if dev:
                     dxscore = info.dxScore
                     _dxscore = sum(music.charts[num].notes) * 3
@@ -550,28 +554,27 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
                     rating, rate = info.ra, score_Rank_l[info.rate]
                     if dxnum != 0:
                         im.alpha_composite(
-                            Image.open(pic(f'UI_GAM_Gauge_DXScoreIcon_0{dxnum}.png')).resize((32, 19)), 
+                            Image.open(_rtp(maimaidir, _theme, f'UI_GAM_Gauge_DXScoreIcon_0{dxnum}.png')).resize((32, 19)), 
                             (851, 296 + y * num)
                         )
                     tb.draw(916, 304 + y * num, 13, f'{dxscore}/{_dxscore}', color, 'mm')
                 else:
                     rating, rate = computeRa(music.ds[num], info.achievements, israte=True)
                 
-                im.alpha_composite(Image.open(pic('fcfs.png')), (965, 265 + y * num))
+                im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'fcfs.png')), (965, 265 + y * num))
                 if info.fc:
                     im.alpha_composite(
-                        Image.open(pic(f'UI_CHR_PlayBonus_{fcl[info.fc]}.png')).resize((65, 65)), 
+                        Image.open(_rtp(maimaidir, _theme, f'UI_CHR_PlayBonus_{fcl[info.fc]}.png')).resize((65, 65)), 
                         (960, 261 + y * num)
                     )
                 if info.fs:
                     im.alpha_composite(
-                        Image.open(pic(f'UI_CHR_PlayBonus_{fsl[info.fs]}.png')).resize((65, 65)), 
+                        Image.open(_rtp(maimaidir, _theme, f'UI_CHR_PlayBonus_{fsl[info.fs]}.png')).resize((65, 65)), 
                         (1025, 261 + y * num)
                     )
-                im.alpha_composite(Image.open(pic('ra.png')), (1350, 405 + y * num))
-                from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
+                im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'ra.png')), (1350, 405 + y * num))
                 im.alpha_composite(
-                    Image.open(_rtp(maimaidir, _Th.get_default().value, f'UI_TTR_Rank_{rate}.png')).resize((100, 45)), 
+                    Image.open(_rtp(maimaidir, _theme, f'UI_TTR_Rank_{rate}.png')).resize((100, 45)), 
                     (737, 272 + y * num)
                 )
 
@@ -692,9 +695,11 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
         lvlist = mai.total_level_data[rating]
         lvnum = sum([len(v) for v in lvlist.values()])
         
-        rating_bg = Image.open(pic('rating_bg.png'))
-        unfinished_bg = Image.open(pic('unfinished_bg.png'))
-        complete_bg = Image.open(pic('complete_bg.png'))
+        from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
+        _theme = _Th.get_default().value
+        rating_bg = Image.open(_rtp(maimaidir, _theme, 'rating_bg.png'))
+        unfinished_bg = Image.open(_rtp(maimaidir, _theme, 'unfinished_bg.png'))
+        complete_bg = Image.open(_rtp(maimaidir, _theme, 'complete_bg.png'))
         
         bg = ratingdir / f'{rating}.png'
         
@@ -732,8 +737,7 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
                         score = fromid[music.id][music.lv]['achievements']
                         achievements_fc_list.append(score)
                         rate = computeRa(music.ds, score, onlyrate=True)
-                        from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
-                        rank = Image.open(_rtp(maimaidir, _Th.get_default().value, f'UI_TTR_Rank_{rate}.png')).resize((78, 35))
+                        rank = Image.open(_rtp(maimaidir, _theme, f'UI_TTR_Rank_{rate}.png')).resize((78, 35))
                         if score >= 100:
                             im.alpha_composite(complete_bg, (x + 2, y - 18))
                         else:
@@ -742,15 +746,15 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
                         continue
                     if _fc := fromid[music.id][music.lv]['fc']:
                         achievements_fc_list.append(combo_rank.index(_fc))
-                        fc = Image.open(pic(f'UI_MSS_MBase_Icon_{fcl[_fc]}.png')).resize((50, 50))
+                        fc = Image.open(_rtp(maimaidir, _theme, f'UI_MSS_MBase_Icon_{fcl[_fc]}.png')).resize((50, 50))
                         im.alpha_composite(complete_bg, (x + 2, y - 18))
                         im.alpha_composite(fc, (x + 15, y - 12))
 
         if len(achievements_fc_list) == lvnum:
             r = calc_achievements_fc(achievements_fc_list, lvnum, isfc)
             if r != -1:
-                pic = fcl[combo_rank[r]] if isfc else score_Rank_l[score_Rank[-6:][r]]
-                im.alpha_composite(Image.open(pic(f'UI_MSS_Allclear_Icon_{pic}.png')), (40, 40))
+                pic_name = fcl[combo_rank[r]] if isfc else score_Rank_l[score_Rank[-6:][r]]
+                im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'UI_MSS_Allclear_Icon_{pic_name}.png')), (40, 40))
         
         msg = MessageSegment.image(image_to_base64(im))
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
@@ -816,16 +820,18 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                 continue
             ra[_d.table_level[3]][str(_d.song_id)][_d.level_index] = _d
         
-        finished_bg = [Image.open(pic(f't-{_}.png')) for _ in range(4)]
-        unfinished_bg = Image.open(pic('unfinished_bg_2.png'))
-        complete_bg = Image.open(pic('complete_bg_2.png'))
+        from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
+        _theme = _Th.get_default().value
+        finished_bg = [Image.open(_rtp(maimaidir, _theme, f't-{_}.png')) for _ in range(4)]
+        unfinished_bg = Image.open(_rtp(maimaidir, _theme, 'unfinished_bg_2.png'))
+        complete_bg = Image.open(_rtp(maimaidir, _theme, 'complete_bg_2.png'))
 
         im = Image.open(platedir / f'{version}.png')
         draw = ImageDraw.Draw(im)
         tr = DrawText(draw, TBFONT)
         mr = DrawText(draw, SIYUAN)
         
-        im.alpha_composite(Image.open(pic('plate_num.png')), (185, 20))
+        im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'plate_num.png')), (185, 20))
         im.alpha_composite(
             Image.open(platedir / f'{version}{"極" if plan == "极" else plan}.png').resize((1000, 161)), 
             (200, 35)
@@ -865,7 +871,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                         if play is None or not play.fc: continue
                         if n == 3:
                             im.alpha_composite(complete_bg, (x, y))
-                            fc = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((75, 75))
+                            fc = Image.open(_rtp(maimaidir, _theme, f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((75, 75))
                             im.alpha_composite(fc, (x + 13, y + 3))
                         lv[n].add(play.song_id)
                         f.append(n)
@@ -887,8 +893,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                         if n == 3:
                             im.alpha_composite(complete_bg if play.achievements >= 100 else unfinished_bg, (x, y))
                             rate = computeRa(play.ds, play.achievements, onlyrate=True)
-                            from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
-                            rank = Image.open(_rtp(maimaidir, _Th.get_default().value, f'UI_TTR_Rank_{rate}.png')).resize((102, 46))
+                            rank = Image.open(_rtp(maimaidir, _theme, f'UI_TTR_Rank_{rate}.png')).resize((102, 46))
                             im.alpha_composite(rank, (x - 1, y + 15))
                         lv[n].add(play.song_id)
                         f.append(n)
@@ -910,7 +915,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                         if play is None or play.fc not in _fc: continue
                         if n == 3:
                             im.alpha_composite(complete_bg, (x, y))
-                            ap = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((75, 75))
+                            ap = Image.open(_rtp(maimaidir, _theme, f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((75, 75))
                             im.alpha_composite(ap, (x + 13, y + 3))
                         lv[n].add(play.song_id)
                         f.append(n)
@@ -933,7 +938,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                             continue
                         if n == 3:
                             im.alpha_composite(complete_bg, (x, y))
-                            fsd = Image.open(pic(f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).resize((75, 75))
+                            fsd = Image.open(_rtp(maimaidir, _theme, f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).resize((75, 75))
                             im.alpha_composite(fsd, (x + 13, y + 3))
                         lv[n].add(play.song_id)
                         f.append(n)
