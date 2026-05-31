@@ -115,9 +115,10 @@ platedir: Path = static / 'mai' / 'plate'
 
 
 # 字体路径
-SIYUAN: Path =  static / 'ResourceHanRoundedCN-Bold.ttf'
-SHANGGUMONO: Path = static / 'ShangguMonoSC-Regular.otf'
-TBFONT: Path = static / 'Torus SemiBold.otf'
+fontdir: Path = static / 'font'
+SIYUAN: Path = fontdir / 'ResourceHanRoundedCN-Bold.ttf'
+SHANGGUMONO: Path = fontdir / 'ShangguMonoSC-Regular.otf'
+TBFONT: Path = fontdir / 'Torus SemiBold.otf'
 
 
 # 定义（全插件统一，以下四者互不影响）:
