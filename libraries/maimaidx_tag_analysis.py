@@ -10,7 +10,7 @@ from typing import Dict, List, Tuple
 
 from PIL import Image, ImageDraw
 
-from ..config import SIYUAN, TAG_PILL_COLORS, maiconfig, static
+from ..config import SIYUAN, TAG_PILL_COLORS, footer_generated, maiconfig, static
 from .image import DrawText, generate_frosted_card, image_to_base64
 
 CONFIG_TAGS_ORDER: List[str] = [
@@ -20,16 +20,23 @@ CONFIG_TAGS_ORDER: List[str] = [
 DIFFICULTY_TAGS_ORDER: List[str] = ['正常谱', '水', '诈称谱']
 EVAL_TAGS_ORDER: List[str] = ['体力谱', '底力谱', '星星谱', '键盘谱', '高物量']
 
-# 与插件主题一致的主色
 ACCENT = (124, 129, 255, 255)
-TEXT = (60, 65, 120, 255)
-SUBTEXT = (100, 105, 160, 255)
-GRID = (124, 129, 255, 45)
-TRACK = (255, 255, 255, 90)
+TEXT = (45, 50, 95, 255)
+SUBTEXT = (90, 95, 140, 255)
+GRID = (124, 129, 255, 70)
+GRID_AXIS = (124, 129, 255, 110)
+
+# 条形图：不透明高饱和色 + 白底轨道，避免在毛玻璃上发灰
+DIFF_BAR_COLORS: Dict[str, Tuple[int, int, int]] = {
+    '正常谱': (100, 190, 120),
+    '水': (140, 110, 210),
+    '诈称谱': (240, 120, 140),
+}
 
 RENDER_SCALE = 2
 FONT_SIZE_TITLE = 18
-FONT_SIZE_TEXT = 13
+FONT_SIZE_TEXT = 14
+FONT_SIZE_BAR_VAL = 15
 
 GENWAN_FONT_NAMES = [
     'GenSenRounded-TW-Regular.ttf', 'GenSenRounded.ttf',
@@ -42,11 +49,11 @@ PANEL_GAP = 20
 SIDE_MARGIN = 24
 
 
-def _section_colors(name: str) -> Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int]]:
+def _section_style(name: str) -> Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int]]:
     rgb = TAG_PILL_COLORS.get(name, (173, 216, 230))
-    fill = (*rgb, 130)
-    line = (*tuple(max(0, c - 40) for c in rgb), 255)
-    return fill, line
+    fill = (*rgb, 175)
+    stroke = (*tuple(min(255, c + 25) for c in rgb), 255)
+    return fill, stroke
 
 
 def _resolve_bg_path() -> Path | None:
@@ -94,7 +101,8 @@ def _font_path_for_analysis() -> str:
 
 
 def _draw_panel(im: Image.Image, x: int, y: int, w: int, h: int) -> Image.Image:
-    return generate_frosted_card(im, (x, y, x + w, y + h), alpha=0.32)
+    # 略提高不透明度，图表底色更干净
+    return generate_frosted_card(im, (x, y, x + w, y + h), alpha=0.52)
 
 
 def _draw_radar(
@@ -129,7 +137,7 @@ def _draw_radar(
         angle = -math.pi / 2 + 2 * math.pi * i / n
         dr.line(
             [(cx, cy), (cx + radius * math.cos(angle), cy + radius * math.sin(angle))],
-            fill=GRID,
+            fill=GRID_AXIS,
             width=1,
         )
 
@@ -141,24 +149,27 @@ def _draw_radar(
 
     if len(pts) >= 3:
         dr.polygon(pts, fill=fill_color)
-        dr.line(pts + [pts[0]], fill=line_color, width=2)
+        dr.line(pts + [pts[0]], fill=line_color, width=3)
         for px, py in pts:
-            dr.ellipse([px - 3, py - 3, px + 3, py + 3], fill=line_color, outline=(255, 255, 255, 200))
+            dr.ellipse([px - 4, py - 4, px + 4, py + 4], fill=line_color, outline=(255, 255, 255, 255))
 
     draw_text.draw(cx, title_y, title_size, title, ACCENT, 'mm', 2, (255, 255, 255, 255))
 
-    label_r = radius + 38
+    label_r = radius + 40
     for i in range(n):
         angle = -math.pi / 2 + 2 * math.pi * i / n
         lx = cx + label_r * math.cos(angle)
         ly = cy + label_r * math.sin(angle)
-        draw_text.draw(int(lx), int(ly), font_size, labels[i], TEXT, 'mm')
+        draw_text.draw(int(lx), int(ly), font_size, labels[i], TEXT, 'mm', 1, (255, 255, 255, 220))
 
     axis_angle = -math.pi / 2
     for frac, r_val in ((1 / 3, radius // 3), (2 / 3, 2 * radius // 3), (1, radius)):
-        tx = cx + (r_val + 14) * math.cos(axis_angle)
-        ty = cy + (r_val + 14) * math.sin(axis_angle)
-        draw_text.draw(int(tx), int(ty), max(10, font_size - 2), f'{frac * 100:.0f}%', SUBTEXT, 'mm')
+        tx = cx + (r_val + 16) * math.cos(axis_angle)
+        ty = cy + (r_val + 16) * math.sin(axis_angle)
+        draw_text.draw(
+            int(tx), int(ty), max(11, font_size - 1),
+            f'{frac * 100:.0f}%', SUBTEXT, 'mm', 1, (255, 255, 255, 200),
+        )
 
 
 def _draw_bar_chart(
@@ -175,8 +186,7 @@ def _draw_bar_chart(
     title_y: int,
     font_size: int,
     title_size: int,
-    fill_color: Tuple[int, int, int, int],
-    line_color: Tuple[int, int, int, int],
+    val_font_size: int,
     max_val: int | None = None,
 ) -> None:
     if not labels:
@@ -184,37 +194,67 @@ def _draw_bar_chart(
     max_val = max_val or max(values or [1]) or 1
     draw_text.draw(x + width // 2, title_y, title_size, title, ACCENT, 'mm', 2, (255, 255, 255, 255))
 
-    label_w = 88
-    bar_x = x + label_w + 12
-    num_w = 48
-    bar_max_w = width - label_w - 12 - num_w - 16
+    label_w = 92
+    bar_x = x + label_w + 10
+    badge_w = 52
+    bar_max_w = width - label_w - 10 - badge_w - 12
+    pad = 4
 
-    for i, (label, val) in enumerate(zip(labels, values)):
-        yy = y + i * (bar_height + gap)
-        draw_text.draw(x, yy + bar_height // 2, font_size, label, TEXT, 'lm')
+    for label, val in zip(labels, values):
+        yy = y
+        rgb = DIFF_BAR_COLORS.get(label, TAG_PILL_COLORS.get('难度', (200, 162, 220)))
+        fill = (*rgb, 255)
+        stroke = (*tuple(max(0, c - 35) for c in rgb), 255)
+
+        draw_text.draw(x, yy + bar_height // 2, font_size, label, TEXT, 'lm', 1, (255, 255, 255, 220))
+
+        # 白底轨道 + 主题色描边
         dr.rounded_rectangle(
-            [bar_x, yy + 2, bar_x + bar_max_w, yy + bar_height - 2],
-            radius=6,
-            fill=TRACK,
-            outline=GRID,
-            width=1,
+            [bar_x, yy + pad, bar_x + bar_max_w, yy + bar_height - pad],
+            radius=10,
+            fill=(255, 255, 255, 245),
+            outline=(*ACCENT[:3], 140),
+            width=2,
         )
-        bar_w = int(val / max_val * bar_max_w) if max_val else 0
+
+        ratio = val / max_val if max_val else 0
+        bar_w = max(int(bar_max_w * ratio), 12 if val > 0 else 0)
         if bar_w > 0:
             dr.rounded_rectangle(
-                [bar_x, yy + 2, bar_x + bar_w, yy + bar_height - 2],
-                radius=6,
-                fill=fill_color,
-                outline=line_color,
+                [bar_x + 2, yy + pad + 2, bar_x + bar_w - 2, yy + bar_height - pad - 2],
+                radius=8,
+                fill=fill,
+                outline=stroke,
                 width=1,
             )
-        draw_text.draw(bar_x + bar_max_w + 8, yy + bar_height // 2, font_size, str(val), SUBTEXT, 'lm')
+            if bar_w > 36:
+                draw_text.draw(
+                    bar_x + bar_w // 2, yy + bar_height // 2, val_font_size,
+                    str(val), (255, 255, 255, 255), 'mm', 1, (*stroke[:3], 180),
+                )
+
+        # 右侧数值徽章
+        badge_x = bar_x + bar_max_w + 8
+        dr.rounded_rectangle(
+            [badge_x, yy + pad, badge_x + badge_w, yy + bar_height - pad],
+            radius=8,
+            fill=fill,
+            outline=stroke,
+            width=1,
+        )
+        draw_text.draw(
+            badge_x + badge_w // 2, yy + bar_height // 2, val_font_size,
+            str(val), (255, 255, 255, 255), 'mm', 1, (*stroke[:3], 200),
+        )
+
+        y += bar_height + gap
 
 
 def draw_analysis(stats: dict[str, dict[str, float]]) -> Image.Image:
     s = RENDER_SCALE
     title_size = FONT_SIZE_TITLE * s
     text_size = FONT_SIZE_TEXT * s
+    val_size = FONT_SIZE_BAR_VAL * s
     title_y = 28 * s
     content_top = title_y + title_size + 24 * s
     footer_h = 32 * s
@@ -237,11 +277,10 @@ def draw_analysis(stats: dict[str, dict[str, float]]) -> Image.Image:
     diff = stats.get('难度') or {}
     ev = stats.get('评价') or {}
 
-    cfg_fill, cfg_line = _section_colors('配置')
-    diff_fill, diff_line = _section_colors('难度')
-    ev_fill, ev_line = _section_colors('评价')
+    cfg_fill, cfg_line = _section_style('配置')
+    ev_fill, ev_line = _section_style('评价')
 
-    r = (min(PANEL_W, PANEL_H) // 2 - 52) * s
+    r = (min(PANEL_W, PANEL_H) // 2 - 54) * s
     cy = content_top + panel_h // 2
 
     cx1 = side + panel_w // 2
@@ -254,16 +293,16 @@ def draw_analysis(stats: dict[str, dict[str, float]]) -> Image.Image:
 
     x2 = side + panel_w + gap
     diff_pairs = sorted([(t, diff.get(t, 0)) for t in DIFFICULTY_TAGS_ORDER], key=lambda x: -x[1])
-    bar_h = 32 * s
-    bar_gap = 14 * s
+    bar_h = 44 * s
+    bar_gap = 22 * s
     n_bars = len(diff_pairs)
     bars_total_h = n_bars * bar_h + (n_bars - 1) * bar_gap
-    y2 = content_top + (panel_h - bars_total_h) // 2 + title_size
+    y2 = content_top + (panel_h - bars_total_h) // 2 + title_size // 2
     _draw_bar_chart(
-        dr, x2 + 16 * s, y2, panel_w - 32 * s, bar_h, bar_gap,
+        dr, x2 + 20 * s, y2, panel_w - 40 * s, bar_h, bar_gap,
         [p[0] for p in diff_pairs], [p[1] for p in diff_pairs],
-        draw_text, '难度标签', title_y, text_size, title_size,
-        diff_fill, diff_line, max_val=max((p[1] for p in diff_pairs), default=1),
+        draw_text, '难度标签', title_y, text_size, title_size, val_size,
+        max_val=max((p[1] for p in diff_pairs), default=1),
     )
 
     cx3 = side + (panel_w + gap) * 2 + panel_w // 2
@@ -276,7 +315,7 @@ def draw_analysis(stats: dict[str, dict[str, float]]) -> Image.Image:
 
     draw_text.draw(
         total_w // 2, total_h - footer_h // 2, text_size,
-        f'Generated by {maiconfig.botName} BOT', SUBTEXT, 'mm',
+        footer_generated(), SUBTEXT, 'mm',
     )
 
     out_w = SIDE_MARGIN * 2 + PANEL_W * 3 + PANEL_GAP * 2
