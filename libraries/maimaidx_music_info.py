@@ -558,7 +558,7 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
                             Image.open(pic(f'UI_GAM_Gauge_DXScoreIcon_0{dxnum}.png')).resize((32, 19)), 
                             (851, 296 + y * num)
                         )
-                    tb.draw(916, 304 + y * num, 13, f'{dxscore}/{_dxscore}', color, 'mm')
+                    tb.draw(916, 304 + y * num, 11, f'{dxscore}/{_dxscore}', color, 'mm')
                 else:
                     rating, rate = computeRa(music.ds[num], info.achievements, israte=True)
                 
@@ -580,7 +580,7 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
 
                 tb.draw(500, 295 + y * num, 30, f'{info.achievements:.4f}%', color, 'lm')
                 tb.draw(685, 248 + y * num, 20, music.ds[num], anchor='mm')
-                tb.draw(915, 283 + y * num, 18, rating, color, 'mm')
+                tb.draw(915, 283 + y * num, 15, rating, color, 'mm')
             else:
                 tb.draw(685, 248 + y * num, 25, music.ds[num], anchor='mm')
                 mr.draw(800, 302 + y * num, 30, '未游玩', color, 'mm')
