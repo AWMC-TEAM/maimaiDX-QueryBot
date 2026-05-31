@@ -53,17 +53,44 @@ def resolve_level_plate_plan(plan_cn: str) -> str:
     return LEVEL_PLATE_PLAN[key]
 
 
+def _fc_plan_index(fc: Optional[str]) -> int:
+    if not fc:
+        return -1
+    fc = fc.lower()
+    if fc in combo_rank:
+        return combo_rank.index(fc)
+    return -1
+
+
+def _fs_plan_index(fs: Optional[str]) -> int:
+    """查分器 fs 档位索引；sync 低于 fs，未知值视为未达标。"""
+    if not fs:
+        return -1
+    fs = fs.lower()
+    if fs == 'sync':
+        return -1
+    if fs in sync_rank:
+        return sync_rank.index(fs)
+    if fs in sync_rank_p:
+        return sync_rank_p.index(fs)
+    return -1
+
+
+def _fc_meets_plan(fc: Optional[str], plan_value: int) -> bool:
+    return _fc_plan_index(fc) >= plan_value
+
+
+def _fs_meets_plan(fs: Optional[str], plan_value: int) -> bool:
+    return _fs_plan_index(fs) >= plan_value
+
+
 def _level_plan_completed(plannum: int, plan_value, rec) -> bool:
     if plannum == 0:
         return float(rec.achievements) >= float(plan_value)
     if plannum == 1:
-        return bool(rec.fc and combo_rank.index(rec.fc) >= plan_value)
+        return _fc_meets_plan(rec.fc, plan_value)
     if plannum == 2:
-        if not rec.fs:
-            return False
-        if rec.fs in sync_rank:
-            return sync_rank.index(rec.fs) >= plan_value
-        return rec.fs in sync_rank_p and sync_rank_p.index(rec.fs) >= plan_value
+        return _fs_meets_plan(rec.fs, plan_value)
     return False
 
 
@@ -766,13 +793,10 @@ async def level_process_data(
         def is_completed(plannum: int, _d: Union[PlayInfoDefault, PlayInfoDev]) -> bool:
             if plannum == 0:
                 return _d.achievements >= plan_value
-            elif plannum == 1:
-                return bool(_d.fc and combo_rank.index(_d.fc) >= plan_value)
-            elif plannum == 2:
-                return bool(_d.fs and (
-                    sync_rank.index(_d.fs) >= plan_value 
-                    if _d.fs in sync_rank else sync_rank_p.index(_d.fs) >= plan_value
-                ))
+            if plannum == 1:
+                return _fc_meets_plan(_d.fc, plan_value)
+            if plannum == 2:
+                return _fs_meets_plan(_d.fs, plan_value)
             return False
         
         for _d in obj:
