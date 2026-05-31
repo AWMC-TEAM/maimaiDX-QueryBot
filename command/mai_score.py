@@ -154,6 +154,11 @@ def _build_footer(
             pass
     if unsupported_feature and qqid is not None and source == '落雪':
         lines.append(f'⚠️ {unsupported_feature}依赖水鱼独有数据，落雪暂不支持，已用水鱼生成')
+    from ..libraries.maimaidx_b50_warnings import pop_b50_warning_footer
+    warning = pop_b50_warning_footer()
+    if warning:
+        lines.append('')
+        lines.append(warning)
     lines.append(format_summary(total, get_fetch()))
     return '\n' + '\n'.join(lines)
 
@@ -167,14 +172,11 @@ async def _finish_score(
     unsupported_feature: Optional[str] = None,
 ):
     """统一成绩图收尾：计时执行 coro，成功追加「数据源 + 耗时」文案，错误原样发送。"""
-    import time as _t
-    from ..libraries.maimaidx_timing import reset
-    reset()
-    t0 = _t.perf_counter()
-    result = await coro
-    total = _t.perf_counter() - t0
+    from ..libraries.maimaidx_timing import run_timed
+    result, total = await run_timed(coro)
     if isinstance(result, str):
         await matcher.finish(result, reply_message=True)
+        return
     footer = _build_footer(
         qqid, total,
         forced_source=forced_source,
@@ -243,7 +245,8 @@ async def _coop_resolve_nicks_and_finish(event, at_qq, cmd, generator):
             nick_b = str(at_qq)
     else:
         nick_b = str(at_qq)
-    await cmd.finish(await generator(event.user_id, at_qq, nick_a, nick_b), reply_message=True)
+    from ..libraries.maimaidx_timing import finish_timed
+    await finish_timed(cmd, generator(event.user_id, at_qq, nick_a, nick_b))
 
 
 @coop_b50.handle()
@@ -1254,15 +1257,18 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'tag_analysis'):
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
-    try:
-        userinfo = await maiApi.query_user_b50(qqid=qqid)
-    except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
-        await tag_analysis.finish(str(e), reply_message=True)
-        return
-    stats = get_b50_tag_stats(userinfo)
-    im = draw_analysis(stats)
-    msg = MessageSegment.image(image_to_message_segment(im))
-    await tag_analysis.finish(msg, reply_message=True)
+
+    async def _gen():
+        try:
+            userinfo = await maiApi.query_user_b50(qqid=qqid)
+        except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
+            return str(e)
+        stats = get_b50_tag_stats(userinfo)
+        im = draw_analysis(stats)
+        return MessageSegment.image(image_to_message_segment(im))
+
+    from ..libraries.maimaidx_timing import finish_timed
+    await finish_timed(tag_analysis, _gen())
 
 
 @minfo.handle()
@@ -1294,8 +1300,8 @@ async def _(
         else:
             music_id = str(aliases[0].SongID)
     
-    pic = await draw_music_play_data(qqid, music_id)
-    await minfo.finish(pic, reply_message=True)
+    from ..libraries.maimaidx_timing import finish_timed
+    await finish_timed(minfo, draw_music_play_data(qqid, music_id))
 
 
 @ginfo.handle()
@@ -1366,7 +1372,8 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
             TOUCH       1 / 2.5  / 5
             BREAK       5 / 12.5 / 25 (外加200落)
         ''').strip()
-        await score.finish(MessageSegment.image(text_to_bytes_io(msg)), reply_message=True)
+        from ..libraries.maimaidx_timing import finish_timed_sync
+        await finish_timed_sync(score, lambda: MessageSegment.image(text_to_bytes_io(msg)))
     else:
         try:
             result = re.search(r'([绿黄红紫白])\s?([0-9]+)', _args)

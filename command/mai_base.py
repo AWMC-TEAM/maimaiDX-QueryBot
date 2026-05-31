@@ -7,6 +7,7 @@ from nonebot.permission import SUPERUSER
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_music import feature_manager
 from ..libraries.maimaidx_player_score import *
+from ..libraries.maimaidx_timing import finish_timed, finish_timed_sync
 from ..libraries.maimaidx_update_plate import *
 from ..libraries.tool import qqhash
 
@@ -31,11 +32,9 @@ async def _(event: PrivateMessageEvent):
 
 @maimaidxhelp.handle()
 async def _():
-    await maimaidxhelp.finish(
-        MessageSegment.image(
-            image_to_base64(Image.open(Root / 'maimaidxhelp.png'))
-        ), 
-        reply_message=True
+    await finish_timed_sync(
+        maimaidxhelp,
+        lambda: MessageSegment.image(image_to_base64(Image.open(Root / 'maimaidxhelp.png'))),
     )
 
 
@@ -89,33 +88,36 @@ async def _(event: MessageEvent):
 async def _(event: MessageEvent, match = RegexMatched()):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'query'):
         raise IgnoredException('功能已禁用')
-    music = mai.total_list.random()
-    user = None
-    if (point := match.group(1)) and ('推分' in point or '上分' in point or '加分' in point):
-        try:
-            user = await maiApi.query_user_b50(qqid=event.user_id)
-            r = random.randint(0, 1)
-            _ra = 0
-            ignore = []
-            # 查分器 sd=B35、dx=B15（与谱面类型 SD/DX 无关）
-            if r == 0:
-                if b35 := user.charts.sd:
-                    ignore = [m.song_id for m in b35 if m.achievements < 100.5]
-                    _ra = b35[-1].ra
-            else:
-                if b15 := user.charts.dx:
-                    ignore = [m.song_id for m in b15 if m.achievements < 100.5]
-                    _ra = b15[-1].ra
-            if _ra != 0:
-                ds = round(_ra / 22.4, 1)
-                musiclist = mai.total_list.filter(ds=(ds, ds + 1))
-                for _m in musiclist:
-                    if int(_m.id) in ignore:
-                        musiclist.remove(_m)
-                music = musiclist.random()
-        except (UserNotFoundError, UserDisabledQueryError):
-            pass
-    await mai_what.finish(await draw_music_info(music, event.user_id, user))
+
+    async def _gen():
+        music = mai.total_list.random()
+        user = None
+        if (point := match.group(1)) and ('推分' in point or '上分' in point or '加分' in point):
+            try:
+                user = await maiApi.query_user_b50(qqid=event.user_id)
+                r = random.randint(0, 1)
+                _ra = 0
+                ignore = []
+                if r == 0:
+                    if b35 := user.charts.sd:
+                        ignore = [m.song_id for m in b35 if m.achievements < 100.5]
+                        _ra = b35[-1].ra
+                else:
+                    if b15 := user.charts.dx:
+                        ignore = [m.song_id for m in b15 if m.achievements < 100.5]
+                        _ra = b15[-1].ra
+                if _ra != 0:
+                    ds = round(_ra / 22.4, 1)
+                    musiclist = mai.total_list.filter(ds=(ds, ds + 1))
+                    for _m in musiclist:
+                        if int(_m.id) in ignore:
+                            musiclist.remove(_m)
+                    music = musiclist.random()
+            except (UserNotFoundError, UserDisabledQueryError):
+                pass
+        return await draw_music_info(music, event.user_id, user)
+
+    await finish_timed(mai_what, _gen())
 
 
 @random_song.handle()
@@ -140,12 +142,11 @@ async def _(event: MessageEvent, match = RegexMatched()):
                 type=tp
             )
         if len(music_data) == 0:
-            msg = '没有这样的乐曲哦。'
-        else:
-            msg = await draw_music_info(music_data.random())
+            await random_song.finish('没有这样的乐曲哦。', reply_message=True)
+            return
+        await finish_timed(random_song, draw_music_info(music_data.random()))
     except:
-        msg = '随机命令错误，请检查语法'
-    await random_song.finish(msg, reply_message=True)
+        await random_song.finish('随机命令错误，请检查语法', reply_message=True)
 
 
 @rating_ranking.handle()
@@ -160,8 +161,7 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
     else:
         name = args.lower()
     
-    pic = await rating_ranking_data(name, page)
-    await rating_ranking.finish(pic, reply_message=True)
+    await finish_timed(rating_ranking, rating_ranking_data(name, page))
 
 
 @my_rating_ranking.handle()

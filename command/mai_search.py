@@ -21,6 +21,7 @@ from ..libraries.maimaidx_music import feature_manager, guess, mai, maiApi
 from ..libraries.maimaidx_music_info import build_tags_forward_nodes, draw_music_info
 from ..libraries.maimaidx_multiver_chart import draw_multiver_chart
 from ..libraries.maimaidx_pmyx_api import PmyxAPI
+from ..libraries.maimaidx_timing import attach_timing, finish_timed_sync, run_timed
 
 search_music        = on_command('查歌', aliases={'search'})
 search_base         = on_command('定数查歌', aliases={'search base'})
@@ -137,8 +138,12 @@ async def _send_song_info_then_pmyx_forward(
     reply: bool = True,
 ):
     """歌曲信息直接回复用户，再发一个合并转发（包含谱面印象、谱面标签、谱面预览链接三个子合并转发）。"""
-    msg = (prefix + await draw_music_info(music, event.user_id)) if prefix else await draw_music_info(music, event.user_id)
-    await matcher.send(msg, reply_message=reply)
+    async def _gen():
+        pic = await draw_music_info(music, event.user_id)
+        return (Message(prefix) + pic) if prefix else pic
+
+    msg, total = await run_timed(_gen())
+    await matcher.send(attach_timing(msg, total), reply_message=reply)
     nickname = _bot_nickname(bot)
     all_nodes = []
     pmyx_nodes = await _build_pmyx_forward_nodes(music.id, event.self_id, nickname)
@@ -218,9 +223,9 @@ async def _(bot: Bot, event: GroupMessageEvent, message: Message = CommandArg())
         f'共「{len(result) // SONGS_PER_PAGE + 1}」页。'
         '请使用「id xxxxx」查询指定曲目。'
     )
-    await search_music.finish(
-        MessageSegment.image(text_to_bytes_io(search_result)), 
-        reply_message=True
+    await finish_timed_sync(
+        search_music,
+        lambda: MessageSegment.image(text_to_bytes_io(search_result)),
     )
 
 
@@ -263,9 +268,9 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
         f'共「{len(result) // SONGS_PER_PAGE + 1}」页。'
         '请使用「id xxxxx」查询指定曲目。'
     )
-    await search_base.finish(
-        MessageSegment.image(text_to_bytes_io(search_result)), 
-        reply_message=True
+    await finish_timed_sync(
+        search_base,
+        lambda: MessageSegment.image(text_to_bytes_io(search_result)),
     )
 
 
@@ -308,9 +313,9 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
         f'共「{len(result) // SONGS_PER_PAGE + 1}」页。'
         '请使用「id xxxxx」查询指定曲目。'
     )
-    await search_bpm.finish(
-        MessageSegment.image(text_to_bytes_io(search_result)), 
-        reply_message=True
+    await finish_timed_sync(
+        search_bpm,
+        lambda: MessageSegment.image(text_to_bytes_io(search_result)),
     )
 
 
@@ -347,9 +352,9 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
         f'共「{len(result) // SONGS_PER_PAGE + 1}」页。'
         '请使用「id xxxxx」查询指定曲目。'
     )
-    await search_artist.finish(
-        MessageSegment.image(text_to_bytes_io(search_result)), 
-        reply_message=True
+    await finish_timed_sync(
+        search_artist,
+        lambda: MessageSegment.image(text_to_bytes_io(search_result)),
     )
 
 
@@ -393,9 +398,9 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
         f'共「{len(result) // SONGS_PER_PAGE + 1}」页。'
         '请使用「id xxxxx」查询指定曲目。'
     )
-    await search_charter.finish(
-        MessageSegment.image(text_to_bytes_io(search_result)), 
-        reply_message=True
+    await finish_timed_sync(
+        search_charter,
+        lambda: MessageSegment.image(text_to_bytes_io(search_result)),
     )
 
 

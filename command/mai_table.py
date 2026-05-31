@@ -7,6 +7,7 @@ from nonebot.permission import SUPERUSER
 
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_player_score import *
+from ..libraries.maimaidx_timing import attach_timing, finish_timed, run_timed, run_timed_call
 from ..libraries.maimaidx_update_plate import *
 
 _RISE_SCORE_TIP = "您可以通过开启数据存储 使用「今日吃分推荐」获取更有参考价值的个性化推荐上分曲目。"
@@ -47,8 +48,8 @@ async def _(match = RegexMatched()):
     elif args in levelList[6:]:
         from ..libraries.maimaidx_table_image import rating_table_path
         path = rating_table_path(args)
-        pic = draw_rating(args, path)
-        await rating_table.finish(pic, reply_message=True)
+        pic, total = run_timed_call(draw_rating, args, path)
+        await rating_table.finish(attach_timing(pic, total), reply_message=True)
     else:
         await rating_table.finish('无法识别的定数', reply_message=True)
 
@@ -60,8 +61,10 @@ async def _(event: MessageEvent, match = RegexMatched()):
     if ra in levelList[:6]:
         await rating_table_pfm.finish('只支持查询lv7-15的完成表', reply_message=True)
     elif ra in levelList[6:]:
-        pic = await draw_rating_table(event.user_id, ra, True if plan and plan.lower() in comboRank else False)
-        await rating_table_pfm.finish(pic, reply_message=True)
+        await finish_timed(
+            rating_table_pfm,
+            draw_rating_table(event.user_id, ra, True if plan and plan.lower() in comboRank else False),
+        )
     else:
         await rating_table_pfm.finish('无法识别的定数', reply_message=True)
 
@@ -75,8 +78,7 @@ async def _(event: MessageEvent, match = RegexMatched()):
     if f'{ver}{plan}' == '真将':
         await plate_table_pfm.finish('真系没有真将哦', reply_message=True)
     page = int(match.group(3)) if match.group(3) else 1
-    pic = await draw_plate_table(event.user_id, ver, plan, page)
-    await plate_table_pfm.finish(pic, reply_message=True)
+    await finish_timed(plate_table_pfm, draw_plate_table(event.user_id, ver, plan, page))
 
 
 @rise_score.handle()
@@ -94,11 +96,12 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
     if username:
         qqid = None
 
-    data = await rise_score_data(qqid, username, rating, score)
-    if isinstance(data, str):
-        await rise_score.finish(data, reply_message=True)
+    result, total = await run_timed(rise_score_data(qqid, username, rating, score))
+    if isinstance(result, str):
+        await rise_score.finish(result, reply_message=True)
     else:
-        await rise_score.finish(Message(data) + Message(f"\n{_RISE_SCORE_TIP}"), reply_message=True)
+        msg = Message(result) + Message(f"\n{_RISE_SCORE_TIP}")
+        await rise_score.finish(attach_timing(msg, total), reply_message=True)
 
 
 @plate_process.handle()
@@ -110,8 +113,7 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
     if f'{ver}{plan}' == '真将':
         await plate_process.finish('真系没有真将哦', reply_message=True)
 
-    data = await player_plate_data(qqid, '', ver, plan)
-    await plate_process.finish(data, reply_message=True)
+    await finish_timed(plate_process, player_plate_data(qqid, '', ver, plan))
 
 
 @level_process.handle()
@@ -144,8 +146,10 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
     else:
         category = 'default'
 
-    data = await level_process_data(qqid, username, level, plan, category, int(page) if page else 1)
-    await level_process.finish(data, reply_message=True)
+    await finish_timed(
+        level_process,
+        level_process_data(qqid, username, level, plan, category, int(page) if page else 1),
+    )
 
 
 @level_achievement_list.handle()
@@ -165,5 +169,7 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
         if rating not in levelList:
             await level_achievement_list.finish('无此等级', reply_message=True)
 
-    data = await level_achievement_list_data(qqid, username, rating, int(page) if page else 1)
-    await level_achievement_list.finish(data, reply_message=True)
+    await finish_timed(
+        level_achievement_list,
+        level_achievement_list_data(qqid, username, rating, int(page) if page else 1),
+    )

@@ -17,6 +17,11 @@ from .maimaidx_music import mai
 from .maimaidx_playcount_db import pc_db
 
 
+def _prepare_b50_warnings(userinfo: UserInfo, qqid: Optional[int], username: Optional[str] = None) -> None:
+    from .maimaidx_b50_warnings import prepare_b50_warnings, resolve_b50_source
+    prepare_b50_warnings(userinfo, resolve_b50_source(qqid, username))
+
+
 def _is_utage_song(song_id: Union[str, int]) -> bool:
     """
     判断歌曲是否为宴谱（宴会場/utage 类型）。
@@ -973,6 +978,7 @@ async def _fit_b50_common(
             except Exception:
                 pass
 
+        _prepare_b50_warnings(fit_userinfo, qqid, username)
         draw_best = DrawBest(fit_userinfo, qqid, compact_layout=not by_group, play_counts=play_counts or None)
         msg = MessageSegment.image(image_to_base64(await draw_best.draw()))
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
@@ -1061,6 +1067,7 @@ async def _fc_ap_b50_common(
             except Exception:
                 pass
 
+        _prepare_b50_warnings(fc_userinfo, qqid, username)
         draw_best = DrawBest(fc_userinfo, qqid, compact_layout=not by_group, play_counts=play_counts or None)
         msg = MessageSegment.image(image_to_base64(await draw_best.draw()))
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
@@ -1167,6 +1174,7 @@ async def _sun_b50_common(
                     play_counts[(r.song_id, r.level_index)] = r.play_count
             except Exception:
                 pass
+        _prepare_b50_warnings(sun_userinfo, qqid, username)
         draw_best = DrawBest(sun_userinfo, qqid, compact_layout=not by_group, play_counts=play_counts or None)
         msg = MessageSegment.image(image_to_base64(await draw_best.draw()))
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
@@ -1246,6 +1254,7 @@ async def _lock_b50_common(
                     play_counts[(r.song_id, r.level_index)] = r.play_count
             except Exception:
                 pass
+        _prepare_b50_warnings(lock_userinfo, qqid, username)
         draw_best = DrawBest(lock_userinfo, qqid, compact_layout=not by_group, play_counts=play_counts or None)
         msg = MessageSegment.image(image_to_base64(await draw_best.draw()))
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
@@ -1296,6 +1305,7 @@ async def generate_pc50(
             charts=Data(sd=sdBest, dx=dxBest),
         )
 
+        _prepare_b50_warnings(pc_userinfo, qqid, username)
         draw_best = DrawBest(pc_userinfo, qqid, play_counts=play_counts or None)
         msg = MessageSegment.image(image_to_base64(await draw_best.draw())) + MessageSegment.text(f'\n上次更新: {last_update_str}')
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
@@ -1349,6 +1359,7 @@ async def generate_pca50(
             charts=Data(sd=b35_list, dx=b15_list),
         )
 
+        _prepare_b50_warnings(pc_userinfo, qqid, username)
         draw_best = DrawBest(pc_userinfo, qqid, compact_layout=True, play_counts=play_counts or None)
         msg = MessageSegment.image(image_to_base64(await draw_best.draw())) + MessageSegment.text(f'\n上次更新: {last_update_str}')
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
@@ -1436,6 +1447,7 @@ async def generate_all(qqid: Optional[int] = None, username: Optional[str] = Non
             except Exception:
                 pass
         # 使用紧凑布局（无视分组）
+        _prepare_b50_warnings(all_userinfo, qqid, username)
         draw_best = DrawBest(all_userinfo, qqid, compact_layout=True, play_counts=play_counts or None)
         msg = MessageSegment.image(image_to_base64(await draw_best.draw()))
         
@@ -1587,6 +1599,7 @@ async def generate_version_b50(
             except Exception:
                 pass
         # 无视分组：50 首连续绘制，副标题「50 首 = rating」；隐藏左侧 logo
+        _prepare_b50_warnings(userinfo, qqid, username)
         draw_best = DrawBest(userinfo, qqid, compact_layout=True, hide_logo=True, play_counts=play_counts or None)
         msg = MessageSegment.image(image_to_base64(await draw_best.draw()))
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
@@ -1647,6 +1660,7 @@ async def _yueji_b50_common(
                     play_counts[(r.song_id, r.level_index)] = r.play_count
             except Exception:
                 pass
+        _prepare_b50_warnings(yueji_userinfo, qqid, username)
         draw_best = DrawBest(yueji_userinfo, qqid, compact_layout=not by_group, play_counts=play_counts or None)
         msg = MessageSegment.image(image_to_base64(await draw_best.draw()))
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
@@ -1930,6 +1944,7 @@ async def _ideal_b50_common(
             except Exception:
                 pass
         # 绘制 B50 图片，使用紧凑布局显示原成绩
+        _prepare_b50_warnings(ideal_userinfo, qqid, username)
         draw_best = DrawBest(ideal_userinfo, qqid, compact_layout=not by_group, play_counts=play_counts or None)
         msg = MessageSegment.image(image_to_base64(await draw_best.draw()))
         
@@ -2092,6 +2107,7 @@ async def generate(qqid: Optional[int] = None, username: Optional[str] = None) -
             except Exception:
                 pass
 
+        _prepare_b50_warnings(userinfo, qqid, username)
         draw_best = DrawBest(userinfo, qqid, play_counts=play_counts or None)
         
         msg = MessageSegment.image(image_to_base64(await draw_best.draw()))

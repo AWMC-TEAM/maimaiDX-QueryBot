@@ -3,6 +3,7 @@ from nonebot import on_command
 from nonebot.params import CommandArg
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from ..config import coverdir
+from ..libraries.maimaidx_timing import finish_timed_sync
 
 jacket_extractor = on_command("提取曲绘", priority=5)
 
@@ -19,5 +20,4 @@ async def _(arg: Message = CommandArg()):
         await jacket_extractor.finish(f"未找到ID为 {song_id} 的曲绘。")
         return
 
-    await jacket_extractor.finish(MessageSegment.image(image_path))
-
+    await finish_timed_sync(jacket_extractor, lambda: MessageSegment.image(image_path))

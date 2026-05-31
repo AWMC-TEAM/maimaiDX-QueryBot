@@ -252,6 +252,8 @@ async def b50_pipeline(
         new_userinfo = _build_userinfo(userinfo, b35, b15)
         _compact = compact_layout if compact_layout is not None else (not by_group)
         log.debug(f"[b50_pipeline] 绘图: compact_layout={_compact}, hide_logo={hide_logo}")
+        from .maimaidx_b50_warnings import prepare_b50_warnings, resolve_b50_source
+        prepare_b50_warnings(new_userinfo, resolve_b50_source(qqid, username))
         draw_best = DrawBest(new_userinfo, qqid, compact_layout=_compact, hide_logo=hide_logo, max_display=max_display)
         msg = MessageSegment.image(image_to_base64(await draw_best.draw()))
         log.debug(f"[b50_pipeline] 绘图完成")

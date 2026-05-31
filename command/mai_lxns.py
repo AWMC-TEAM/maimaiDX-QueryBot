@@ -232,9 +232,9 @@ async def _source_cmd(event: MessageEvent, message: Message = CommandArg()):
 async def generate_lxns_b50(qqid: int) -> Optional[MessageSegment]:
     """
     用落雪数据源生成 b50 图片（强制走 lxns）。
-    成功返回 MessageSegment（纯图片），失败返回 None。
-    内部复用 libraries.maimaidx_datasource.get_user_b50(force_source='lxns')。
+    成功返回 MessageSegment（纯图片）；绑定/授权失败返回 None。
     """
+    from ..libraries.maimaidx_b50_warnings import prepare_b50_warnings
     from ..libraries.maimaidx_datasource import get_user_b50
     from ..libraries.maimaidx_error import LxnsDataError
 
@@ -247,9 +247,7 @@ async def generate_lxns_b50(qqid: int) -> Optional[MessageSegment]:
         log.warning(f'[lxb50] qq={qqid} unexpected: {e}')
         return None
 
-    if not userinfo.charts or (not userinfo.charts.sd and not userinfo.charts.dx):
-        return None
-
+    prepare_b50_warnings(userinfo, 'lxns')
     draw_best = DrawBest(userinfo, qqid)
     return MessageSegment.image(image_to_base64(await draw_best.draw()))
 
@@ -264,12 +262,8 @@ async def _lxb50(event: MessageEvent):
     qqid = event.user_id
 
     try:
-        import time as _t
-        from ..libraries.maimaidx_timing import reset, get_fetch, format_summary
-        reset()
-        t0 = _t.perf_counter()
-        result = await generate_lxns_b50(qqid)
-        total = _t.perf_counter() - t0
+        from ..libraries.maimaidx_timing import run_timed, timing_text
+        result, total = await run_timed(generate_lxns_b50(qqid))
         if result is None:
             await lxb50.finish(
                 '落雪数据获取失败，请检查：\n'
@@ -278,10 +272,14 @@ async def _lxb50(event: MessageEvent):
                 '3. Bot 是否配置了开发者 Token',
                 reply_message=True,
             )
-        footer = (
-            '\n📊 数据源：落雪 | 可使用 数据源 水鱼/落雪 修改\n'
-            + format_summary(total, get_fetch())
-        )
+        footer_lines = ['📊 数据源：落雪 | 可使用 数据源 水鱼/落雪 修改']
+        from ..libraries.maimaidx_b50_warnings import pop_b50_warning_footer
+        warning = pop_b50_warning_footer()
+        if warning:
+            footer_lines.append('')
+            footer_lines.append(warning)
+        footer_lines.append(timing_text(total))
+        footer = '\n' + '\n'.join(footer_lines)
         await lxb50.finish(result + MessageSegment.text(footer), reply_message=True)
 
     except Exception as e:

@@ -141,11 +141,14 @@ async def _(message: Message = CommandArg()):
                     ''')
                 )
         result.append(f'第「{page}」页，共「{len(status) // SONGS_PER_PAGE + 1}」页')
-        msg = MessageSegment.image(text_to_bytes_io('\n'.join(result)))
+        from ..libraries.maimaidx_timing import finish_timed_sync
+        await finish_timed_sync(
+            alias_status,
+            lambda: MessageSegment.image(text_to_bytes_io('\n'.join(result))),
+        )
     except (ServerError, ValueError) as e:
         log.error(traceback.format_exc())
-        msg = str(e)
-    await alias_status.finish(msg, reply_message=True)
+        await alias_status.finish(str(e), reply_message=True)
 
 
 @alias_song.handle()
