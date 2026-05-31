@@ -840,7 +840,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         
         im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'plate_num.png')), (185, 20))
         im.alpha_composite(
-            Image.open(plate_tabledir / f'{version}{"極" if plan == "极" else plan}.png').resize((1000, 161)), 
+            Image.open(plate_versiondir / f'{version}{"極" if plan == "极" else plan}.png').resize((1000, 161)), 
             (200, 35)
         )
         lv: List[set[int]] = [set() for _ in range(number)]
