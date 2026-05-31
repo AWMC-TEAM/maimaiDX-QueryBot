@@ -698,8 +698,8 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
         from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
         _theme = _Th.get_default().value
         rating_bg = Image.open(_rtp(maimaidir, _theme, 'rating_bg.png'))
-        unfinished_bg = Image.open(_rtp(maimaidir, _theme, 'unfinished_bg.png'))
-        complete_bg = Image.open(_rtp(maimaidir, _theme, 'complete_bg.png'))
+        unfinished_bg = Image.open(_rtp(maimaidir, _theme, 'unfinished_1.png'))
+        complete_bg = Image.open(_rtp(maimaidir, _theme, 'complete_1.png'))
         
         bg = ratingdir / f'{rating}.png'
         
@@ -830,8 +830,8 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
         _theme = _Th.get_default().value
         finished_bg = [Image.open(_rtp(maimaidir, _theme, f't_{_}.png')) for _ in range(4)]
-        unfinished_bg = Image.open(_rtp(maimaidir, _theme, 'unfinished_bg_2.png'))
-        complete_bg = Image.open(_rtp(maimaidir, _theme, 'complete_bg_2.png'))
+        unfinished_bg = Image.open(_rtp(maimaidir, _theme, 'unfinished_2.png'))
+        complete_bg = Image.open(_rtp(maimaidir, _theme, 'complete_2.png'))
 
         im = Image.open(platedir / f'plate_{version}.png')
         draw = ImageDraw.Draw(im)
