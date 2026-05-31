@@ -841,14 +841,25 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         draw = ImageDraw.Draw(im)
         tr = DrawText(draw, TBFONT)
         mr = DrawText(draw, SIYUAN)
+        fot = DrawText(draw, TBFONT)
         
-        im.alpha_composite(Image.open(pic('plate_progress.png')), (185, 20))
+        # 进度条背景 - beta: (175, 20)
+        # 舞/霸使用 plate_progress_wu，其他使用 plate_progress
+        progress_bg_name = 'plate_progress_wu.png' if is_wu else 'plate_progress.png'
+        im.alpha_composite(Image.open(pic(progress_bg_name)), (175, 20))
+        
+        # 牌子背景 - beta: (200, 45)
         im.alpha_composite(
             Image.open(plate_versiondir / f'{version}{"極" if plan == "极" else plan}.png').resize((1000, 161)), 
-            (200, 35)
+            (200, 45)
         )
         lv: List[set[int]] = [set() for _ in range(number)]
-        y = 245
+        # 曲绘起始 y 轴 - beta: start_y = 490, gap = 96, row_count = 12
+        GRID_START_X = 180
+        GRID_START_Y = 490
+        GRID_GAP = 96
+        GRID_ROW_COUNT = 12
+        y = GRID_START_Y - GRID_GAP  # 因为下面有 y += GRID_GAP
         # if plan == '者':
         #     for level in ra:
         #         x = 200
@@ -869,105 +880,164 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         #                 im.alpha_composite(finished_bg[n], (x + 5 + 25 * n, y + 67))
         if plan == '极' or plan == '極':
             for level in ra:
-                x = 200
-                y += 15
-                for num, _id in enumerate(ra[level]):
-                    if num % 10 == 0:
-                        x = 200
-                        y += 115
-                    else:
-                        x += 115
+                if not ra[level]:
+                    continue
+                rows = (len(ra[level]) - 1) // GRID_ROW_COUNT + 1
+                for idx, _id in enumerate(ra[level]):
+                    row, col = divmod(idx, GRID_ROW_COUNT)
+                    x = GRID_START_X + col * GRID_GAP
+                    yy = y + GRID_GAP + row * GRID_GAP
                     f: List[int] = []
                     for n, play in enumerate(ra[level][_id]):
                         if play is None or not play.fc: continue
-                        if n == 3:
-                            im.alpha_composite(complete_bg, (x, y))
-                            fc = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((75, 75))
-                            im.alpha_composite(fc, (x + 13, y + 3))
+                        if n == (number - 1):
+                            im.alpha_composite(complete_bg, (x, yy))
+                            fc = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((60, 60))
+                            im.alpha_composite(fc, (x + 10, yy + 12))
                         lv[n].add(play.song_id)
                         f.append(n)
                     for n in f:
-                        im.alpha_composite(finished_bg[n], (x + 5 + 25 * n, y + 67))
+                        if is_wu and number == 5:
+                            im.alpha_composite(finished_bg[n].resize((14, 14)), (x + 1 + 16 * n, yy + 64))
+                        else:
+                            im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, yy + 63))
+                y += rows * GRID_GAP + 30
         if plan == '将':
             for level in ra:
-                x = 200
-                y += 15
-                for num, _id in enumerate(ra[level]):
-                    if num % 10 == 0:
-                        x = 200
-                        y += 115
-                    else:
-                        x += 115
+                if not ra[level]:
+                    continue
+                rows = (len(ra[level]) - 1) // GRID_ROW_COUNT + 1
+                for idx, _id in enumerate(ra[level]):
+                    row, col = divmod(idx, GRID_ROW_COUNT)
+                    x = GRID_START_X + col * GRID_GAP
+                    yy = y + GRID_GAP + row * GRID_GAP
                     f: List[int] = []
                     for n, play in enumerate(ra[level][_id]):
                         if play is None or play.achievements < 100: continue
-                        if n == 3:
-                            im.alpha_composite(complete_bg if play.achievements >= 100 else unfinished_bg, (x, y))
+                        if n == (number - 1):
+                            im.alpha_composite(complete_bg, (x, yy))
                             rate = computeRa(play.ds, play.achievements, onlyrate=True)
-                            rank = Image.open(_rtp(maimaidir, _theme, f'UI_TTR_Rank_{rate}.png')).resize((102, 46))
-                            im.alpha_composite(rank, (x - 1, y + 15))
+                            rank = Image.open(_rtp(maimaidir, _theme, f'UI_TTR_Rank_{rate}.png')).resize((80, 36))
+                            im.alpha_composite(rank, (x, yy + 22))
                         lv[n].add(play.song_id)
                         f.append(n)
                     for n in f:
-                        im.alpha_composite(finished_bg[n], (x + 5 + 25 * n, y + 67))
+                        if is_wu and number == 5:
+                            im.alpha_composite(finished_bg[n].resize((14, 14)), (x + 1 + 16 * n, yy + 64))
+                        else:
+                            im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, yy + 63))
+                y += rows * GRID_GAP + 30
         if plan == '神':
             _fc = ['ap', 'app']
             for level in ra:
-                x = 200
-                y += 15
-                for num, _id in enumerate(ra[level]):
-                    if num % 10 == 0:
-                        x = 200
-                        y += 115
-                    else:
-                        x += 115
+                if not ra[level]:
+                    continue
+                rows = (len(ra[level]) - 1) // GRID_ROW_COUNT + 1
+                for idx, _id in enumerate(ra[level]):
+                    row, col = divmod(idx, GRID_ROW_COUNT)
+                    x = GRID_START_X + col * GRID_GAP
+                    yy = y + GRID_GAP + row * GRID_GAP
                     f: List[int] = []
                     for n, play in enumerate(ra[level][_id]):
                         if play is None or play.fc not in _fc: continue
-                        if n == 3:
-                            im.alpha_composite(complete_bg, (x, y))
-                            ap = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((75, 75))
-                            im.alpha_composite(ap, (x + 13, y + 3))
+                        if n == (number - 1):
+                            im.alpha_composite(complete_bg, (x, yy))
+                            ap = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((60, 60))
+                            im.alpha_composite(ap, (x + 10, yy + 12))
                         lv[n].add(play.song_id)
                         f.append(n)
                     for n in f:
-                        im.alpha_composite(finished_bg[n], (x + 5 + 25 * n, y + 67))
+                        if is_wu and number == 5:
+                            im.alpha_composite(finished_bg[n].resize((14, 14)), (x + 1 + 16 * n, yy + 64))
+                        else:
+                            im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, yy + 63))
+                y += rows * GRID_GAP + 30
         if plan == '舞舞':
             fs = ['fsd', 'fdx', 'fsdp', 'fdxp']
             for level in ra:
-                x = 200
-                y += 15
-                for num, _id in enumerate(ra[level]):
-                    if num % 10 == 0:
-                        x = 200
-                        y += 115
-                    else:
-                        x += 115
+                if not ra[level]:
+                    continue
+                rows = (len(ra[level]) - 1) // GRID_ROW_COUNT + 1
+                for idx, _id in enumerate(ra[level]):
+                    row, col = divmod(idx, GRID_ROW_COUNT)
+                    x = GRID_START_X + col * GRID_GAP
+                    yy = y + GRID_GAP + row * GRID_GAP
                     f: List[int] = []
                     for n, play in enumerate(ra[level][_id]):
                         if play is None or play.fs not in fs:
                             continue
-                        if n == 3:
-                            im.alpha_composite(complete_bg, (x, y))
-                            fsd = Image.open(pic(f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).resize((75, 75))
-                            im.alpha_composite(fsd, (x + 13, y + 3))
+                        if n == (number - 1):
+                            im.alpha_composite(complete_bg, (x, yy))
+                            fsd = Image.open(pic(f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).resize((60, 60))
+                            im.alpha_composite(fsd, (x + 10, yy + 12))
                         lv[n].add(play.song_id)
                         f.append(n)
                     for n in f:
-                        im.alpha_composite(finished_bg[n], (x + 5 + 25 * n, y + 67))
+                        if is_wu and number == 5:
+                            im.alpha_composite(finished_bg[n].resize((14, 14)), (x + 1 + 16 * n, yy + 64))
+                        else:
+                            im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, yy + 63))
+                y += rows * GRID_GAP + 30
         
-        color = ScoreBaseImage.id_color.copy()
-        color.insert(0, (124, 129, 255, 255))
-        for num in range(len(lv) + 1):
-            if num == 0:
-                v = set.intersection(*lv)
-                _v = f'{len(v)}/{plate_total_num}'
+        # 统计信息 - 按照 beta 分支实现
+        # 默认颜色
+        default_text_color = (124, 129, 255, 255)
+        id_text_color = [
+            (69, 193, 36, 255),    # BASIC
+            (255, 168, 1, 255),    # ADVANCED
+            (255, 90, 102, 255),   # EXPERT
+            (134, 49, 200, 255),   # MASTER
+            (231, 173, 254, 255),  # Re:MASTER
+        ]
+        
+        # 计算总完成数（所有难度都达成）
+        if number == 4:
+            v = set.intersection(*lv[:4]) if all(lv[:4]) else set()
+        else:
+            v = set.intersection(*lv) if all(lv) else set()
+        completed_count = len(v)
+        
+        # 顶部总进度
+        if completed_count == plate_total_num:
+            text = "COMPLETED!!!"
+        else:
+            text = f"{completed_count}/{plate_total_num}"
+        progress = completed_count / plate_total_num if plate_total_num else 0
+        
+        fot.draw(700, 240, 30, text, default_text_color, 'mm', 3, (255, 255, 255, 255))
+        fot.draw(1190, 240, 30, f"{round(progress * 100, 2)}%", default_text_color, 'rm', 3, (255, 255, 255, 255))
+        
+        # 各难度统计 - beta 的位置
+        if is_wu:
+            stats_start_x = 292
+            stats_gap_x = 204
+            progress_text_x = 89
+        else:
+            stats_start_x = 320
+            stats_gap_x = 253
+            progress_text_x = 115
+        
+        stats_start_y = 300
+        for _l in range(number):
+            x = stats_start_x + _l * stats_gap_x
+            complete_sum_group = len(lv[_l])
+            
+            # ReMASTER 使用 remaster_count，其他使用总数
+            plate_count = plate_total_num
+            if is_wu and _l == 4:
+                # 舞的 ReMASTER 难度使用 ReMASTER 数量
+                remaster_list = mai.total_plate_id_list.get('舞ReMASTER', [])
+                plate_count = len(remaster_list) if remaster_list else plate_total_num
+            
+            progress_group = complete_sum_group / plate_count if plate_count else 0
+            
+            if complete_sum_group == plate_count and plate_count > 0:
+                fot.draw(x, stats_start_y, 24, "COMPLETED!!!", id_text_color[_l], 'mm', 4, (255, 255, 255, 255))
             else:
-                _v = len(lv[num - 1])
-            if _v == plate_total_num:
-                mr.draw(390 + 200 * num, 270, 35, '完成', color[num], 'rm', 4, (255, 255, 255, 255))
-            else:
-                tr.draw(390 + 200 * num, 270, 40, _v, color[num], 'rm', 4, (255, 255, 255, 255))
+                fot.draw(x, stats_start_y, 40, complete_sum_group, id_text_color[_l], 'mm', 4, (255, 255, 255, 255))
+            
+            fot.draw(x + progress_text_x, stats_start_y + 20, 14, f"/{plate_count}", id_text_color[_l], 'rd', 3, (255, 255, 255, 255))
+            fot.draw(x + progress_text_x, 343, 20, f"{round(progress_group * 100, 2)}%", default_text_color, 'rm', 2, (255, 255, 255, 255))
         
         msg = MessageSegment.image(image_to_base64(im))
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
