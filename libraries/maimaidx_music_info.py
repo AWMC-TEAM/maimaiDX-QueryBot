@@ -407,7 +407,7 @@ async def draw_music_info(
 
     from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
     _theme = _Th.get_default().value
-    im = Image.open(_rtp(maimaidir, _theme, 'song_bg.png')).convert('RGBA')
+    im = Image.open(_rtp(maimaidir, _theme, 'chart_info.png')).convert('RGBA')
     dr = ImageDraw.Draw(im)
     mr = DrawText(dr, SIYUAN)
     tb = DrawText(dr, TBFONT)
@@ -517,7 +517,7 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
 
         from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
         _theme = _Th.get_default().value
-        im = Image.open(_rtp(maimaidir, _theme, 'info_bg.png')).convert('RGBA')
+        im = Image.open(_rtp(maimaidir, _theme, 'play_info.png')).convert('RGBA')
     
         dr = ImageDraw.Draw(im)
         tb = DrawText(dr, TBFONT)
