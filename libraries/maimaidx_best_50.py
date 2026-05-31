@@ -320,8 +320,10 @@ class DrawBest(ScoreBaseImage):
         hide_logo: bool = False,
         play_counts: Optional[dict[tuple[int, int], int]] = None,
         max_display: int = 50,
+        theme: str = 'default',
     ) -> None:
-        super().__init__(Image.open(maimaidir / 'b50_bg.png').convert('RGBA'))
+        from .maimaidx_theme import resolve_theme_bg
+        super().__init__(Image.open(resolve_theme_bg(theme)).convert('RGBA'))
         if play_counts:
             self.play_counts = play_counts
         self.userName = UserInfo.nickname or UserInfo.username or '未知'
@@ -895,7 +897,9 @@ async def _fit_b50_common(
     try:
         if username:
             qqid = None
-        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
+        # 拟合 b50 依赖水鱼独有的 chart_stats(fit_diff)，强制走水鱼
+        from .maimaidx_datasource import get_user_b50
+        userinfo = await get_user_b50(qqid=qqid, username=username, force_source='divingfish')
         dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
         records = list(dev.records or [])
         records = filter_utage_records(records)
@@ -1521,9 +1525,10 @@ async def generate_version_b50(
         b35_list = top50_charts[:35]
         b15_list = top50_charts[35:50]
         
-        # 与常规 b50 一致：rating 用本 50 首之和，加框分用 query_user_b50 的 additional_rating
+        # 与常规 b50 一致：rating 用本 50 首之和，加框分用 user_basic 的 additional_rating（lxns 为 0）
         total_ra = int(sum(c.ra for c in top50_charts))
-        user_basic = await maiApi.query_user_b50(qqid=qqid, username=username)
+        from .maimaidx_datasource import get_user_b50
+        user_basic = await get_user_b50(qqid=qqid, username=username)
         additional_rating = user_basic.additional_rating if user_basic.additional_rating is not None else 0
         
         userinfo = UserInfo(
@@ -1924,8 +1929,9 @@ async def generate_coop_b50(
     合作 B50（分组）：按常规 b50 分组与排版，B35 取两人 sd 合并后 ra 前 35，B15 取两人 dx 合并后 ra 前 15。
     """
     try:
-        userinfo_a = await maiApi.query_user_b50(qqid=qqid_a)
-        userinfo_b = await maiApi.query_user_b50(qqid=qqid_b)
+        from .maimaidx_datasource import get_user_b50_or_fallback
+        userinfo_a = await get_user_b50_or_fallback(qqid=qqid_a)
+        userinfo_b = await get_user_b50_or_fallback(qqid=qqid_b)
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         return str(e)
 
@@ -1979,8 +1985,9 @@ async def generate_coop_all_b50(
     合作 ab50（无视分组）：两人 b50 合并后按单曲 rating 排序取前 50，连续排版。
     """
     try:
-        userinfo_a = await maiApi.query_user_b50(qqid=qqid_a)
-        userinfo_b = await maiApi.query_user_b50(qqid=qqid_b)
+        from .maimaidx_datasource import get_user_b50_or_fallback
+        userinfo_a = await get_user_b50_or_fallback(qqid=qqid_a)
+        userinfo_b = await get_user_b50_or_fallback(qqid=qqid_b)
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         return str(e)
 
@@ -2034,7 +2041,8 @@ async def generate(qqid: Optional[int] = None, username: Optional[str] = None) -
     try:
         if username:
             qqid = None
-        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
+        from .maimaidx_datasource import get_user_b50
+        userinfo = await get_user_b50(qqid=qqid, username=username)
 
         # 尝试加载 PC 数据
         play_counts: dict[tuple[int, int], int] = {}

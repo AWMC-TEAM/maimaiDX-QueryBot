@@ -183,26 +183,8 @@ async def _(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-
-    from ..libraries.maimaidx_lxns_db import lxns_db
-    from .mai_lxns import generate_lxns_b50
-
-    # 仅自己查自己时走数据源偏好，@别人/指定用户名走水鱼
-    if not username and qqid == event.user_id and lxns_db.get_source(qqid) == 'lxns':
-        import time as _t
-        from ..libraries.maimaidx_timing import reset
-        reset()
-        t0 = _t.perf_counter()
-        result = await generate_lxns_b50(qqid)
-        total = _t.perf_counter() - t0
-        if result is None:
-            await best50.finish(
-                '落雪数据获取失败，请先绑定落雪查分器：发送 lxbind\n'
-                '或切换回水鱼数据源：数据源 水鱼',
-                reply_message=True,
-            )
-        await best50.finish(result + MessageSegment.text(_build_footer(qqid, total, forced_source='落雪')), reply_message=True)
-
+    # 数据源路由统一由 libraries.maimaidx_datasource.get_user_b50 处理
+    # username 查询强制水鱼；qqid 查询按用户偏好（自己/@的人均生效）
     await _finish_score(best50, generate(qqid, username), None if username else qqid)
 
 
@@ -1103,7 +1085,7 @@ async def _(
     if not version_name:
         await version_b50.finish('版本名称不能为空', reply_message=True)
         return
-    await _finish_score(version_b50, generate_version_b50(qqid, None, version_name), None if user_id else qqid, unsupported_feature='版本b50')
+    await _finish_score(version_b50, generate_version_b50(qqid, None, version_name), None if user_id else qqid)
 
 
 @legacy_b50.handle()

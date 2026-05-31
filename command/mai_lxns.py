@@ -24,22 +24,11 @@ from ..libraries.maimaidx_lxns_client import (
     fetch_token,
     get_authorize_url,
     refresh_token,
-    user_get_bests,
     user_get_player,
-    dev_get_bests,
-    dev_get_player_by_qq,
 )
 from ..libraries.maimaidx_lxns_db import lxns_db
-from ..libraries.maimaidx_datasource import lxns_bests_to_userinfo
-from ..libraries.maimaidx_model import ChartInfo, Data, UserInfo
-from ..libraries.maimaidx_music import mai
 
 # ─────────────────────────── helpers ───────────────────────────
-
-
-def _lxns_bests_to_userinfo(bests: dict, nickname: str = '', rating: int = 0) -> UserInfo:
-    """将 lxns Best50 响应转换为本地 UserInfo（复用统一数据源层的转换）。"""
-    return lxns_bests_to_userinfo(bests, nickname=nickname, rating=rating)
 
 
 async def _do_token_refresh(qqid: int, db_row: dict) -> Optional[str]:
@@ -242,44 +231,21 @@ async def _source_cmd(event: MessageEvent, message: Message = CommandArg()):
 
 async def generate_lxns_b50(qqid: int) -> Optional[MessageSegment]:
     """
-    用落雪数据源生成 b50 图片。
+    用落雪数据源生成 b50 图片（强制走 lxns）。
     成功返回 MessageSegment（纯图片），失败返回 None。
+    内部复用 libraries.maimaidx_datasource.get_user_b50(force_source='lxns')。
     """
-    bests = None
-    nickname = ''
-    rating = 0
+    from ..libraries.maimaidx_datasource import get_user_b50
+    from ..libraries.maimaidx_error import LxnsDataError
 
-    from ..libraries.maimaidx_timing import measure
-
-    access_token = await _get_valid_access_token(qqid)
-    if access_token:
-        try:
-            with measure('fetch'):
-                bests = await user_get_bests(access_token)
-                player = await user_get_player(access_token)
-            if player:
-                nickname = player.get('name', '')
-                rating = player.get('rating', 0)
-        except Exception as e:
-            log.warning(f'[lxb50] OAuth query failed for qq={qqid}: {e}')
-            bests = None
-
-    if bests is None:
-        if not maiconfig.lxns_dev_token:
-            return None
-        with measure('fetch'):
-            player_info = await dev_get_player_by_qq(qqid)
-            if not player_info:
-                return None
-            fc = player_info.get('friend_code')
-            nickname = player_info.get('name', '')
-            rating = player_info.get('rating', 0)
-            if fc:
-                bests = await dev_get_bests(fc)
-        if not bests:
-            return None
-
-    userinfo = _lxns_bests_to_userinfo(bests, nickname=nickname, rating=rating)
+    try:
+        userinfo = await get_user_b50(qqid=qqid, force_source='lxns')
+    except LxnsDataError as e:
+        log.warning(f'[lxb50] qq={qqid}: {e}')
+        return None
+    except Exception as e:
+        log.warning(f'[lxb50] qq={qqid} unexpected: {e}')
+        return None
 
     if not userinfo.charts or (not userinfo.charts.sd and not userinfo.charts.dx):
         return None

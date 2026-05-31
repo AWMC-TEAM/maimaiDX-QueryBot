@@ -234,6 +234,21 @@ async def get_user_b50(
     return await maiApi.query_user_b50(qqid=qqid, username=username)
 
 
+async def get_user_b50_or_fallback(
+    qqid: Optional[int] = None,
+    username: Optional[str] = None,
+) -> UserInfo:
+    """
+    获取用户 b50，落雪失败时自动降级到水鱼（不抛异常）。
+    用于合作 b50 等需要"尽量不要因为一方失败而整体失败"的场景。
+    """
+    try:
+        return await get_user_b50(qqid=qqid, username=username)
+    except LxnsDataError:
+        log.warning(f'[datasource] lxns fallback to divingfish for qq={qqid}')
+        return await maiApi.query_user_b50(qqid=qqid, username=username)
+
+
 async def get_user_records(
     qqid: Optional[int] = None,
     username: Optional[str] = None,

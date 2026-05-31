@@ -18,6 +18,7 @@ mai_what            = on_regex(r'.*mai.*什么(.+)?')
 random_song         = on_regex(r'^[随来给]个((?:dx|sd|标准))?([绿黄红紫白]?)([0-9]+\+?).*')
 rating_ranking      = on_command('查看排名', aliases={'查看排行'})
 my_rating_ranking   = on_command('我的排名')
+theme_cmd           = on_command('主题', aliases={'theme'})
 
 
 @update_data.handle()
@@ -176,6 +177,28 @@ async def _(event: MessageEvent):
                 await my_rating_ranking.finish(result, reply_message=True)
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         await my_rating_ranking.finish(str(e), reply_message=True)
+
+
+@theme_cmd.handle()
+async def _(event: MessageEvent, message: Message = CommandArg()):
+    from ..libraries.maimaidx_theme import Theme, get_theme_display_name, get_user_theme, set_user_theme
+    args = message.extract_plain_text().strip()
+    qqid = event.user_id
+
+    if not args:
+        current = get_user_theme(qqid)
+        display = get_theme_display_name(current)
+        await theme_cmd.finish(
+            f'当前主题：{display}\n{Theme.get_help()}',
+            reply_message=True,
+        )
+
+    t = Theme.get_by_name(args)
+    if t is None:
+        await theme_cmd.finish(f'未知主题「{args}」\n{Theme.get_help()}', reply_message=True)
+
+    set_user_theme(qqid, t.value)
+    await theme_cmd.finish(f'主题已切换为：{get_theme_display_name(t.value)}', reply_message=True)
 
 
 async def update_daily():

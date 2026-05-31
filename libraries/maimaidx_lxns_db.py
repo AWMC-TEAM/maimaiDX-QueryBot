@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS lxns_users (
     expires_at      REAL,
     scope           TEXT,
     source          TEXT DEFAULT 'divingfish',
+    theme           TEXT DEFAULT 'default',
     created_at      REAL,
     updated_at      REAL
 );
@@ -80,10 +81,13 @@ class LxnsDatabase:
         self._migrate()
 
     def _migrate(self):
-        """处理旧版 DB 缺少 source 列的情况。"""
+        """处理旧版 DB 缺少 source/theme 列的情况。"""
         cols = {row[1] for row in self._conn.execute('PRAGMA table_info(lxns_users)')}
         if 'source' not in cols:
             self._conn.execute("ALTER TABLE lxns_users ADD COLUMN source TEXT DEFAULT 'divingfish'")
+            self._conn.commit()
+        if 'theme' not in cols:
+            self._conn.execute("ALTER TABLE lxns_users ADD COLUMN theme TEXT DEFAULT 'default'")
             self._conn.commit()
 
     def upsert_user(
@@ -143,6 +147,30 @@ class LxnsDatabase:
             self._conn.execute(
                 'INSERT INTO lxns_users (qqid, source, created_at, updated_at) VALUES (?, ?, ?, ?)',
                 (qqid, source, time.time(), time.time()),
+            )
+        self._conn.commit()
+
+    def get_theme(self, qqid: int) -> str:
+        """获取用户的主题偏好，默认 'default'。"""
+        row = self._conn.execute(
+            'SELECT theme FROM lxns_users WHERE qqid = ?', (qqid,)
+        ).fetchone()
+        if row and row['theme']:
+            return row['theme']
+        return 'default'
+
+    def set_theme(self, qqid: int, theme: str):
+        """设置用户的主题偏好。如果用户不存在则先创建记录。"""
+        existing = self.get_user(qqid)
+        if existing:
+            self._conn.execute(
+                'UPDATE lxns_users SET theme = ?, updated_at = ? WHERE qqid = ?',
+                (theme, time.time(), qqid),
+            )
+        else:
+            self._conn.execute(
+                'INSERT INTO lxns_users (qqid, theme, created_at, updated_at) VALUES (?, ?, ?, ?)',
+                (qqid, theme, time.time(), time.time()),
             )
         self._conn.commit()
 

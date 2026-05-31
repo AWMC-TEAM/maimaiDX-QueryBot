@@ -237,3 +237,48 @@ class UserRanking(BaseModel):
     
     username: str
     ra: int
+
+
+##### Source
+class Source(str):
+    """数据源标识。"""
+    DIVINGFISH = 'divingfish'
+    LXNS = 'lxns'
+
+    @classmethod
+    def get_by_name(cls, name: str) -> str:
+        _map = {
+            '水鱼': cls.DIVINGFISH, 'divingfish': cls.DIVINGFISH, 'df': cls.DIVINGFISH,
+            '落雪': cls.LXNS, 'lxns': cls.LXNS, 'lx': cls.LXNS,
+        }
+        return _map.get(name.lower(), cls.DIVINGFISH)
+
+
+# 各数据源的能力标记
+SOURCE_CAPABILITIES = {
+    Source.DIVINGFISH: {
+        'b50': True,
+        'records': True,
+        'fit_diff': True,       # 拟合定数（水鱼独有）
+        'rating_ranking': True, # 全服 rating 排行（水鱼独有）
+        'gold_water': True,     # 含金量/含水量（依赖 fit_diff）
+        'pc_data': True,        # PC 数据（水鱼独有）
+        'minfo': True,          # 单曲详细游玩数据
+        'friend_battle': True,  # 友人对战
+    },
+    Source.LXNS: {
+        'b50': True,
+        'records': True,        # 需 OAuth 授权
+        'fit_diff': False,
+        'rating_ranking': False,
+        'gold_water': False,
+        'pc_data': False,
+        'minfo': False,
+        'friend_battle': False,
+    },
+}
+
+
+def source_supports(source: str, feature: str) -> bool:
+    """检查指定数据源是否支持某功能。"""
+    return SOURCE_CAPABILITIES.get(source, {}).get(feature, False)
