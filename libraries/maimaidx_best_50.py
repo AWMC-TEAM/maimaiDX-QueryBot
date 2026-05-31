@@ -614,29 +614,27 @@ class DrawCoopB50(ScoreBaseImage):
         return self._im
 
 
-def dxScore(dx: int) -> int:
+def dxScore(dx: float) -> int:
     """
-    获取DX评分星星数量（0～5），用于选择 UI_GAM_Gauge_DXScoreIcon_0x.png。
-    
-    Params:
-        `dx`: DX 百分比（0～100），须为整数
-    Returns:
-        `int` 返回星星数量 0～5
+    获取 DX 评分星星数量（0～5），用于选择 UI_GAM_Gauge_DXScoreIcon_0x.png。
+
+    阈值与游戏一致：≥97% 五星、≥95% 四星、≥93% 三星、≥90% 二星、≥85% 一星。
+    须用浮点百分比比较，不可 int 截断（否则 97.57% 会被算成 97% 而少一星）。
     """
-    dx = int(dx) if dx is not None else 0
-    if dx <= 85:
-        result = 0
-    elif dx <= 90:
-        result = 1
-    elif dx <= 93:
-        result = 2
-    elif dx <= 95:
-        result = 3
-    elif dx <= 97:
-        result = 4
-    else:
-        result = 5
-    return result
+    if dx is None:
+        return 0
+    p = float(dx)
+    if p < 85:
+        return 0
+    if p < 90:
+        return 1
+    if p < 93:
+        return 2
+    if p < 95:
+        return 3
+    if p < 97:
+        return 4
+    return 5
 
 
 def getCharWidth(o: int) -> int:
