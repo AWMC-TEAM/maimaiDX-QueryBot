@@ -123,18 +123,54 @@ def get_at_qq(message: MessageEvent) -> Optional[int]:
     return None
 
 
-def _append_lxns_notice(result, qqid: Optional[int], feature: str):
-    """
-    若用户数据源为落雪，给成功结果（MessageSegment 图片）追加水鱼提示文本。
-    错误字符串原样返回。
-    """
-    from ..libraries.maimaidx_datasource import lxns_unsupported_notice
-    notice = lxns_unsupported_notice(qqid, feature)
-    if not notice:
-        return result
+def _source_label(qqid: Optional[int]) -> str:
+    """返回当前用户数据源中文名。username/@他人 查询传 None，视为水鱼。"""
+    if qqid is None:
+        return '水鱼'
+    from ..libraries.maimaidx_datasource import get_user_source
+    return '落雪' if get_user_source(qqid) == 'lxns' else '水鱼'
+
+
+def _build_footer(
+    qqid: Optional[int],
+    total: float,
+    *,
+    forced_source: Optional[str] = None,
+    unsupported_feature: Optional[str] = None,
+) -> str:
+    """构建成绩图下方文案：数据源 + 耗时（+ 落雪不支持提示）。"""
+    from ..libraries.maimaidx_timing import get_fetch, format_summary
+    source = forced_source or _source_label(qqid)
+    lines = [f'📊 数据源：{source} | 可使用 数据源 水鱼/落雪 修改']
+    if unsupported_feature and qqid is not None and source == '落雪':
+        lines.append(f'⚠️ {unsupported_feature}依赖水鱼独有数据，落雪暂不支持，已用水鱼生成')
+    lines.append(format_summary(total, get_fetch()))
+    return '\n' + '\n'.join(lines)
+
+
+async def _finish_score(
+    matcher,
+    coro,
+    qqid: Optional[int],
+    *,
+    forced_source: Optional[str] = None,
+    unsupported_feature: Optional[str] = None,
+):
+    """统一成绩图收尾：计时执行 coro，成功追加「数据源 + 耗时」文案，错误原样发送。"""
+    import time as _t
+    from ..libraries.maimaidx_timing import reset
+    reset()
+    t0 = _t.perf_counter()
+    result = await coro
+    total = _t.perf_counter() - t0
     if isinstance(result, str):
-        return result  # 错误消息不加提示
-    return result + MessageSegment.text(notice)
+        await matcher.finish(result, reply_message=True)
+    footer = _build_footer(
+        qqid, total,
+        forced_source=forced_source,
+        unsupported_feature=unsupported_feature,
+    )
+    await matcher.finish(result + MessageSegment.text(footer), reply_message=True)
 
 
 @best50.handle()
@@ -153,22 +189,21 @@ async def _(
 
     # 仅自己查自己时走数据源偏好，@别人/指定用户名走水鱼
     if not username and qqid == event.user_id and lxns_db.get_source(qqid) == 'lxns':
+        import time as _t
+        from ..libraries.maimaidx_timing import reset
+        reset()
+        t0 = _t.perf_counter()
         result = await generate_lxns_b50(qqid)
+        total = _t.perf_counter() - t0
         if result is None:
             await best50.finish(
                 '落雪数据获取失败，请先绑定落雪查分器：发送 lxbind\n'
                 '或切换回水鱼数据源：数据源 水鱼',
                 reply_message=True,
             )
-        await best50.finish(result + MessageSegment.text('\n[数据源：落雪] | 可使用 数据源 水鱼/落雪 修改'), reply_message=True)
+        await best50.finish(result + MessageSegment.text(_build_footer(qqid, total, forced_source='落雪')), reply_message=True)
 
-    result = await generate(qqid, username)
-    if isinstance(result, str):
-        # 错误消息，直接发
-        await best50.finish(result, reply_message=True)
-    else:
-        # 成功，加数据源标签
-        await best50.finish(result + MessageSegment.text('\n[数据源：水鱼] | 可使用 数据源 水鱼/落雪 修改'), reply_message=True)
+    await _finish_score(best50, generate(qqid, username), None if username else qqid)
 
 
 @best_all50.handle()
@@ -182,7 +217,7 @@ async def _best_all50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await best_all50.finish(await generate_all(qqid, username), reply_message=True)
+    await _finish_score(best_all50, generate_all(qqid, username), None if username else qqid)
 
 
 def _display_name_from_sender(sender) -> str:
@@ -247,10 +282,7 @@ async def _how_weak(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip() or None
-    result = await generate_how_weak(qqid=qqid, username=username)
-    if isinstance(result, str):
-        await how_weak.finish(result, reply_message=True)
-    await how_weak.finish(_append_lxns_notice(result, qqid if not username else None, '我有多菜'), reply_message=True)
+    await _finish_score(how_weak, generate_how_weak(qqid=qqid, username=username), None if username else qqid, unsupported_feature='我有多菜')
 
 
 @group_weak.handle()
@@ -520,7 +552,7 @@ async def _fcb50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await fcb50.finish(await generate_fc_b50(qqid, username), reply_message=True)
+    await _finish_score(fcb50, generate_fc_b50(qqid, username), None if username else qqid)
 
 
 @fcallb50.handle()
@@ -533,7 +565,7 @@ async def _fcallb50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await fcallb50.finish(await generate_fc_all_b50(qqid, username), reply_message=True)
+    await _finish_score(fcallb50, generate_fc_all_b50(qqid, username), None if username else qqid)
 
 
 @apb50.handle()
@@ -546,7 +578,7 @@ async def _apb50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await apb50.finish(await generate_ap_b50(qqid, username), reply_message=True)
+    await _finish_score(apb50, generate_ap_b50(qqid, username), None if username else qqid)
 
 
 @apallb50.handle()
@@ -559,7 +591,7 @@ async def _apallb50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await apallb50.finish(await generate_ap_all_b50(qqid, username), reply_message=True)
+    await _finish_score(apallb50, generate_ap_all_b50(qqid, username), None if username else qqid)
 
 
 @fit_b50.handle()
@@ -572,8 +604,7 @@ async def _fit_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    result = await generate_fit_b50(qqid, username)
-    await fit_b50.finish(_append_lxns_notice(result, qqid if not username else None, '拟合b50'), reply_message=True)
+    await _finish_score(fit_b50, generate_fit_b50(qqid, username), None if username else qqid, unsupported_feature='拟合b50')
 
 
 @fit_all_b50.handle()
@@ -586,8 +617,7 @@ async def _fit_all_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    result = await generate_fit_all_b50(qqid, username)
-    await fit_all_b50.finish(_append_lxns_notice(result, qqid if not username else None, '拟合ab50'), reply_message=True)
+    await _finish_score(fit_all_b50, generate_fit_all_b50(qqid, username), None if username else qqid, unsupported_feature='拟合ab50')
 
 
 def _parse_threshold_and_username(args: str) -> tuple:
@@ -615,7 +645,7 @@ async def _sun_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     threshold, username = _parse_threshold_and_username(message.extract_plain_text())
-    await sun_b50.finish(await generate_sun_b50(qqid, username, threshold), reply_message=True)
+    await _finish_score(sun_b50, generate_sun_b50(qqid, username, threshold), None if username else qqid)
 
 
 @sun_all_b50.handle()
@@ -628,7 +658,7 @@ async def _sun_all_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     threshold, username = _parse_threshold_and_username(message.extract_plain_text())
-    await sun_all_b50.finish(await generate_sun_all_b50(qqid, username, threshold), reply_message=True)
+    await _finish_score(sun_all_b50, generate_sun_all_b50(qqid, username, threshold), None if username else qqid)
 
 
 
@@ -643,7 +673,7 @@ async def _lock_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     _, username = _parse_threshold_and_username(message.extract_plain_text())
-    await lock_b50.finish(await generate_lock_b50(qqid, username), reply_message=True)
+    await _finish_score(lock_b50, generate_lock_b50(qqid, username), None if username else qqid)
 
 
 @lock_ab50.handle()
@@ -656,7 +686,7 @@ async def _lock_ab50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     _, username = _parse_threshold_and_username(message.extract_plain_text())
-    await lock_ab50.finish(await generate_lock_all_b50(qqid, username), reply_message=True)
+    await _finish_score(lock_ab50, generate_lock_all_b50(qqid, username), None if username else qqid)
 
 
 @yueji_b50.handle()
@@ -670,7 +700,7 @@ async def _yueji_b50(
     qqid = user_id or event.user_id
     th, username = _parse_threshold_and_username(message.extract_plain_text())
     threshold = th if th is not None else 97.0
-    await yueji_b50.finish(await generate_yueji_b50(qqid, username, threshold), reply_message=True)
+    await _finish_score(yueji_b50, generate_yueji_b50(qqid, username, threshold), None if username else qqid)
 
 
 @yueji_ab50.handle()
@@ -684,7 +714,7 @@ async def _yueji_ab50(
     qqid = user_id or event.user_id
     th, username = _parse_threshold_and_username(message.extract_plain_text())
     threshold = th if th is not None else 97.0
-    await yueji_ab50.finish(await generate_yueji_all_b50(qqid, username, threshold), reply_message=True)
+    await _finish_score(yueji_ab50, generate_yueji_all_b50(qqid, username, threshold), None if username else qqid)
 
 
 @difficulty_b50.handle()
@@ -700,9 +730,17 @@ async def _difficulty_b50(event: MessageEvent, matched = RegexMatched()):
         await difficulty_b50.finish('请提供难度，如：紫b50、13b50、Master b50', reply_message=True)
 
     qqid = event.user_id
+    import time as _t
+    from ..libraries.maimaidx_timing import reset
+    reset()
+    t0 = _t.perf_counter()
     result = await generate_difficulty_b50(qqid=qqid, difficulty=difficulty)
+    total = _t.perf_counter() - t0
     if result is not None:
-        await difficulty_b50.finish(result, reply_message=True)
+        if isinstance(result, str):
+            await difficulty_b50.finish(result, reply_message=True)
+        else:
+            await difficulty_b50.finish(result + MessageSegment.text(_build_footer(qqid, total)), reply_message=True)
 
 
 @difficulty_ab50.handle()
@@ -718,9 +756,17 @@ async def _difficulty_ab50(event: MessageEvent, matched = RegexMatched()):
         await difficulty_ab50.finish('请提供难度，如：紫ab50、13ab50、Master ab50', reply_message=True)
 
     qqid = event.user_id
+    import time as _t
+    from ..libraries.maimaidx_timing import reset
+    reset()
+    t0 = _t.perf_counter()
     result = await generate_difficulty_all_b50(qqid=qqid, difficulty=difficulty)
+    total = _t.perf_counter() - t0
     if result is not None:
-        await difficulty_ab50.finish(result, reply_message=True)
+        if isinstance(result, str):
+            await difficulty_ab50.finish(result, reply_message=True)
+        else:
+            await difficulty_ab50.finish(result + MessageSegment.text(_build_footer(qqid, total)), reply_message=True)
 
 
 @ideal_b50.handle()
@@ -734,7 +780,7 @@ async def _ideal_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await ideal_b50.finish(await generate_ideal_b50(qqid, username), reply_message=True)
+    await _finish_score(ideal_b50, generate_ideal_b50(qqid, username), None if username else qqid)
 
 
 @ideal_ab50.handle()
@@ -748,7 +794,7 @@ async def _ideal_ab50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await ideal_ab50.finish(await generate_ideal_all_b50(qqid, username), reply_message=True)
+    await _finish_score(ideal_ab50, generate_ideal_all_b50(qqid, username), None if username else qqid)
 
 
 @enable_data_storage.handle()
@@ -912,7 +958,7 @@ async def _weekly_report(event: MessageEvent):
             reply_message=True,
         )
         return
-    await weekly_report.finish(await generate_progress_report(qqid, 7), reply_message=True)
+    await _finish_score(weekly_report, generate_progress_report(qqid, 7), qqid)
 
 
 @monthly_report.handle()
@@ -924,7 +970,7 @@ async def _monthly_report(event: MessageEvent):
             reply_message=True,
         )
         return
-    await monthly_report.finish(await generate_progress_report(qqid, 30), reply_message=True)
+    await _finish_score(monthly_report, generate_progress_report(qqid, 30), qqid)
 
 
 @daily_report.handle()
@@ -936,7 +982,7 @@ async def _daily_report(event: MessageEvent):
             reply_message=True,
         )
         return
-    await daily_report.finish(await generate_progress_report(qqid, 1), reply_message=True)
+    await _finish_score(daily_report, generate_progress_report(qqid, 1), qqid)
 
 
 @today_gain_recommend.handle()
@@ -948,7 +994,7 @@ async def _today_gain_recommend(event: MessageEvent):
             reply_message=True,
         )
         return
-    await today_gain_recommend.finish(await generate_today_gain_recommendation(qqid), reply_message=True)
+    await _finish_score(today_gain_recommend, generate_today_gain_recommendation(qqid), qqid)
 
 
 @plate_count_stats.handle()
@@ -1014,7 +1060,7 @@ async def _compare_report(event: MessageEvent, message: Message = CommandArg()):
             reply_message=True,
         )
         return
-    await compare_report.finish(await generate_progress_report_between(qqid, args[0], args[1]), reply_message=True)
+    await _finish_score(compare_report, generate_progress_report_between(qqid, args[0], args[1]), qqid)
 
 
 @gold_content.handle()
@@ -1027,8 +1073,7 @@ async def _gold_content(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    result = await generate_gold_content(qqid, username)
-    await gold_content.finish(_append_lxns_notice(result, qqid if not username else None, '含金量'), reply_message=True)
+    await _finish_score(gold_content, generate_gold_content(qqid, username), None if username else qqid, unsupported_feature='含金量')
 
 
 @water_content.handle()
@@ -1041,8 +1086,7 @@ async def _water_content(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    result = await generate_water_content(qqid, username)
-    await water_content.finish(_append_lxns_notice(result, qqid if not username else None, '含水量'), reply_message=True)
+    await _finish_score(water_content, generate_water_content(qqid, username), None if username else qqid, unsupported_feature='含水量')
 
 
 @version_b50.handle()
@@ -1059,7 +1103,7 @@ async def _(
     if not version_name:
         await version_b50.finish('版本名称不能为空', reply_message=True)
         return
-    await version_b50.finish(await generate_version_b50(qqid, None, version_name), reply_message=True)
+    await _finish_score(version_b50, generate_version_b50(qqid, None, version_name), None if user_id else qqid, unsupported_feature='版本b50')
 
 
 @legacy_b50.handle()
@@ -1098,6 +1142,10 @@ async def _(
     if not ds_map:
         await legacy_b50.finish(f"「{version_name}」版本无定数变化数据", reply_message=True)
         return
+    import time as _t
+    from ..libraries.maimaidx_timing import reset
+    reset()
+    _t0 = _t.perf_counter()
     result = await b50_pipeline(
         qqid=qqid,
         recalculate=True,
@@ -1106,10 +1154,11 @@ async def _(
         compact_layout=True,
         hide_logo=False,
     )
+    _total = _t.perf_counter() - _t0
     if isinstance(result, str):
         await legacy_b50.finish(result, reply_message=True)
     else:
-        await legacy_b50.finish(result, reply_message=True)
+        await legacy_b50.finish(result + MessageSegment.text(_build_footer(qqid, _total)), reply_message=True)
 
 
 @legacy_b35.handle()
@@ -1148,6 +1197,10 @@ async def _(
     if not ds_map:
         await legacy_b35.finish(f"「{version_name}」版本无定数变化数据", reply_message=True)
         return
+    import time as _t
+    from ..libraries.maimaidx_timing import reset
+    reset()
+    _t0 = _t.perf_counter()
     result = await b50_pipeline(
         qqid=qqid,
         recalculate=True,
@@ -1157,10 +1210,11 @@ async def _(
         compact_layout=True,
         hide_logo=False,
     )
+    _total = _t.perf_counter() - _t0
     if isinstance(result, str):
         await legacy_b35.finish(result, reply_message=True)
     else:
-        await legacy_b35.finish(result, reply_message=True)
+        await legacy_b35.finish(result + MessageSegment.text(_build_footer(qqid, _total)), reply_message=True)
 
 
 @dx2026_b35.handle()
@@ -1183,6 +1237,10 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
     if not ds_map:
         await dx2026_b35.finish(f"「{version_name}」版本无定数变化数据", reply_message=True)
         return
+    import time as _t
+    from ..libraries.maimaidx_timing import reset
+    reset()
+    _t0 = _t.perf_counter()
     result = await b50_pipeline(
         qqid=qqid,
         recalculate=True,
@@ -1192,10 +1250,11 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
         compact_layout=True,
         hide_logo=False,
     )
+    _total2 = _t.perf_counter() - _t0
     if isinstance(result, str):
         await dx2026_b35.finish(result, reply_message=True)
     else:
-        await dx2026_b35.finish(result, reply_message=True)
+        await dx2026_b35.finish(result + MessageSegment.text(_build_footer(qqid, _total2)), reply_message=True)
 
 
 @tag_analysis.handle()

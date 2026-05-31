@@ -11,6 +11,7 @@
 from typing import List, Optional, Tuple
 
 from ..config import log
+from . import maimaidx_timing as _timing
 from .maimaidx_api_data import maiApi
 from .maimaidx_error import LxnsDataError
 from .maimaidx_lxns_client import (
@@ -177,8 +178,9 @@ async def _lxns_get_bests_and_player(qqid: int) -> Tuple[Optional[dict], str, in
     access_token = await _get_valid_access_token(qqid)
     if access_token:
         try:
-            bests = await user_get_bests(access_token)
-            player = await user_get_player(access_token)
+            with _timing.measure('fetch'):
+                bests = await user_get_bests(access_token)
+                player = await user_get_player(access_token)
             if player:
                 nickname = player.get('name', '')
                 rating = player.get('rating', 0)
@@ -190,13 +192,14 @@ async def _lxns_get_bests_and_player(qqid: int) -> Tuple[Optional[dict], str, in
     from ..config import maiconfig
     if not maiconfig.lxns_dev_token:
         return None, nickname, rating, False
-    player_info = await dev_get_player_by_qq(qqid)
-    if not player_info:
-        return None, nickname, rating, False
-    fc = player_info.get('friend_code')
-    nickname = player_info.get('name', '')
-    rating = player_info.get('rating', 0)
-    bests = await dev_get_bests(fc) if fc else None
+    with _timing.measure('fetch'):
+        player_info = await dev_get_player_by_qq(qqid)
+        if not player_info:
+            return None, nickname, rating, False
+        fc = player_info.get('friend_code')
+        nickname = player_info.get('name', '')
+        rating = player_info.get('rating', 0)
+        bests = await dev_get_bests(fc) if fc else None
     return bests, nickname, rating, False
 
 
@@ -258,8 +261,9 @@ async def get_user_records(
                 '或切换回水鱼数据源：数据源 水鱼'
             )
         try:
-            scores = await user_get_scores(access_token)
-            player = await user_get_player(access_token)
+            with _timing.measure('fetch'):
+                scores = await user_get_scores(access_token)
+                player = await user_get_player(access_token)
         except Exception as e:
             log.warning(f'[datasource] lxns OAuth scores failed qq={qqid}: {e}')
             raise LxnsDataError(f'落雪成绩获取失败：{e}')

@@ -249,11 +249,14 @@ async def generate_lxns_b50(qqid: int) -> Optional[MessageSegment]:
     nickname = ''
     rating = 0
 
+    from ..libraries.maimaidx_timing import measure
+
     access_token = await _get_valid_access_token(qqid)
     if access_token:
         try:
-            bests = await user_get_bests(access_token)
-            player = await user_get_player(access_token)
+            with measure('fetch'):
+                bests = await user_get_bests(access_token)
+                player = await user_get_player(access_token)
             if player:
                 nickname = player.get('name', '')
                 rating = player.get('rating', 0)
@@ -264,14 +267,15 @@ async def generate_lxns_b50(qqid: int) -> Optional[MessageSegment]:
     if bests is None:
         if not maiconfig.lxns_dev_token:
             return None
-        player_info = await dev_get_player_by_qq(qqid)
-        if not player_info:
-            return None
-        fc = player_info.get('friend_code')
-        nickname = player_info.get('name', '')
-        rating = player_info.get('rating', 0)
-        if fc:
-            bests = await dev_get_bests(fc)
+        with measure('fetch'):
+            player_info = await dev_get_player_by_qq(qqid)
+            if not player_info:
+                return None
+            fc = player_info.get('friend_code')
+            nickname = player_info.get('name', '')
+            rating = player_info.get('rating', 0)
+            if fc:
+                bests = await dev_get_bests(fc)
         if not bests:
             return None
 
@@ -294,7 +298,12 @@ async def _lxb50(event: MessageEvent):
     qqid = event.user_id
 
     try:
+        import time as _t
+        from ..libraries.maimaidx_timing import reset, get_fetch, format_summary
+        reset()
+        t0 = _t.perf_counter()
         result = await generate_lxns_b50(qqid)
+        total = _t.perf_counter() - t0
         if result is None:
             await lxb50.finish(
                 '落雪数据获取失败，请检查：\n'
@@ -303,7 +312,11 @@ async def _lxb50(event: MessageEvent):
                 '3. Bot 是否配置了开发者 Token',
                 reply_message=True,
             )
-        await lxb50.finish(result + MessageSegment.text('\n[数据源：落雪] | 可使用 数据源 水鱼/落雪 修改'), reply_message=True)
+        footer = (
+            '\n📊 数据源：落雪 | 可使用 数据源 水鱼/落雪 修改\n'
+            + format_summary(total, get_fetch())
+        )
+        await lxb50.finish(result + MessageSegment.text(footer), reply_message=True)
 
     except Exception as e:
         log.error(f'[lxb50] error: {e}', exc_info=True)

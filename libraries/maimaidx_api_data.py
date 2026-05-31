@@ -5,6 +5,10 @@ import httpx
 from ..config import UUID, maiconfig
 from .maimaidx_error import *
 from .maimaidx_model import *
+from . import maimaidx_timing as _timing
+
+# 计入「数据获取」耗时的成绩查询接口
+_FETCH_ENDPOINTS = ('/query/player', '/query/plate', '/dev/player/records', '/dev/player/record')
 
 
 class MaimaiAPI:
@@ -68,37 +72,45 @@ class MaimaiAPI:
             `Dict[str, Any]` 返回结果
         """
         # 查分器 /chart_stats 等接口数据量大，超时放宽至 90 秒避免启动失败
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90)) as session:
-            res = await session.request(
-                method, 
-                self.MaiProberProxyAPI + endpoint, 
-                headers=self.headers, 
-                **kwargs
-            )
-            if res.status_code == 200:
-                data = res.json()
-            elif res.status_code == 400:
-                error: Dict = res.json()
-                if 'message' in error:
-                    if error['message'] == 'no such user':
-                        raise UserNotFoundError
-                    elif error['message'] == 'user not exists':
-                        raise UserNotExistsError
-                    else:
-                        raise UserNotFoundError
-                elif 'msg' in error:
-                    if error['msg'] == '开发者token有误':
-                        raise TokenError
-                    elif error['msg'] == '开发者token被禁用':
-                        raise TokenDisableError
-                    else:
-                        raise TokenNotFoundError
+        _is_fetch = any(endpoint.startswith(e) for e in _FETCH_ENDPOINTS)
+        _ctx = _timing.measure('fetch') if _is_fetch else None
+        if _ctx:
+            _ctx.__enter__()
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(90)) as session:
+                res = await session.request(
+                    method, 
+                    self.MaiProberProxyAPI + endpoint, 
+                    headers=self.headers, 
+                    **kwargs
+                )
+        finally:
+            if _ctx:
+                _ctx.__exit__(None, None, None)
+        if res.status_code == 200:
+            data = res.json()
+        elif res.status_code == 400:
+            error: Dict = res.json()
+            if 'message' in error:
+                if error['message'] == 'no such user':
+                    raise UserNotFoundError
+                elif error['message'] == 'user not exists':
+                    raise UserNotExistsError
                 else:
                     raise UserNotFoundError
-            elif res.status_code == 403:
-                raise UserDisabledQueryError
+            elif 'msg' in error:
+                if error['msg'] == '开发者token有误':
+                    raise TokenError
+                elif error['msg'] == '开发者token被禁用':
+                    raise TokenDisableError
+                else:
+                    raise TokenNotFoundError
             else:
-                raise UnknownError
+                raise UserNotFoundError
+        elif res.status_code == 403:
+            raise UserDisabledQueryError
+        else:
+            raise UnknownError
         return data
 
     async def music_data(self):
