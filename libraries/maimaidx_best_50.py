@@ -135,6 +135,10 @@ class ScoreBaseImage:
         cls.rainbow_bottom_bg = Image.open(maimaidir / 'rainbow_bottom.png').convert('RGBA').resize((1200, 200))
     
     def __init__(self, image: Image.Image = None, theme: str = None) -> None:
+        from .maimaidx_theme import Theme as _Theme
+        if theme is None:
+            theme = _Theme.get_default().value
+        self._theme = theme
         self.play_counts: dict[tuple[int, int], int] = {}
         if not maiconfig.saveinmem:
             self.load_image(theme)
@@ -208,13 +212,14 @@ class ScoreBaseImage:
             cover = Image.open(music_picture(info.song_id)).resize((75, 75))
             # info.type = 谱面类型 SD 标准谱面 / DX DX谱面
             version = Image.open(maimaidir / f'{info.type.upper()}.png').resize((37, 14))
-            # 成绩图标：按评级选择 UI_TTR_Rank_*.png，与 config.score_Rank_l 对应
+            # 成绩图标：按评级选择 UI_TTR_Rank_*.png，与 config.score_Rank_l 对应（走主题路径）
+            from .maimaidx_theme import resolve_theme_path as _rtp
             rate_key = getattr(info, 'rate', None) or 'D'
             if rate_key.islower() and rate_key in score_Rank_l:
                 rate_name = score_Rank_l[rate_key]
             else:
                 rate_name = rate_key
-            rate = Image.open(maimaidir / f'UI_TTR_Rank_{rate_name}.png').resize((63, 28))
+            rate = Image.open(_rtp(maimaidir, self._theme, f'UI_TTR_Rank_{rate_name}.png')).resize((63, 28))
 
             self._im.alpha_composite(self._diff[info.level_index], (x, y))
             self._im.alpha_composite(cover, (x + 12, y + 12))
@@ -269,12 +274,13 @@ class ScoreBaseImage:
 
             cover = Image.open(music_picture(info.song_id)).resize((75, 75))
             version = Image.open(maimaidir / f'{info.type.upper()}.png').resize((37, 14))
+            from .maimaidx_theme import resolve_theme_path as _rtp
             rate_key = getattr(info, 'rate', None) or 'D'
             if rate_key.islower() and rate_key in score_Rank_l:
                 rate_name = score_Rank_l[rate_key]
             else:
                 rate_name = rate_key
-            rate = Image.open(maimaidir / f'UI_TTR_Rank_{rate_name}.png').resize((63, 28))
+            rate = Image.open(_rtp(maimaidir, self._theme, f'UI_TTR_Rank_{rate_name}.png')).resize((63, 28))
 
             self._im.alpha_composite(self._diff[info.level_index], (x, y))
             self._im.alpha_composite(cover, (x + 12, y + 12))
@@ -333,9 +339,16 @@ class DrawBest(ScoreBaseImage):
         max_display: int = 50,
         theme: str = None,
     ) -> None:
-        from .maimaidx_theme import Theme, resolve_theme_path
+        from .maimaidx_theme import Theme, resolve_theme_path, get_user_theme
         if theme is None:
-            theme = Theme.get_default().value
+            # 自动按 qqid 查用户偏好；查不到走默认主题
+            if qqid is not None:
+                try:
+                    theme = get_user_theme(int(qqid))
+                except Exception:
+                    theme = Theme.get_default().value
+            else:
+                theme = Theme.get_default().value
         self._theme = theme
         bg_path = resolve_theme_path(maimaidir, theme, 'b50_bg.png')
         super().__init__(Image.open(bg_path).convert('RGBA'), theme=theme)

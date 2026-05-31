@@ -137,13 +137,15 @@ class DrawScore(ScoreBaseImage):
             x = 200 if isdx else 700
             y += 140 if index != 0 else 0
             
-            rate = Image.open(maimaidir / f'UI_TTR_Rank_{_d.rate}.png').resize((63, 28))
+            from .maimaidx_theme import resolve_theme_path as _rtp
+            _t = getattr(self, '_theme', None) or 'prism_plus'
+            rate = Image.open(_rtp(maimaidir, _t, f'UI_TTR_Rank_{_d.rate}.png')).resize((63, 28))
             
             self._im.alpha_composite(self._rise[_d.level_index], (x + 30, y))
             self._im.alpha_composite(Image.open(music_picture(_d.song_id)).resize((80, 80)), (x + 55, y + 40))
             self._im.alpha_composite(Image.open(maimaidir / f'{_d.type.upper()}.png').resize((60, 22)), (x + 240, y + 114))
             if _d.oldrate:
-                oldrate = Image.open(maimaidir / f'UI_TTR_Rank_{_d.oldrate}.png').resize((63, 28))
+                oldrate = Image.open(_rtp(maimaidir, _t, f'UI_TTR_Rank_{_d.oldrate}.png')).resize((63, 28))
                 self._im.alpha_composite(oldrate, (x + 145, y + 82))
             self._im.alpha_composite(rate, (x + 305, y + 82))
             

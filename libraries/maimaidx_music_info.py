@@ -569,8 +569,9 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
                         (1025, 261 + y * num)
                     )
                 im.alpha_composite(Image.open(maimaidir / 'ra.png'), (1350, 405 + y * num))
+                from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
                 im.alpha_composite(
-                    Image.open(maimaidir / f'UI_TTR_Rank_{rate}.png').resize((100, 45)), 
+                    Image.open(_rtp(maimaidir, _Th.get_default().value, f'UI_TTR_Rank_{rate}.png')).resize((100, 45)), 
                     (737, 272 + y * num)
                 )
 
@@ -731,7 +732,8 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
                         score = fromid[music.id][music.lv]['achievements']
                         achievements_fc_list.append(score)
                         rate = computeRa(music.ds, score, onlyrate=True)
-                        rank = Image.open(maimaidir / f'UI_TTR_Rank_{rate}.png').resize((78, 35))
+                        from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
+                        rank = Image.open(_rtp(maimaidir, _Th.get_default().value, f'UI_TTR_Rank_{rate}.png')).resize((78, 35))
                         if score >= 100:
                             im.alpha_composite(complete_bg, (x + 2, y - 18))
                         else:
@@ -885,7 +887,8 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                         if n == 3:
                             im.alpha_composite(complete_bg if play.achievements >= 100 else unfinished_bg, (x, y))
                             rate = computeRa(play.ds, play.achievements, onlyrate=True)
-                            rank = Image.open(maimaidir / f'UI_TTR_Rank_{rate}.png').resize((102, 46))
+                            from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
+                            rank = Image.open(_rtp(maimaidir, _Th.get_default().value, f'UI_TTR_Rank_{rate}.png')).resize((102, 46))
                             im.alpha_composite(rank, (x - 1, y + 15))
                         lv[n].add(play.song_id)
                         f.append(n)

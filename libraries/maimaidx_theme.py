@@ -1,12 +1,22 @@
 """
 主题切换：管理 B50 等图片的背景主题。
 
-使用方式：
-  - 用户通过「主题 xxx」指令切换主题
-  - 主题偏好存储在 lxns_users 表的 theme 字段
-  - DrawBest 通过 theme 参数选择背景图
-  - 主题专属图片位于 static/mai/pic/{theme}/ 子目录
-  - 非主题图片（难度卡、aurora 等）从 static/mai/pic/ 直接加载
+beta 仓库的目录结构（pic_dir = static/mai/pic）：
+  pic_dir/{theme}/             ← 主题专属图片
+    b50.png                    ← b50 背景
+    logo.png                   ← logo
+    chart_info.png             ← 谱面信息
+    play_info.png              ← 单曲游玩信息
+    ra_dx.png                  ← rating 等级 dx
+    UI_TTR_Rank_*.png          ← 所有评级图标（SSS+/SSSp/SS/S/A 等）
+  pic_dir/                     ← 共享图片
+    b50_score_*.png            ← 难度卡背景
+    rise_score_*.png
+    UI_MSS_*.png               ← FC/FS 图标
+    UI_GAM_*.png               ← DX 星图标
+    UI_CMN_TabTitle_*.png      ← 新曲标识
+    SD.png / DX.png            ← 类型标识
+    {version}.png              ← 版本图标
 """
 
 from enum import Enum
@@ -28,8 +38,8 @@ class Theme(str, Enum):
     def get_by_name(cls, name: str) -> Optional['Theme']:
         """通过中文名/英文名获取主题。"""
         _map = {
-            '棱镜': cls.PRISM_PLUS, 'prism_plus': cls.PRISM_PLUS, 'prism+': cls.PRISM_PLUS,
-            '圆环': cls.CIRCLE, 'circle': cls.CIRCLE,
+            '棱镜': cls.PRISM_PLUS, 'prism_plus': cls.PRISM_PLUS, 'prism+': cls.PRISM_PLUS, 'prism': cls.PRISM_PLUS,
+            '圆环': cls.CIRCLE, 'circle': cls.CIRCLE, '环形': cls.CIRCLE,
         }
         return _map.get(name.lower())
 
@@ -49,13 +59,27 @@ _THEME_NAMES = {
 }
 
 
-# 主题专属图片（标准名 → 主题子目录实际文件名见 _THEME_FILENAME_MAP）
-THEME_SPECIFIC_IMAGES = [
-    'title.png',
-    'title-lengthen.png',
-    'design.png',
+# 主题子目录中的文件名映射（key=本地代码使用的文件名，value=主题子目录中的实际文件名）
+_THEME_FILENAME_MAP = {
+    'b50_bg.png': 'b50.png',
+}
+
+
+# 主题专属图片的精确文件名集合（用于快速判断）
+_THEME_EXACT_FILES = {
+    'b50.png',
     'b50_bg.png',
-]
+    'logo.png',
+    'chart_info.png',
+    'play_info.png',
+    'ra_dx.png',
+}
+
+
+# 主题专属图片的文件名前缀（用于动态匹配）
+_THEME_PREFIXES = (
+    'UI_TTR_Rank_',
+)
 
 
 def get_theme_display_name(theme: str) -> str:
@@ -63,47 +87,62 @@ def get_theme_display_name(theme: str) -> str:
     return _THEME_NAMES.get(theme, theme)
 
 
-# 主题子目录中的文件名映射（key=标准名，value=主题子目录中的实际文件名）
-_THEME_FILENAME_MAP = {
-    'b50_bg.png': 'b50.png',
-}
+def is_theme_specific(filename: str) -> bool:
+    """判断某文件名是否为主题专属图片。"""
+    if filename in _THEME_EXACT_FILES:
+        return True
+    return any(filename.startswith(p) for p in _THEME_PREFIXES)
 
 
 def resolve_theme_path(maimaidir: Path, theme: str, filename: str) -> Path:
     """
-    解析主题图片路径：
-    1. 优先当前主题子目录（应用文件名映射）
-    2. 不存在则遍历其他主题子目录
-    3. 都没有则回退到根目录原名
+    解析图片路径，自动判断是否走主题子目录。
+
+    查找顺序：
+      1. 若是主题专属图片：当前主题子目录 → 其他主题子目录 → 根目录
+      2. 否则：直接根目录
+
+    Args:
+        maimaidir: static/mai/pic 路径
+        theme:    主题名（如 'prism_plus'）
+        filename: 文件名（如 'UI_TTR_Rank_SSSp.png'）
+
+    Returns:
+        Path：找到则为存在的路径；找不到则返回当前主题路径（让调用方报明确错误）
     """
+    if not is_theme_specific(filename):
+        return maimaidir / filename
+
     mapped = _THEME_FILENAME_MAP.get(filename, filename)
 
-    # 当前主题子目录
-    theme_path = maimaidir / theme / mapped
-    if theme_path.exists():
-        return theme_path
+    # 1. 当前主题子目录
+    p = maimaidir / theme / mapped
+    if p.exists():
+        return p
 
-    # 遍历其他主题子目录
+    # 2. 其他主题子目录
     for t in Theme:
         if t.value != theme:
-            candidate = maimaidir / t.value / mapped
-            if candidate.exists():
-                return candidate
+            q = maimaidir / t.value / mapped
+            if q.exists():
+                return q
 
-    # 回退到根目录原名
-    root_path = maimaidir / filename
-    if root_path.exists():
-        return root_path
+    # 3. 根目录原名
+    r = maimaidir / filename
+    if r.exists():
+        return r
 
-    # 都找不到，返回主题路径让调用方报明确错误
-    return theme_path
+    # 都找不到，返回当前主题路径让调用方报明确错误
+    return p
 
 
 def get_user_theme(qqid: int) -> str:
-    """获取用户主题偏好（从 DB）。"""
+    """获取用户主题偏好（从 DB），默认 prism_plus。"""
     from .maimaidx_lxns_db import lxns_db
     t = lxns_db.get_theme(qqid)
-    return t if t != 'default' else Theme.get_default().value
+    if t in (None, '', 'default'):
+        return Theme.get_default().value
+    return t
 
 
 def set_user_theme(qqid: int, theme: str):

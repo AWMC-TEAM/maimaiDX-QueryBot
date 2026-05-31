@@ -270,11 +270,13 @@ async def _draw_gold_water_image(
 
         cover = Image.open(music_picture(rec.song_id)).resize((75, 75))
         version = Image.open(maimaidir / f'{rec.type.upper()}.png').resize((37, 14))
+        from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
+        _t = _Th.get_default().value
         rate_key = getattr(rec, 'rate', None) or 'sss'
         if rate_key and rate_key.islower() and rate_key in score_Rank_l:
-            rate = Image.open(maimaidir / f'UI_TTR_Rank_{score_Rank_l[rate_key]}.png').resize((63, 28))
+            rate = Image.open(_rtp(maimaidir, _t, f'UI_TTR_Rank_{score_Rank_l[rate_key]}.png')).resize((63, 28))
         else:
-            rate = Image.open(maimaidir / f'UI_TTR_Rank_{rate_key if rate_key else "SSS"}.png').resize((63, 28))
+            rate = Image.open(_rtp(maimaidir, _t, f'UI_TTR_Rank_{rate_key if rate_key else "SSS"}.png')).resize((63, 28))
         im.alpha_composite(_diff[level_index], (x, y))
         im.alpha_composite(cover, (x + 12, y + 12))
         im.alpha_composite(version, (x + 51, y + 91))

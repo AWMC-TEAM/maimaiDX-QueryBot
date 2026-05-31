@@ -78,9 +78,11 @@ async def update_rating_table() -> str:
             for _lv in lvlist: 
                 x = 160
                 y += 20
-                im.alpha_composite(
-                    Image.open(maimaidir / 'UI_CMN_Chara_Level_S_01.png').resize((80, 80)), (50, y + 80)
-                )
+                _chara_lv = maimaidir / 'UI_CMN_Chara_Level_S_01.png'
+                if _chara_lv.exists():
+                    im.alpha_composite(
+                        Image.open(_chara_lv).resize((80, 80)), (50, y + 80)
+                    )
                 ts.draw(88, y + 120, 35, _lv, anchor='mm')
                 for num, music in enumerate(lvlist[_lv]):
                     if num % 14 == 0:
@@ -193,9 +195,11 @@ async def update_plate_table() -> str:
                     ralv[r].sort(key=lambda x: x.ds[3], reverse=True)
                 if ralv[r]:
                     y += 15
-                    im.alpha_composite(
-                        Image.open(maimaidir / 'UI_CMN_Chara_Level_S_01.png'), (65, y + 115)
-                    )
+                    _chara_lv2 = maimaidir / 'UI_CMN_Chara_Level_S_01.png'
+                    if _chara_lv2.exists():
+                        im.alpha_composite(
+                            Image.open(_chara_lv2), (65, y + 115)
+                        )
                     ts.draw(113, y + 164, 35, r, anchor='mm')
                 x = 200
                 for num, music in enumerate(ralv[r]):
