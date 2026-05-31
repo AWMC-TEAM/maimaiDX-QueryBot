@@ -107,7 +107,7 @@ def music_picture(music_id: Union[int, str]) -> Path:
     查找顺序：
     1. 直接查找 {music_id}.png
     2. 如果是宴谱(>100000)，尝试 {music_id - 100000}.png
-    3. 如果是 DX/SD 转换范围，尝试 ±10000
+    3. 统一转换为四位数 (music_id % 10000)
     4. 尝试 .jpg 格式
     5. 返回默认占位图
     
@@ -130,22 +130,22 @@ def music_picture(music_id: Union[int, str]) -> Path:
             return _path
         if (_path := coverdir / f'{base_id}.jpg').exists():
             return _path
-    
-    # 3. DX/SD 转换 (1000-11000 范围)
-    if 1000 < music_id < 10000:
-        # SD 谱面，尝试找 DX 版本
-        if (_path := coverdir / f'{music_id + 10000}.png').exists():
+        # 宴谱也尝试四位数
+        four_digit = base_id % 10000
+        if (_path := coverdir / f'{four_digit}.png').exists():
             return _path
-        if (_path := coverdir / f'{music_id + 10000}.jpg').exists():
-            return _path
-    elif 10000 < music_id <= 11000:
-        # DX 谱面，尝试找 SD 版本
-        if (_path := coverdir / f'{music_id - 10000}.png').exists():
-            return _path
-        if (_path := coverdir / f'{music_id - 10000}.jpg').exists():
+        if (_path := coverdir / f'{four_digit}.jpg').exists():
             return _path
     
-    # 4. 尝试 JPG 格式
+    # 3. 统一转换为四位数（所有曲绘现在都是四位数）
+    four_digit_id = music_id % 10000
+    if four_digit_id != music_id:  # 避免重复查找
+        if (_path := coverdir / f'{four_digit_id}.png').exists():
+            return _path
+        if (_path := coverdir / f'{four_digit_id}.jpg').exists():
+            return _path
+    
+    # 4. 尝试 JPG 格式（原始 ID）
     if (_path := coverdir / f'{music_id}.jpg').exists():
         return _path
     
