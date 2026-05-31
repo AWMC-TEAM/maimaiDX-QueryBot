@@ -168,11 +168,12 @@ async def update_wu_plate_table() -> str:
                 if musicnum == 0:
                     continue
                 interval += 1
-                remainder = musicnum % 10
-                lines += (musicnum // 10) + (1 if remainder else 0)
+                remainder = musicnum % 12
+                lines += (musicnum // 12) + (1 if remainder else 0)
             
-            linesheight = 115 * lines + (interval - 1) * 15
-            width, height = 1400, 150 + linesheight + 360
+            # 与 beta 一致：GRID_STEP=96, 等级间距 30
+            linesheight = 96 * lines + interval * 30
+            width, height = 1400, 490 + linesheight + 180
             
             im = tricolor_gradient(width, height)
             
@@ -201,31 +202,37 @@ async def update_wu_plate_table() -> str:
                 'mm'
             )
             
-            y = 245
-            id_bg = Image.new('RGBA', (100, 20), (124, 129, 255, 255))
+            id_bg = Image.new('RGBA', (110, 20), (124, 129, 255, 255))
             
+            # === 曲绘网格：与 beta 一致 ===
+            GRID_STEP = 96
+            START_X = 180
+            START_Y = 490
+            ROW_COUNT = 12
+            
+            current_y = START_Y
             for r in level_dict:
                 # 按定数排序（ReMASTER 使用索引4，其他使用索引3）
                 level_dict[r].sort(key=lambda x: x.ds[4] if x.id in remaster_id_list and len(x.ds) > 4 else x.ds[3], reverse=True)
                 
-                if level_dict[r]:
-                    y += 15
-                    _chara_lv2 = _rtp(maimaidir, _t, 'UI_CMN_Chara_Level_S_01.png')
-                    if _chara_lv2.exists():
-                        im.alpha_composite(Image.open(_chara_lv2), (65, y + 115))
-                    ts.draw(113, y + 164, 35, r, anchor='mm')
+                songs = level_dict[r]
+                if not songs:
+                    continue
                 
-                x = 200
-                for num, music in enumerate(level_dict[r]):
-                    if num % 10 == 0:
-                        x = 200
-                        y += 115
-                    else:
-                        x += 115
+                # 等级标签
+                ts.draw(72, current_y + 40, 40, r, sbi.text_color, 'lm', 4, (255, 255, 255, 255))
+                
+                max_row = 0
+                for num, music in enumerate(songs):
+                    row, col = divmod(num, ROW_COUNT)
+                    max_row = max(max_row, row)
+                    x = START_X + col * GRID_STEP
+                    y_pos = current_y + row * GRID_STEP
                     cover = music_picture(music.id)
-                    im.alpha_composite(Image.open(cover).resize((100, 100)), (x, y))
-                    im.alpha_composite(id_bg, (x, y + 80))
-                    ts.draw(x + 50, y + 88, 20, music.id, anchor='mm')
+                    im.alpha_composite(Image.open(cover).resize((80, 80)), (x, y_pos))
+                    im.alpha_composite(id_bg, (x - 5, y_pos - 5))
+                    ts.draw(x + 56, y_pos + 4, 16, music.id, anchor='mm')
+                current_y += (max_row + 1) * GRID_STEP + 30
             
             # 保存
             by = BytesIO()
@@ -273,19 +280,15 @@ async def update_plate_table() -> str:
                 if musicnum == 0:
                     continue
                 interval += 1
-                remainder = musicnum % 10
-                lines += (musicnum // 10) + (1 if remainder else 0)
+                remainder = musicnum % 12
+                lines += (musicnum // 12) + (1 if remainder else 0)
             
-            linesheight = 115 * lines + (interval - 1) * 15
+            # 与 beta 一致：GRID_STEP=96, 等级间距 30
+            linesheight = 96 * lines + interval * 30
             """
             `linesheight`: 各等级曲绘和间隔总和高度
-            
-                - `115` 为曲绘高度 `100` + 间隔 `15`
-                - `lines` 为行数
-                - `interval` 为各等级间隔行数
-                - `(interval - 1) * 15` 为各等级间隔高度，各等级之间间隔为 `30`，所以只加 `15`
             """
-            width, height = 1400, 150 + linesheight + 360
+            width, height = 1400, 490 + linesheight + 180
             """
             `150` 为底部图片 `design` 高度 + 上下间隔高度
             `linesheight` 为各等级曲绘和间隔总和高度
@@ -316,30 +319,39 @@ async def update_plate_table() -> str:
                 'mm'
             )
             y = 245
+            id_bg = Image.new('RGBA', (110, 20), (124, 129, 255, 255))
+            
+            # === 曲绘网格：与 beta 一致 ===
+            GRID_STEP = 96
+            START_X = 180
+            START_Y = 490
+            ROW_COUNT = 12
+            
+            current_y = START_Y
             for r in ralv:
                 if _v in ['霸', '舞']:
                     ralv[r].sort(key=lambda x: x.ds[-1], reverse=True)
                 else:
                     ralv[r].sort(key=lambda x: x.ds[3], reverse=True)
-                if ralv[r]:
-                    y += 15
-                    _chara_lv2 = _rtp(maimaidir, _t, 'UI_CMN_Chara_Level_S_01.png')
-                    if _chara_lv2.exists():
-                        im.alpha_composite(
-                            Image.open(_chara_lv2), (65, y + 115)
-                        )
-                    ts.draw(113, y + 164, 35, r, anchor='mm')
-                x = 200
-                for num, music in enumerate(ralv[r]):
-                    if num % 10 == 0:
-                        x = 200
-                        y += 115
-                    else:
-                        x += 115
+                
+                songs = ralv[r]
+                if not songs:
+                    continue
+                
+                # 等级标签
+                ts.draw(72, current_y + 40, 40, r, sbi.text_color, 'lm', 4, (255, 255, 255, 255))
+                
+                max_row = 0
+                for num, music in enumerate(songs):
+                    row, col = divmod(num, ROW_COUNT)
+                    max_row = max(max_row, row)
+                    x = START_X + col * GRID_STEP
+                    y_pos = current_y + row * GRID_STEP
                     cover = music_picture(music.id)
-                    im.alpha_composite(Image.open(cover).resize((100, 100)), (x, y))
-                    im.alpha_composite(id_bg, (x, y + 80))
-                    ts.draw(x + 50, y + 88, 20, music.id, anchor='mm')
+                    im.alpha_composite(Image.open(cover).resize((80, 80)), (x, y_pos))
+                    im.alpha_composite(id_bg, (x - 5, y_pos - 5))
+                    ts.draw(x + 56, y_pos + 4, 16, music.id, anchor='mm')
+                current_y += (max_row + 1) * GRID_STEP + 30
 
             by = BytesIO()
             im.save(by, 'PNG')

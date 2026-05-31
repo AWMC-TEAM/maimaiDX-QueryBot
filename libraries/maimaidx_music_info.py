@@ -854,12 +854,12 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
             (200, 45)
         )
         lv: List[set[int]] = [set() for _ in range(number)]
-        # 曲绘起始 y 轴 - beta: start_y = 490, gap = 96, row_count = 12
+        # 曲绘起始 y 轴 - 与生成函数一致 (start_y=490, gap=96, row_count=12)
         GRID_START_X = 180
         GRID_START_Y = 490
         GRID_GAP = 96
         GRID_ROW_COUNT = 12
-        y = GRID_START_Y - GRID_GAP  # 因为下面有 y += GRID_GAP
+        current_y = GRID_START_Y
         # if plan == '者':
         #     for level in ra:
         #         x = 200
@@ -886,7 +886,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                 for idx, _id in enumerate(ra[level]):
                     row, col = divmod(idx, GRID_ROW_COUNT)
                     x = GRID_START_X + col * GRID_GAP
-                    yy = y + GRID_GAP + row * GRID_GAP
+                    yy = current_y + row * GRID_GAP
                     f: List[int] = []
                     for n, play in enumerate(ra[level][_id]):
                         if play is None or not play.fc: continue
@@ -901,7 +901,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                             im.alpha_composite(finished_bg[n].resize((14, 14)), (x + 1 + 16 * n, yy + 64))
                         else:
                             im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, yy + 63))
-                y += rows * GRID_GAP + 30
+                current_y += rows * GRID_GAP + 30
         if plan == '将':
             for level in ra:
                 if not ra[level]:
@@ -910,7 +910,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                 for idx, _id in enumerate(ra[level]):
                     row, col = divmod(idx, GRID_ROW_COUNT)
                     x = GRID_START_X + col * GRID_GAP
-                    yy = y + GRID_GAP + row * GRID_GAP
+                    yy = current_y + row * GRID_GAP
                     f: List[int] = []
                     for n, play in enumerate(ra[level][_id]):
                         if play is None or play.achievements < 100: continue
@@ -926,7 +926,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                             im.alpha_composite(finished_bg[n].resize((14, 14)), (x + 1 + 16 * n, yy + 64))
                         else:
                             im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, yy + 63))
-                y += rows * GRID_GAP + 30
+                current_y += rows * GRID_GAP + 30
         if plan == '神':
             _fc = ['ap', 'app']
             for level in ra:
@@ -936,7 +936,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                 for idx, _id in enumerate(ra[level]):
                     row, col = divmod(idx, GRID_ROW_COUNT)
                     x = GRID_START_X + col * GRID_GAP
-                    yy = y + GRID_GAP + row * GRID_GAP
+                    yy = current_y + row * GRID_GAP
                     f: List[int] = []
                     for n, play in enumerate(ra[level][_id]):
                         if play is None or play.fc not in _fc: continue
@@ -951,7 +951,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                             im.alpha_composite(finished_bg[n].resize((14, 14)), (x + 1 + 16 * n, yy + 64))
                         else:
                             im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, yy + 63))
-                y += rows * GRID_GAP + 30
+                current_y += rows * GRID_GAP + 30
         if plan == '舞舞':
             fs = ['fsd', 'fdx', 'fsdp', 'fdxp']
             for level in ra:
@@ -961,7 +961,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                 for idx, _id in enumerate(ra[level]):
                     row, col = divmod(idx, GRID_ROW_COUNT)
                     x = GRID_START_X + col * GRID_GAP
-                    yy = y + GRID_GAP + row * GRID_GAP
+                    yy = current_y + row * GRID_GAP
                     f: List[int] = []
                     for n, play in enumerate(ra[level][_id]):
                         if play is None or play.fs not in fs:
@@ -977,7 +977,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                             im.alpha_composite(finished_bg[n].resize((14, 14)), (x + 1 + 16 * n, yy + 64))
                         else:
                             im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, yy + 63))
-                y += rows * GRID_GAP + 30
+                current_y += rows * GRID_GAP + 30
         
         # 统计信息 - 按照 beta 分支实现
         # 默认颜色
