@@ -779,7 +779,14 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
     try:
         if version in platecn:
             version = platecn[version]
-        ver, _ver = version_map.get(version, ([plate_to_dx_version[version]], version))
+        
+        # 获取版本映射，如果不存在则尝试从 plate_to_dx_version 获取
+        if version in version_map:
+            ver, _ver = version_map[version]
+        elif version in plate_to_dx_version:
+            ver, _ver = [plate_to_dx_version[version]], version
+        else:
+            return f'未找到版本 {version} 的牌子数据'
   
         music_id_list = mai.total_plate_id_list[_ver]
         music = mai.total_list.by_id_list(music_id_list)
