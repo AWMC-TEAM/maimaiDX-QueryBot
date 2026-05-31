@@ -2,7 +2,7 @@ import random
 import time
 import traceback
 from collections import defaultdict
-from typing import Callable, DefaultDict
+from typing import Callable, DefaultDict, List, Optional, Tuple, Union
 
 import pyecharts.options as opts
 from nonebot.adapters.onebot.v11 import MessageSegment
@@ -25,6 +25,122 @@ Filter = Tuple[
     List[PlayInfoDefault]
 ]
 Condition = Callable[[PlayInfoDefault], bool]
+
+# 等级牌子简称 → level_process 使用的 plan 码（与 13sss进度 / 13+fc进度 等价）
+LEVEL_PLATE_PLAN: dict[str, str] = {
+    '将': 'sss',
+    '者': 'bbb',
+    '极': 'fc',
+    '極': 'fc',
+    '神': 'ap',
+    '舞舞': 'fsd',
+}
+
+LEVEL_PLATE_DESC: dict[str, str] = {
+    '将': '达成率 ≥100%',
+    '者': '达成率 ≥80%',
+    '极': 'Full Combo 及以上',
+    '極': 'Full Combo 及以上',
+    '神': 'All Perfect 及以上',
+    '舞舞': 'Full Sync DX 及以上',
+}
+
+
+def resolve_level_plate_plan(plan_cn: str) -> str:
+    key = plan_cn.strip()
+    if key not in LEVEL_PLATE_PLAN:
+        raise ValueError(f'不支持的等级牌子类型：{plan_cn}')
+    return LEVEL_PLATE_PLAN[key]
+
+
+def _level_plan_completed(plannum: int, plan_value, rec) -> bool:
+    if plannum == 0:
+        return float(rec.achievements) >= float(plan_value)
+    if plannum == 1:
+        return bool(rec.fc and combo_rank.index(rec.fc) >= plan_value)
+    if plannum == 2:
+        if not rec.fs:
+            return False
+        if rec.fs in sync_rank:
+            return sync_rank.index(rec.fs) >= plan_value
+        return rec.fs in sync_rank_p and sync_rank_p.index(rec.fs) >= plan_value
+    return False
+
+
+def _parse_level_plan(plan: str) -> tuple[int, float | int]:
+    p = plan.lower()
+    if p in scoreRank:
+        return 0, achievementList[scoreRank.index(p) - 1]
+    if p in comboRank:
+        return 1, comboRank.index(p)
+    if p in syncRank:
+        return 2, syncRank.index(p)
+    raise ValueError(f'无法识别的评价条件：{plan}')
+
+
+async def _fetch_level_plate_records(qqid: int, username: Optional[str]):
+    if maiApi.token:
+        devobj = await maiApi.query_user_get_dev(qqid=qqid, username=username)
+        return devobj.records
+    version = list(set(_v for _v in list(plate_to_dx_version.values())))
+    return await maiApi.query_user_plate(qqid=qqid, username=username, version=version)
+
+
+async def level_plate_summary_text(
+    qqid: int,
+    username: Optional[str],
+    level: str,
+    plan_cn: str,
+) -> str:
+    """等级牌子进度文字摘要（如 13将）。"""
+    plan = resolve_level_plate_plan(plan_cn)
+    plannum, plan_value = _parse_level_plan(plan)
+    records = await _fetch_level_plate_records(qqid, username)
+    music = mai.total_list.by_plan(level)
+
+    completed_n = 0
+    unfinished_n = 0
+    notplayed_n = 0
+
+    played_map: dict[tuple[int, int], PlayInfoDev | PlayInfoDefault] = {}
+    for rec in records:
+        if str(rec.song_id) in music and rec.level == level:
+            played_map[(int(rec.song_id), int(rec.level_index))] = rec
+
+    def iter_slots():
+        for sid, slot in music.items():
+            if isinstance(slot, dict):
+                for idx in slot:
+                    yield int(sid), int(idx), slot[idx]
+            else:
+                yield int(sid), int(slot.lv), slot
+
+    for song_id, level_index, _slot in iter_slots():
+        key = (song_id, level_index)
+        rec = played_map.get(key)
+        if rec is None:
+            notplayed_n += 1
+        elif _level_plan_completed(plannum, plan_value, rec):
+            completed_n += 1
+        else:
+            unfinished_n += 1
+
+    total = completed_n + unfinished_n + notplayed_n
+    pct = (completed_n / total * 100) if total else 0.0
+    desc = LEVEL_PLATE_DESC.get(plan_cn, plan)
+    lines = [
+        f'【{level}{plan_cn} 进度】',
+        f'目标：{desc}',
+        f'已完成 {completed_n} / {total} 首（{pct:.1f}%）',
+        f'未完成 {unfinished_n} 首 · 未游玩 {notplayed_n} 首',
+    ]
+    if completed_n >= total and total > 0:
+        lines.append(f'恭喜，{level}{plan_cn} 已全部完成！')
+    elif unfinished_n + notplayed_n <= 5 and (unfinished_n + notplayed_n) > 0:
+        lines.append('剩余较少，加油清完最后几首～')
+    else:
+        lines.append('下方为完成表图片，可查看已完成 / 未完成 / 未开始详情。')
+    return '\n'.join(lines)
 
 
 async def music_global_data(music: Music, level_index: int) -> MessageSegment:
