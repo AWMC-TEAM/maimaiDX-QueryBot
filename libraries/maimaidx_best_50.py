@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw
 
 from ..config import *
 from .maimaidx_theme import pic
-from .image import DrawText, image_to_base64, music_picture
+from .image import DrawText, draw_centered_design_footer, image_to_base64, music_picture
 from .maimaidx_api_data import maiApi
 from .maimaidx_error import *
 from .maimaidx_model import ChartInfo, Data, PlayInfoDefault, PlayInfoDev, UserInfo
@@ -474,10 +474,15 @@ class DrawBest(ScoreBaseImage):
                 f'B35: {sdrating} + B15: {dxrating} = {self.Rating}',
                 (0, 0, 0, 255), 'mm', 3, (255, 255, 255, 255)
             )
-        self._sy.draw(
-            700, 1570, 27, 
-            footer_designed_generated(), 
-            self.text_color, 'mm', 5, (255, 255, 255, 255)
+        draw_centered_design_footer(
+            self._im,
+            self._sy,
+            footer_designed_generated(),
+            color=self.text_color,
+            margin_x=60,
+            start_font_size=14,
+            min_font_size=10,
+            bottom_gap=28,
         )
 
         self.whiledraw(self.sdBest, False)
@@ -601,10 +606,15 @@ class DrawCoopB50(ScoreBaseImage):
             rainbow_text,
             (0, 0, 0, 255), 'mm', 3, (255, 255, 255, 255)
         )
-        self._sy.draw(
-            700, 1570, 27,
+        draw_centered_design_footer(
+            self._im,
+            self._sy,
             footer_designed_generated(),
-            self.text_color, 'mm', 5, (255, 255, 255, 255)
+            color=self.text_color,
+            margin_x=60,
+            start_font_size=14,
+            min_font_size=10,
+            bottom_gap=28,
         )
         if self.grouped:
             self.whiledraw_with_source(self.sd_list, start_y=235)

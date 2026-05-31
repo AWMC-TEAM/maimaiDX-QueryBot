@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw
 
 from ..config import *
 from .maimaidx_theme import pic
-from .image import DrawText, image_to_base64, music_picture
+from .image import DrawText, draw_centered_design_footer, image_to_base64, music_picture
 from .maimaidx_api_data import maiApi
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError
 from .maimaidx_model import ChartInfo, UserInfo
@@ -309,9 +309,16 @@ async def _draw_gold_water_image(
         tb.draw(x + 219, y + 65, 15, f'{rec.dxScore}/{dxscore or 0}', _T_COLOR[level_index], anchor='mm')
         tb.draw(x + 93, y + 65, 15, f'{fit_diff} ({val:+.3f})', _T_COLOR[level_index], anchor='lm')
 
-    # 底部文案
-    footer = footer_designed_pipe_generated(GOLD_WATER_DESIGNER)
-    sy.draw(w // 2, content_height - 35, 27, footer, (124, 129, 255, 255), 'mm', 5, (255, 255, 255, 255))
+    draw_centered_design_footer(
+        im,
+        sy,
+        footer_designed_pipe_generated(GOLD_WATER_DESIGNER),
+        color=(124, 129, 255, 255),
+        margin_x=80,
+        start_font_size=14,
+        min_font_size=9,
+        bottom_gap=24,
+    )
     return im
 
 

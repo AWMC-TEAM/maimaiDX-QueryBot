@@ -185,11 +185,19 @@ class DrawScore(ScoreBaseImage):
             self._im.alpha_composite(title_bg, (814, 30))
         self._sy.draw(950, 68, 18, '新版本谱面推荐', self.text_color, 'mm')
         self.whilerisepic(b15_scores, b15_score, False)
-        
-        height = self._im.size[1]
-        if self.design_bg:
-            self._im.alpha_composite(self.design_bg.resize((800, 72)), (300, height - 110))
-        self._sy.draw(700, height - 76, 18, footer_designed_generated(), self.text_color, 'mm')
+
+        draw_centered_design_footer(
+            self._im,
+            self._sy,
+            footer_generated(),
+            design_bg=self.design_bg,
+            color=self.text_color,
+            margin_x=120,
+            bar_height=48,
+            start_font_size=13,
+            min_font_size=9,
+            bottom_gap=28,
+        )
         return self._im
 
     def draw_plan(

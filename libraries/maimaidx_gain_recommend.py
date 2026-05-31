@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from ..config import log
+from ..config import footer_generated, log
 from .maimaidx_api_data import maiApi
 from .maimaidx_best_50 import _is_latest_version, computeRa
 from .maimaidx_data_storage import DailySnapshot, ScoreRecord, data_storage
@@ -223,5 +223,5 @@ async def generate_today_gain_recommendation(qqid: int, top_n: int = 12) -> str:
             )
 
     log.debug(f"[today_gain] qq={qqid} picks={len(picks)} top={len(top)}")
-    return "\n".join(lines)
+    return "\n".join(lines) + f"\n\n{footer_generated()}"
 

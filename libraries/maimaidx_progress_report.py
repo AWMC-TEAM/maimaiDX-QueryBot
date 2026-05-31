@@ -2,16 +2,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 from nonebot.adapters.onebot.v11 import MessageSegment
 from PIL import Image, ImageDraw
 
-from ..config import SIYUAN, achievementList
-from ..config import log
-from .image import DrawText, image_to_base64, music_picture, rounded_corners
+from ..config import SIYUAN, achievementList, footer_generated, log, maiconfig, static
+from .image import DrawText, generate_frosted_card, image_to_base64, music_picture, rounded_corners
 from .maimaidx_best_50 import _is_latest_version
 from .maimaidx_data_storage import DailySnapshot, ScoreRecord, data_storage
+
+ACCENT = (124, 129, 255, 255)
+TEXT = (45, 50, 95, 255)
+SUBTEXT = (90, 95, 140, 255)
+MUTED = (120, 126, 145, 255)
+POSITIVE = (72, 168, 108, 255)
+NEGATIVE = (220, 100, 110, 255)
+
+_MARGIN = 44
+_PANEL_ALPHA = 0.52
+_CARD_W = 300
+_CARD_H = 88
 
 
 @dataclass
@@ -58,7 +70,7 @@ def _collect_snapshots(qqid: int, days: int) -> List[DailySnapshot]:
     cutoff = now - timedelta(days=days)
     selected: List[DailySnapshot] = []
     for m in metas:
-        stored_at = m.get("stored_at") or ""
+        stored_at = m.get('stored_at') or ''
         if not stored_at:
             continue
         try:
@@ -66,7 +78,7 @@ def _collect_snapshots(qqid: int, days: int) -> List[DailySnapshot]:
         except Exception:
             continue
         if dt >= cutoff:
-            snap = data_storage.load_snapshot_by_id(qqid, m.get("snapshot_id", ""))
+            snap = data_storage.load_snapshot_by_id(qqid, m.get('snapshot_id', ''))
             if snap:
                 selected.append(snap)
     return selected
@@ -100,55 +112,119 @@ def _analyze(old: DailySnapshot, new: DailySnapshot) -> Dict:
     improved.sort(key=lambda x: (x.ra_delta, x.achv_delta), reverse=True)
 
     return {
-        "rating_delta": int(new.rating) - int(old.rating),
-        "b35_delta": sum(int(r.ra) for r in new_b35) - sum(int(r.ra) for r in old_b35),
-        "b15_delta": sum(int(r.ra) for r in new_b15) - sum(int(r.ra) for r in old_b15),
-        "b35_tail_delta": (int(new_b35[-1].ra) - int(old_b35[-1].ra)) if (old_b35 and new_b35) else 0,
-        "b15_tail_delta": (int(new_b15[-1].ra) - int(old_b15[-1].ra)) if (old_b15 and new_b15) else 0,
-        "new_entries": new_entries,
-        "improved": improved,
-        "sun_list": [x for x in improved if _is_sun(x.achv_now)],
-        "lock_list": [x for x in improved if _is_lock(x.achv_now)],
+        'rating_delta': int(new.rating) - int(old.rating),
+        'b35_delta': sum(int(r.ra) for r in new_b35) - sum(int(r.ra) for r in old_b35),
+        'b15_delta': sum(int(r.ra) for r in new_b15) - sum(int(r.ra) for r in old_b15),
+        'b35_tail_delta': (int(new_b35[-1].ra) - int(old_b35[-1].ra)) if (old_b35 and new_b35) else 0,
+        'b15_tail_delta': (int(new_b15[-1].ra) - int(old_b15[-1].ra)) if (old_b15 and new_b15) else 0,
+        'new_entries': new_entries,
+        'improved': improved,
+        'sun_list': [x for x in improved if _is_sun(x.achv_now)],
+        'lock_list': [x for x in improved if _is_lock(x.achv_now)],
     }
 
 
-def _draw_panel(dr: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int, r: int = 18) -> None:
-    dr.rounded_rectangle((x, y, x + w, y + h), radius=r, fill=(255, 255, 255, 240), outline=(220, 224, 232, 255), width=2)
-
-
-def _paste_cover_card(im: Image.Image, dt: DrawText, x: int, y: int, r: ScoreRecord, extra: str = "") -> None:
-    dr = ImageDraw.Draw(im)
-    dr.rounded_rectangle((x, y, x + 320, y + 92), radius=14, fill=(248, 250, 255, 255), outline=(230, 234, 246, 255), width=2)
+def _resolve_report_bg_path() -> Path | None:
+    custom = maiconfig.maimaidx_tag_analysis_bg
+    if custom:
+        p = Path(custom)
+        if not p.is_absolute():
+            p = static / custom
+        if p.is_file():
+            return p
     try:
-        cover = Image.open(music_picture(r.song_id)).convert("RGBA").resize((78, 78))
+        from .maimaidx_theme import Theme, resolve_theme_path
+        from ..config import maimaidir
+
+        p = resolve_theme_path(maimaidir, Theme.get_default().value, 'b50_bg.png')
+        return p if p.exists() else None
+    except Exception:
+        return None
+
+
+def _get_report_bg(width: int, height: int) -> Image.Image:
+    im = Image.new('RGBA', (width, height), (245, 247, 255, 255))
+    bg_path = _resolve_report_bg_path()
+    if not bg_path:
+        return im
+    bg = Image.open(bg_path).convert('RGBA')
+    bg_w, bg_h = bg.size
+    for j in range(height // bg_h + 1):
+        im.alpha_composite(bg, (0, j * bg_h))
+    if width > bg_w:
+        strip = bg.crop((bg_w - 1, 0, bg_w, bg_h))
+        for i in range(width - bg_w):
+            for j in range(height // bg_h + 1):
+                im.alpha_composite(strip, (bg_w + i, j * bg_h))
+    return im
+
+
+def _frosted_panel(im: Image.Image, x: int, y: int, w: int, h: int) -> Image.Image:
+    return generate_frosted_card(im, (x, y, x + w, y + h), alpha=_PANEL_ALPHA)
+
+
+def _delta_color(v: int | float) -> Tuple[int, int, int, int]:
+    if v > 0:
+        return POSITIVE
+    if v < 0:
+        return NEGATIVE
+    return MUTED
+
+
+def _paste_cover_card(
+    im: Image.Image,
+    dt: DrawText,
+    x: int,
+    y: int,
+    r: ScoreRecord,
+    extra: str = '',
+) -> None:
+    dr = ImageDraw.Draw(im)
+    dr.rounded_rectangle(
+        (x, y, x + _CARD_W, y + _CARD_H),
+        radius=16,
+        fill=(255, 255, 255, 200),
+        outline=(*ACCENT[:3], 180),
+        width=2,
+    )
+    try:
+        cover = Image.open(music_picture(r.song_id)).convert('RGBA').resize((74, 74))
         cover = rounded_corners(cover, 12, (True, True, True, True))
         im.alpha_composite(cover, (x + 8, y + 7))
     except Exception:
         pass
-    name = r.title if len(r.title) <= 16 else (r.title[:15] + "…")
-    dt.draw(x + 96, y + 14, 20, name, (56, 66, 96, 255), "lt")
-    dt.draw(x + 96, y + 43, 18, f"[{r.level}]  {r.achievements:.4f}%", (76, 84, 110, 255), "lt")
-    info = f"ra {int(r.ra)}"
+    name = r.title if len(r.title) <= 15 else (r.title[:14] + '…')
+    dt.draw(x + 90, y + 12, 19, name, TEXT, 'lt', 1, (255, 255, 255, 220))
+    dt.draw(x + 90, y + 38, 17, f'[{r.level}]  {r.achievements:.4f}%', SUBTEXT, 'lt', 1, (255, 255, 255, 200))
+    info = f'ra {int(r.ra)}'
     if extra:
-        info += f"  |  {extra}"
-    dt.draw(x + 96, y + 66, 18, info, (96, 102, 124, 255), "lt")
+        info += f'  ·  {extra}'
+    dt.draw(x + 90, y + 60, 16, info, SUBTEXT, 'lt', 1, (255, 255, 255, 200))
 
 
-def _draw_line_chart(dr: ImageDraw.ImageDraw, dt: DrawText, points: List[int], labels: List[str], x: int, y: int, w: int, h: int):
-    _draw_panel(dr, x, y, w, h)
-    dt.draw(x + 20, y + 16, 30, "Rating 曲线", (40, 45, 60, 255), "lt")
+def _draw_line_chart(
+    dr: ImageDraw.ImageDraw,
+    dt: DrawText,
+    points: List[int],
+    labels: List[str],
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+) -> None:
+    dt.draw(x + 24, y + 18, 28, 'Rating 曲线', ACCENT, 'lt', 2, (255, 255, 255, 240))
     if not points:
-        dt.draw(x + 20, y + 62, 22, "暂无数据", (110, 110, 120, 255), "lt")
+        dt.draw(x + 24, y + 70, 20, '暂无数据', MUTED, 'lt')
         return
 
-    left, top, right, bottom = x + 56, y + 70, x + w - 24, y + h - 40
+    left, top, right, bottom = x + 56, y + 72, x + w - 28, y + h - 36
     min_v, max_v = min(points), max(points)
     if min_v == max_v:
         min_v -= 10
         max_v += 10
 
-    dr.line((left, top, left, bottom), fill=(180, 188, 205, 255), width=2)
-    dr.line((left, bottom, right, bottom), fill=(180, 188, 205, 255), width=2)
+    dr.line((left, top, left, bottom), fill=(*ACCENT[:3], 120), width=2)
+    dr.line((left, bottom, right, bottom), fill=(*ACCENT[:3], 120), width=2)
 
     coords: List[Tuple[int, int]] = []
     n = len(points)
@@ -160,133 +236,195 @@ def _draw_line_chart(dr: ImageDraw.ImageDraw, dt: DrawText, points: List[int], l
 
     for gy in range(5):
         yy = int(top + (bottom - top) * gy / 4)
-        dr.line((left, yy, right, yy), fill=(236, 240, 248, 255), width=1)
+        dr.line((left, yy, right, yy), fill=(255, 255, 255, 80), width=1)
 
     if len(coords) >= 2:
-        dr.line(coords, fill=(99, 130, 255, 255), width=4)
+        dr.line(coords, fill=ACCENT, width=4)
     for i, (px, py) in enumerate(coords):
-        dr.ellipse((px - 5, py - 5, px + 5, py + 5), fill=(99, 130, 255, 255))
+        dr.ellipse((px - 6, py - 6, px + 6, py + 6), fill=ACCENT, outline=(255, 255, 255, 255), width=2)
         if i in (0, len(coords) - 1):
-            dt.draw(px, py - 12, 18, str(points[i]), (65, 82, 150, 255), "mb")
+            dt.draw(px, py - 14, 17, str(points[i]), TEXT, 'mb', 1, (255, 255, 255, 230))
     if labels:
-        dt.draw(left, bottom + 10, 16, labels[0], (120, 120, 132, 255), "lt")
-        dt.draw(right, bottom + 10, 16, labels[-1], (120, 120, 132, 255), "rt")
+        dt.draw(left, bottom + 8, 15, labels[0], MUTED, 'lt', 1, (255, 255, 255, 200))
+        dt.draw(right, bottom + 8, 15, labels[-1], MUTED, 'rt', 1, (255, 255, 255, 200))
 
 
 def _short_song(r: ScoreRecord) -> str:
     t = r.title.strip()
-    return t if len(t) <= 22 else t[:21] + "…"
+    return t if len(t) <= 22 else t[:21] + '…'
 
 
-def _draw_report(title: str, nickname: str, points: List[int], labels: List[str], data: Dict, old_dt: str, new_dt: str) -> Image.Image:
-    width, height = 1600, 1280
-    im = Image.new("RGBA", (width, height), (242, 246, 255, 255))
+def _find_record_for_entry(new_b50: List[ScoreRecord], e: _DiffEntry) -> ScoreRecord | None:
+    for rr in new_b50:
+        if rr.title == e.title and rr.level == e.level:
+            return rr
+    return None
+
+
+def _draw_report(
+    title: str,
+    nickname: str,
+    points: List[int],
+    labels: List[str],
+    data: Dict,
+    old_dt: str,
+    new_dt: str,
+) -> Image.Image:
+    width = 1600
+    added = data['new_entries'][:6]
+    inc = data['improved'][:10]
+    lock_list = data['lock_list'][:5]
+    sun_list = data['sun_list'][:5]
+    new_b50: List[ScoreRecord] = data.get('new_b50') or []
+
+    new_cards_h = (_CARD_H + 16) if added[:2] else 0
+    new_list_count = max(0, len(added) - 2)
+    new_panel_h = 56 + new_cards_h + (28 if new_list_count else 0) + new_list_count * 26 + 24
+
+    top_improved = inc[:2]
+    imp_cards_h = (_CARD_H + 16) if top_improved else 0
+    imp_list = inc[2:] if len(inc) > 2 else (inc if not top_improved else [])
+    imp_panel_h = 56 + imp_cards_h + (28 if imp_list else 0) + max(1, len(imp_list)) * 32 + 24
+
+    lock_panel_h = 56 + 40 + max(1, len(lock_list)) * 28 + 40 + max(1, len(sun_list)) * 28 + 24
+
+    y_chart = 108
+    chart_h = 300
+    y_row2 = y_chart + chart_h + 20
+    row2_h = max(248, new_panel_h)
+    y_row3 = y_row2 + row2_h + 20
+    row3_h = max(imp_panel_h, lock_panel_h)
+    footer_h = 52
+    height = y_row3 + row3_h + footer_h
+
+    im = _get_report_bg(width, height)
+    chart_x, chart_w = _MARGIN, width - _MARGIN * 2
+    core_w = 500
+    new_x = _MARGIN + core_w + 20
+    new_w = width - _MARGIN - new_x
+    imp_w = width - _MARGIN * 2 - 520
+    lock_x = _MARGIN + imp_w + 20
+    lock_w = 500
+
+    im = _frosted_panel(im, chart_x, y_chart, chart_w, chart_h)
+    im = _frosted_panel(im, _MARGIN, y_row2, core_w, row2_h)
+    im = _frosted_panel(im, new_x, y_row2, new_w, row2_h)
+    im = _frosted_panel(im, _MARGIN, y_row3, imp_w, row3_h)
+    im = _frosted_panel(im, lock_x, y_row3, lock_w, row3_h)
+    im = _frosted_panel(im, _MARGIN, height - footer_h, width - _MARGIN * 2, footer_h - 8)
+
     dr = ImageDraw.Draw(im)
-    dt = DrawText(dr, str(SIYUAN))
+    dt = DrawText(dr, SIYUAN)
 
-    dt.draw(56, 34, 48, title, (30, 40, 68, 255), "lt")
-    dt.draw(56, 86, 24, f"{nickname}  |  {old_dt}  ->  {new_dt}", (96, 102, 120, 255), "lt")
+    dt.draw(_MARGIN, 32, 44, title, ACCENT, 'lt', 2, (255, 255, 255, 240))
+    dt.draw(_MARGIN, 78, 22, f'{nickname}  ·  {old_dt}  →  {new_dt}', SUBTEXT, 'lt', 1, (255, 255, 255, 220))
 
-    _draw_line_chart(dr, dt, points, labels, 46, 128, 1508, 320)
+    _draw_line_chart(dr, dt, points, labels, chart_x, y_chart, chart_w, chart_h)
 
-    _draw_panel(dr, 46, 470, 740, 260)
-    dt.draw(70, 492, 30, "核心变化", (40, 45, 60, 255), "lt")
-    core_lines = [
-        f"Rating 增量: {data['rating_delta']:+d}",
-        f"B35 增量: {data['b35_delta']:+d}",
-        f"B15 增量: {data['b15_delta']:+d}",
-        f"B35 末位增量: {data['b35_tail_delta']:+d}",
-        f"B15 末位增量: {data['b15_tail_delta']:+d}",
-    ]
-    for i, line in enumerate(core_lines):
-        dt.draw(74, 540 + i * 36, 24, line, (64, 72, 96, 255), "lt")
+    dt.draw(_MARGIN + 24, y_row2 + 18, 28, '核心变化', ACCENT, 'lt', 2, (255, 255, 255, 240))
+    for i, (label, val) in enumerate([
+        ('Rating', data['rating_delta']),
+        ('B35', data['b35_delta']),
+        ('B15', data['b15_delta']),
+        ('B35 末位', data['b35_tail_delta']),
+        ('B15 末位', data['b15_tail_delta']),
+    ]):
+        sy = y_row2 + 68 + i * 34
+        dt.draw(_MARGIN + 28, sy, 20, label, SUBTEXT, 'lt', 1, (255, 255, 255, 200))
+        dt.draw(_MARGIN + core_w - 32, sy, 22, f'{val:+d}', _delta_color(val), 'rt', 1, (255, 255, 255, 220))
 
-    _draw_panel(dr, 814, 470, 740, 260)
-    dt.draw(838, 492, 30, "B50 新增曲目", (40, 45, 60, 255), "lt")
-    added = data["new_entries"][:6]
+    dt.draw(new_x + 24, y_row2 + 18, 28, 'B50 新增曲目', ACCENT, 'lt', 2, (255, 255, 255, 240))
     if not added:
-        dt.draw(844, 546, 22, "无新增", (120, 126, 145, 255), "lt")
-    for i, r in enumerate(added[:2]):
-        _paste_cover_card(im, dt, 836 + i * 356, 532, r)
-    if len(added) > 2:
-        dt.draw(844, 636, 19, "其余新增：", (98, 104, 126, 255), "lt")
-        for i, r in enumerate(added[2:6]):
-            dt.draw(844, 660 + i * 24, 18, f"{i+3}. {_short_song(r)} [{r.level}] {int(r.ra)}", (64, 72, 96, 255), "lt")
+        dt.draw(new_x + 28, y_row2 + 72, 20, '无新增', MUTED, 'lt')
+    else:
+        cy = y_row2 + 58
+        for i, r in enumerate(added[:2]):
+            _paste_cover_card(im, dt, new_x + 20 + i * (_CARD_W + 16), cy, r)
+        if new_list_count:
+            dt.draw(new_x + 28, cy + _CARD_H + 12, 18, '其余新增', SUBTEXT, 'lt', 1, (255, 255, 255, 200))
+            for i, r in enumerate(added[2:6]):
+                dt.draw(
+                    new_x + 32, cy + _CARD_H + 36 + i * 26, 17,
+                    f'{i + 3}. {_short_song(r)} [{r.level}]  ra {int(r.ra)}',
+                    TEXT, 'lt', 1, (255, 255, 255, 220),
+                )
 
-    _draw_panel(dr, 46, 752, 740, 490)
-    dt.draw(70, 774, 30, "B50 提升曲目", (40, 45, 60, 255), "lt")
-    inc = data["improved"][:10]
+    dt.draw(_MARGIN + 24, y_row3 + 18, 28, 'B50 提升曲目', ACCENT, 'lt', 2, (255, 255, 255, 240))
     if not inc:
-        dt.draw(74, 826, 22, "无提升", (120, 126, 145, 255), "lt")
-    for i, e in enumerate(inc):
-        dt.draw(
-            74,
-            822 + i * 38,
-            20,
-            f"{i+1}. {e.title[:18]} [{e.level}]  ra {e.ra_delta:+d}  达成 {e.achv_delta:+.4f}%",
-            (64, 72, 96, 255),
-            "lt",
-        )
-    # Top2 提升用封面卡展示
-    improved_raw = data["improved"][:2]
-    new_map = {_song_key(r): r for r in data.get("new_b50", [])}
-    for i, e in enumerate(improved_raw):
-        target = None
-        for rr in data.get("new_b50", []):
-            if rr.title == e.title and rr.level == e.level:
-                target = rr
-                break
-        if target:
-            _paste_cover_card(im, dt, 430, 826 + i * 102, target, f"ra {e.ra_delta:+d} / 达成 {e.achv_delta:+.4f}%")
+        dt.draw(_MARGIN + 28, y_row3 + 72, 20, '无提升', MUTED, 'lt')
+    else:
+        cy = y_row3 + 58
+        for i, e in enumerate(top_improved):
+            rec = _find_record_for_entry(new_b50, e)
+            if rec:
+                _paste_cover_card(
+                    im, dt, _MARGIN + 20 + i * (_CARD_W + 16), cy, rec,
+                    f'ra {e.ra_delta:+d} / 达成 {e.achv_delta:+.4f}%',
+                )
+        list_y = cy + (imp_cards_h if top_improved else 0) + 8
+        show_list = imp_list if top_improved else inc
+        if top_improved and imp_list:
+            dt.draw(_MARGIN + 28, list_y, 18, '更多提升', SUBTEXT, 'lt', 1, (255, 255, 255, 200))
+            list_y += 26
+        for i, e in enumerate(show_list):
+            idx = i + 3 if top_improved else i + 1
+            dt.draw(
+                _MARGIN + 32, list_y + i * 32, 18,
+                f'{idx}. {e.title[:20]} [{e.level}]  ra {e.ra_delta:+d}  达成 {e.achv_delta:+.4f}%',
+                TEXT, 'lt', 1, (255, 255, 255, 220),
+            )
 
-    _draw_panel(dr, 814, 752, 740, 490)
-    dt.draw(838, 774, 30, "锁血 / 寸止", (40, 45, 60, 255), "lt")
-    lock_list = data["lock_list"][:5]
-    sun_list = data["sun_list"][:5]
-    dt.draw(844, 822, 23, "锁血命中", (72, 86, 140, 255), "lt")
+    dt.draw(lock_x + 24, y_row3 + 18, 28, '锁血 / 寸止', ACCENT, 'lt', 2, (255, 255, 255, 240))
+    dt.draw(lock_x + 28, y_row3 + 64, 22, '锁血命中', TEXT, 'lt', 1, (255, 255, 255, 230))
     if not lock_list:
-        dt.draw(844, 856, 20, "无", (120, 126, 145, 255), "lt")
+        dt.draw(lock_x + 28, y_row3 + 96, 18, '无', MUTED, 'lt')
     for i, e in enumerate(lock_list):
-        dt.draw(844, 856 + i * 30, 19, f"{i+1}. {e.title[:14]}  {e.achv_now:.4f}%  ra {e.ra_delta:+d}", (64, 72, 96, 255), "lt")
-
-    dt.draw(844, 1012, 23, "寸止命中", (72, 86, 140, 255), "lt")
+        dt.draw(
+            lock_x + 32, y_row3 + 96 + i * 28, 17,
+            f'{i + 1}. {e.title[:16]}  {e.achv_now:.4f}%  ra {e.ra_delta:+d}',
+            SUBTEXT, 'lt', 1, (255, 255, 255, 210),
+        )
+    sun_y = y_row3 + 64 + 40 + max(1, len(lock_list)) * 28 + 16
+    dt.draw(lock_x + 28, sun_y, 22, '寸止命中', TEXT, 'lt', 1, (255, 255, 255, 230))
     if not sun_list:
-        dt.draw(844, 1046, 20, "无", (120, 126, 145, 255), "lt")
+        dt.draw(lock_x + 28, sun_y + 32, 18, '无', MUTED, 'lt')
     for i, e in enumerate(sun_list):
-        dt.draw(844, 1046 + i * 30, 19, f"{i+1}. {e.title[:14]}  {e.achv_now:.4f}%  ra {e.ra_delta:+d}", (64, 72, 96, 255), "lt")
+        dt.draw(
+            lock_x + 32, sun_y + 32 + i * 28, 17,
+            f'{i + 1}. {e.title[:16]}  {e.achv_now:.4f}%  ra {e.ra_delta:+d}',
+            SUBTEXT, 'lt', 1, (255, 255, 255, 210),
+        )
 
+    dt.draw(width // 2, height - footer_h // 2 - 2, 17, footer_generated(), SUBTEXT, 'mm', 1, (255, 255, 255, 220))
     return im
 
 
 def _fmt_date(s: DailySnapshot) -> str:
-    return s.stored_at.replace("T", " ") if s.stored_at else s.date
+    return s.stored_at.replace('T', ' ') if s.stored_at else s.date
 
 
 async def generate_progress_report(qqid: int, period_days: int) -> MessageSegment | str:
     snaps = _collect_snapshots(qqid, period_days)
     if len(snaps) < 2:
-        return f"近{period_days}天可用快照不足（至少需要2次存档）。请先使用「立即存储数据」并等待后续自动存档。"
+        return f'近{period_days}天可用快照不足（至少需要2次存档）。请先使用「立即存储数据」并等待后续自动存档。'
 
-    # snaps 按 list_snapshots 是新到旧，分析时需要首尾
     latest = snaps[0]
     oldest = snaps[-1]
-
-    # 曲线按时间正序
     curve = list(reversed(snaps))
     points = [int(s.rating) for s in curve]
     labels = [s.date for s in curve]
 
     data = _analyze(oldest, latest)
-    _, _, data["new_b50"] = _build_b50(latest.records)
+    _, _, data['new_b50'] = _build_b50(latest.records)
     if period_days <= 1:
-        title = "MAIMAI 日报"
+        title = 'MAIMAI 日报'
     elif period_days <= 7:
-        title = "MAIMAI 周报"
+        title = 'MAIMAI 周报'
     else:
-        title = "MAIMAI 月报"
+        title = 'MAIMAI 月报'
     nickname = latest.nickname or str(qqid)
     im = _draw_report(title, nickname, points, labels, data, _fmt_date(oldest), _fmt_date(latest))
-    log.debug(f"[progress_report] qq={qqid} period={period_days} snapshots={len(snaps)} delta={data['rating_delta']}")
+    log.debug(f'[progress_report] qq={qqid} period={period_days} snapshots={len(snaps)} delta={data["rating_delta"]}')
     return MessageSegment.image(image_to_base64(im))
 
 
@@ -294,18 +432,16 @@ async def generate_progress_report_between(qqid: int, old_snapshot_id: str, new_
     old = data_storage.load_snapshot_by_id(qqid, old_snapshot_id.strip())
     new = data_storage.load_snapshot_by_id(qqid, new_snapshot_id.strip())
     if not old:
-        return f"未找到起始存档：{old_snapshot_id}"
+        return f'未找到起始存档：{old_snapshot_id}'
     if not new:
-        return f"未找到结束存档：{new_snapshot_id}"
+        return f'未找到结束存档：{new_snapshot_id}'
     if old.stored_at and new.stored_at and old.stored_at > new.stored_at:
         old, new = new, old
 
-    # 指定ID对比时曲线只画两点，确保是精确复盘
     points = [int(old.rating), int(new.rating)]
     labels = [old.date, new.date]
     data = _analyze(old, new)
-    _, _, data["new_b50"] = _build_b50(new.records)
+    _, _, data['new_b50'] = _build_b50(new.records)
     nickname = new.nickname or str(qqid)
-    im = _draw_report("MAIMAI 存档对比", nickname, points, labels, data, _fmt_date(old), _fmt_date(new))
+    im = _draw_report('MAIMAI 存档对比', nickname, points, labels, data, _fmt_date(old), _fmt_date(new))
     return MessageSegment.image(image_to_base64(im))
-

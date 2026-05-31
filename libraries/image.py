@@ -52,6 +52,60 @@ class DrawText:
             )
 
 
+def fit_font_size(
+    font_path: str,
+    text: str,
+    max_width: int,
+    start: int = 18,
+    min_size: int = 11,
+) -> int:
+    """在 max_width 内从 start 向下试探字号，避免页脚等长文案溢出。"""
+    size = start
+    while size >= min_size:
+        font = ImageFont.truetype(font_path, size)
+        try:
+            text_w = font.getlength(text)
+        except AttributeError:
+            bbox = font.getbbox(text)
+            text_w = bbox[2] - bbox[0]
+        stroke_pad = max(2, size // 8)
+        if text_w + stroke_pad * 2 <= max_width:
+            return size
+        size -= 1
+    return min_size
+
+
+def draw_centered_design_footer(
+    im: Image.Image,
+    dt: DrawText,
+    text: str,
+    *,
+    design_bg: Image.Image | None = None,
+    color: Tuple[int, int, int, int] = (124, 129, 255, 255),
+    margin_x: int = 80,
+    bar_height: int = 52,
+    start_font_size: int = 16,
+    min_font_size: int = 11,
+    bottom_gap: int = 36,
+) -> None:
+    """底部居中页脚：可选 design 底条 + 自适应字号。"""
+    w, h = im.size
+    bar_w = max(240, w - margin_x * 2)
+    bar_x = (w - bar_w) // 2
+    pad = 32
+    size = fit_font_size(dt._font, text, bar_w - pad * 2, start_font_size, min_font_size)
+    stroke = max(1, size // 10)
+
+    if design_bg is not None:
+        bar_y = h - bar_height - bottom_gap
+        im.alpha_composite(design_bg.resize((bar_w, bar_height)), (bar_x, bar_y))
+        text_y = bar_y + bar_height // 2
+    else:
+        text_y = h - bottom_gap - size // 2
+
+    dt.draw(w // 2, text_y, size, text, color, 'mm', stroke, (255, 255, 255, 255))
+
+
 def _hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
     hex_str = hex_str.lstrip('#')
     return tuple(int(hex_str[i: i + 2], 16) for i in (0, 2, 4))
