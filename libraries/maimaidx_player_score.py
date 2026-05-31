@@ -33,7 +33,7 @@ LEVEL_PLATE_PLAN: dict[str, str] = {
     '极': 'fc',
     '極': 'fc',
     '神': 'ap',
-    '舞舞': 'fsd',
+    '舞舞': 'fdx',  # 与 level_process 的 syncRank 一致（≥ FSD/FDX）
 }
 
 LEVEL_PLATE_DESC: dict[str, str] = {
@@ -73,8 +73,14 @@ def _parse_level_plan(plan: str) -> tuple[int, float | int]:
         return 0, achievementList[scoreRank.index(p) - 1]
     if p in comboRank:
         return 1, comboRank.index(p)
+    if p in combo_rank:
+        return 1, combo_rank.index(p)
     if p in syncRank:
         return 2, syncRank.index(p)
+    if p in sync_rank:
+        return 2, sync_rank.index(p)
+    if p in sync_rank_p:
+        return 2, sync_rank_p.index(p)
     raise ValueError(f'无法识别的评价条件：{plan}')
 
 
