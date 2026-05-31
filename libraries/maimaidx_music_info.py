@@ -780,6 +780,10 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         if version in platecn:
             version = platecn[version]
         
+        # 舞/霸使用分页，默认显示第1页
+        is_wu = version in ['舞', '霸']
+        plate_file = f'{version}-1.png' if is_wu else f'{version}.png'
+        
         # 获取版本映射，如果不存在则尝试从 plate_to_dx_version 获取
         if version in version_map:
             ver, _ver = version_map[version]
@@ -833,7 +837,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         unfinished_bg = Image.open(_rtp(maimaidir, _theme, 'unfinished_2.png'))
         complete_bg = Image.open(_rtp(maimaidir, _theme, 'complete_2.png'))
 
-        im = Image.open(plate_tabledir / f'{version}.png')
+        im = Image.open(plate_tabledir / plate_file)
         draw = ImageDraw.Draw(im)
         tr = DrawText(draw, TBFONT)
         mr = DrawText(draw, SIYUAN)
