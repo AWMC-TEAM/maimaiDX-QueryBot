@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# 用户数据（服务器部署会被覆盖，禁止提交）
+data/
+
 # C extensions
 *.so
 
