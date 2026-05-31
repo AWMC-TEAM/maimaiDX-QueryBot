@@ -24,6 +24,7 @@ _MARGIN = 44
 _PANEL_ALPHA = 0.52
 _CARD_W = 300
 _CARD_H = 88
+_CARD_H_TALL = 102  # 含 ra 增量 + 达成换行
 
 
 @dataclass
@@ -177,11 +178,16 @@ def _paste_cover_card(
     x: int,
     y: int,
     r: ScoreRecord,
-    extra: str = '',
-) -> None:
+    *,
+    ra_delta: int | None = None,
+    achv_delta: float | None = None,
+) -> int:
+    """绘制曲目卡片，返回实际卡片高度。"""
+    tall = ra_delta is not None
+    card_h = _CARD_H_TALL if tall else _CARD_H
     dr = ImageDraw.Draw(im)
     dr.rounded_rectangle(
-        (x, y, x + _CARD_W, y + _CARD_H),
+        (x, y, x + _CARD_W, y + card_h),
         radius=16,
         fill=(255, 255, 255, 200),
         outline=(*ACCENT[:3], 180),
@@ -196,10 +202,13 @@ def _paste_cover_card(
     name = r.title if len(r.title) <= 15 else (r.title[:14] + '…')
     dt.draw(x + 90, y + 12, 19, name, TEXT, 'lt', 1, (255, 255, 255, 220))
     dt.draw(x + 90, y + 38, 17, f'[{r.level}]  {r.achievements:.4f}%', SUBTEXT, 'lt', 1, (255, 255, 255, 200))
-    info = f'ra {int(r.ra)}'
-    if extra:
-        info += f'  ·  {extra}'
-    dt.draw(x + 90, y + 60, 16, info, SUBTEXT, 'lt', 1, (255, 255, 255, 200))
+    if tall:
+        dt.draw(x + 90, y + 58, 15, f'ra {int(r.ra)}  ·  ra {ra_delta:+d}', SUBTEXT, 'lt', 1, (255, 255, 255, 200))
+        if achv_delta is not None:
+            dt.draw(x + 90, y + 76, 15, f'达成 {achv_delta:+.4f}%', SUBTEXT, 'lt', 1, (255, 255, 255, 200))
+    else:
+        dt.draw(x + 90, y + 60, 16, f'ra {int(r.ra)}', SUBTEXT, 'lt', 1, (255, 255, 255, 200))
+    return card_h
 
 
 def _draw_line_chart(
@@ -282,7 +291,7 @@ def _draw_report(
     new_panel_h = 56 + new_cards_h + (28 if new_list_count else 0) + new_list_count * 26 + 24
 
     top_improved = inc[:2]
-    imp_cards_h = (_CARD_H + 16) if top_improved else 0
+    imp_cards_h = (_CARD_H_TALL + 16) if top_improved else 0
     imp_list = inc[2:] if len(inc) > 2 else (inc if not top_improved else [])
     imp_panel_h = 56 + imp_cards_h + (28 if imp_list else 0) + max(1, len(imp_list)) * 32 + 24
 
@@ -359,7 +368,8 @@ def _draw_report(
             if rec:
                 _paste_cover_card(
                     im, dt, _MARGIN + 20 + i * (_CARD_W + 16), cy, rec,
-                    f'ra {e.ra_delta:+d} / 达成 {e.achv_delta:+.4f}%',
+                    ra_delta=e.ra_delta,
+                    achv_delta=e.achv_delta,
                 )
         list_y = cy + (imp_cards_h if top_improved else 0) + 8
         show_list = imp_list if top_improved else inc
