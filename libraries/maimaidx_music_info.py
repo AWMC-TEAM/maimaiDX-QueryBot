@@ -447,11 +447,13 @@ async def draw_music_info(
             color, 'mm'
         )
         notes = list(music.charts[num].notes)
+        # TOTAL 列
         tb.draw(480, 590 + spacing, 25, sum(notes), default_color, 'mm')
         if len(notes) == 4:
             notes.insert(3, '-')
+        # 其余 notes 字段从第二列开始 (tap, hold, slide, touch, brk)
         for n, c in enumerate(notes):
-            tb.draw(480 + 122 * n, 590 + spacing, 25, c, default_color, 'mm')
+            tb.draw(480 + 122 * (n + 1), 590 + spacing, 25, c, default_color, 'mm')
         if num > 1:
             charter = music.charts[num].charter
             if coloumWidth(charter) > 19:
