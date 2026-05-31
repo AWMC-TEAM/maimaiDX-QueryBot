@@ -48,7 +48,9 @@ def _get_analysis_bg(width: int, height: int) -> Image.Image:
     im = Image.new('RGBA', (width, height))
     
     try:
-        bg = Image.open(maimaidir / 'b50_bg.png').convert('RGBA')
+        from .maimaidx_theme import Theme, resolve_theme_path
+        _theme = Theme.get_default().value
+        bg = Image.open(resolve_theme_path(maimaidir, _theme, 'b50_bg.png')).convert('RGBA')
     except FileNotFoundError:
         # If b50_bg.png is not found, return a plain white background
         im.paste((255, 255, 255, 255), (0, 0, width, height))

@@ -108,7 +108,9 @@ class ScoreBaseImage:
         """将部分图片保存在内存（使用默认主题）"""
         from .maimaidx_theme import Theme, resolve_theme_path
         _theme = Theme.get_default().value
-        _r = lambda f: resolve_theme_path(maimaidir, _theme, f)
+        def _r(f):
+            p = resolve_theme_path(maimaidir, _theme, f)
+            return Image.open(p) if p.exists() else None
         cls._diff = [
             Image.open(maimaidir / 'b50_score_basic.png'), 
             Image.open(maimaidir / 'b50_score_advanced.png'), 
@@ -123,9 +125,9 @@ class ScoreBaseImage:
             Image.open(maimaidir / 'rise_score_master.png'),
             Image.open(maimaidir / 'rise_score_remaster.png')
         ]
-        cls.title_bg = Image.open(_r('title.png'))
-        cls.title_lengthen_bg = Image.open(_r('title-lengthen.png'))
-        cls.design_bg = Image.open(_r('design.png'))
+        cls.title_bg = _r('title.png')
+        cls.title_lengthen_bg = _r('title-lengthen.png')
+        cls.design_bg = _r('design.png')
         cls.aurora_bg = Image.open(maimaidir / 'aurora.png').convert('RGBA').resize((1400, 220))
         cls.shines_bg = Image.open(maimaidir / 'bg_shines.png').convert('RGBA')
         cls.pattern_bg = Image.open(maimaidir / 'pattern.png')
@@ -148,7 +150,9 @@ class ScoreBaseImage:
         from .maimaidx_theme import Theme, resolve_theme_path
         if theme is None:
             theme = Theme.get_default().value
-        _r = lambda f: resolve_theme_path(maimaidir, theme, f)
+        def _r(f):
+            p = resolve_theme_path(maimaidir, theme, f)
+            return Image.open(p) if p.exists() else None
         self._diff = [
             Image.open(maimaidir / 'b50_score_basic.png'), 
             Image.open(maimaidir / 'b50_score_advanced.png'), 
@@ -163,9 +167,9 @@ class ScoreBaseImage:
             Image.open(maimaidir / 'rise_score_master.png'),
             Image.open(maimaidir / 'rise_score_remaster.png')
         ]
-        self.title_bg = Image.open(_r('title.png'))
-        self.title_lengthen_bg = Image.open(_r('title-lengthen.png'))
-        self.design_bg = Image.open(_r('design.png'))
+        self.title_bg = _r('title.png')
+        self.title_lengthen_bg = _r('title-lengthen.png')
+        self.design_bg = _r('design.png')
         self.aurora_bg = Image.open(maimaidir / 'aurora.png').convert('RGBA').resize((1400, 220))
         self.shines_bg = Image.open(maimaidir / 'bg_shines.png').convert('RGBA')
         self.pattern_bg = Image.open(maimaidir / 'pattern.png')
@@ -510,7 +514,9 @@ class DrawCoopB50(ScoreBaseImage):
         sd_list: Optional[List[Tuple[ChartInfo, str]]] = None,
         dx_list: Optional[List[Tuple[ChartInfo, str]]] = None,
     ) -> None:
-        super().__init__(Image.open(maimaidir / 'b50_bg.png').convert('RGBA'))
+        from .maimaidx_theme import Theme, resolve_theme_path
+        _theme = Theme.get_default().value
+        super().__init__(Image.open(resolve_theme_path(maimaidir, _theme, 'b50_bg.png')).convert('RGBA'))
         self.nickname_a = nickname_a or '用户A'
         self.nickname_b = nickname_b or '用户B'
         self.qqid_a = qqid_a

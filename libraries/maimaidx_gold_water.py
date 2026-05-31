@@ -167,7 +167,9 @@ async def _draw_gold_water_image(
     info_block_w = 800
     cards_bottom = 235 + 114 * 2
     content_height = cards_bottom + 55
-    base = Image.open(maimaidir / 'b50_bg.png').convert('RGBA')
+    from .maimaidx_theme import Theme, resolve_theme_path
+    _theme = Theme.get_default().value
+    base = Image.open(resolve_theme_path(maimaidir, _theme, 'b50_bg.png')).convert('RGBA')
     bw, bh = base.size
     im = Image.new('RGBA', (w, content_height))
     im.paste(base.crop((0, 0, min(bw, w), min(bh, content_height))), (0, 0))

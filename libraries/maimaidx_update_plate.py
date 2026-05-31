@@ -61,7 +61,11 @@ async def update_rating_table() -> str:
             dr = ImageDraw.Draw(im)
             sy = DrawText(dr, SIYUAN)
             ts = DrawText(dr, TBFONT)
-            im.alpha_composite(Image.open(maimaidir / 'design.png'), (200, height - 113))
+            from .maimaidx_theme import Theme, resolve_theme_path
+            _theme = Theme.get_default().value
+            _design = resolve_theme_path(maimaidir, _theme, 'design.png')
+            if _design.exists():
+                im.alpha_composite(Image.open(_design), (200, height - 113))
             sy.draw(
                 700, 
                 height - 70, 
@@ -168,7 +172,11 @@ async def update_plate_table() -> str:
             dr = ImageDraw.Draw(im)
             ts = DrawText(dr, TBFONT)
             sy = DrawText(dr, SIYUAN)
-            im.alpha_composite(Image.open(maimaidir / 'design.png'), (200, height - 113))
+            from .maimaidx_theme import Theme as _Theme, resolve_theme_path as _rtp
+            _t = _Theme.get_default().value
+            _des = _rtp(maimaidir, _t, 'design.png')
+            if _des.exists():
+                im.alpha_composite(Image.open(_des), (200, height - 113))
             sy.draw(
                 700, 
                 height - 70, 
