@@ -112,6 +112,7 @@ maimaidir: Path = static / 'mai' / 'pic'
 coverdir: Path = static / 'mai' / 'cover'
 ratingdir: Path = static / 'mai' / 'rating'
 platedir: Path = static / 'mai' / 'plate'
+plate_tabledir: Path = static / 'mai' / 'plate_table'
 
 
 # 字体路径

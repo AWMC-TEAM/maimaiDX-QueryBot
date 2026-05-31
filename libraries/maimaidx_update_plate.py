@@ -118,7 +118,7 @@ async def update_rating_table() -> str:
 async def update_plate_table() -> str:
     """更新完成表"""
     try:
-        platedir.mkdir(parents=True, exist_ok=True)
+        plate_tabledir.mkdir(parents=True, exist_ok=True)
         version = list(_ for _ in plate_to_dx_version.keys())[1:]
         # version.append('霸')
         # version.append('舞')
@@ -218,7 +218,7 @@ async def update_plate_table() -> str:
 
             by = BytesIO()
             im.save(by, 'PNG')
-            async with aiofiles.open(platedir / f'plate_table_{_v}.png', 'wb') as f:
+            async with aiofiles.open(plate_tabledir / f'{_v}.png', 'wb') as f:
                 await f.write(by.getbuffer())
             log.info(f'{_v}代牌子更新完成')
         return f'完成表更新完成'
