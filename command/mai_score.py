@@ -53,6 +53,7 @@ from ..libraries.maimaidx_plate_count import (
 )
 from ..libraries.maimaidx_progress_report import generate_progress_report, generate_progress_report_between
 from ..libraries.maimaidx_gain_recommend import generate_today_gain_recommendation
+from ..libraries.maimaidx_floor import generate_floor_query
 from ..libraries.maimaidx_friend_battle import run_friend_battle
 from ..libraries.maimaidx_gold_water import generate_gold_content, generate_water_content
 from ..libraries.maimaidx_rating_compare import generate_how_weak
@@ -101,6 +102,7 @@ weekly_report = on_command('周报', aliases={'成绩周报', 'maimai周报'})
 monthly_report = on_command('月报', aliases={'成绩月报', 'maimai月报'})
 daily_report = on_command('日报', aliases={'成绩日报', 'maimai日报'})
 today_gain_recommend = on_command('今日吃分推荐', aliases={'吃分推荐', '今日推分推荐'})
+floor_query = on_command('地板', aliases={'b50地板', 'rating地板'})
 plate_count_stats = on_command('牌子统计', aliases={'统计牌子'})
 compare_report = on_command('对比存档', aliases={'存档对比', '报告对比'})
 tag_analysis = on_command('底力分析', aliases={'底力分析'})
@@ -990,6 +992,32 @@ async def _today_gain_recommend(event: MessageEvent):
         )
         return
     await _finish_score(today_gain_recommend, generate_today_gain_recommendation(qqid), qqid)
+
+
+@floor_query.handle()
+async def _floor_query(
+    event: MessageEvent,
+    message: Message = CommandArg(),
+    user_id: Optional[int] = Depends(get_at_qq),
+):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
+        raise IgnoredException('功能已禁用')
+    qqid = user_id or event.user_id
+    arg = message.extract_plain_text().strip()
+    username = ''
+    filter_text = arg
+    if arg:
+        from ..libraries.maimaidx_difficulty_filter import DifficultyFilter
+        try:
+            DifficultyFilter.parse(arg)
+        except ValueError:
+            filter_text = ''
+            username = arg
+    await _finish_score(
+        floor_query,
+        generate_floor_query(qqid, username or None, filter_text=filter_text),
+        None if username else qqid,
+    )
 
 
 @plate_count_stats.handle()
