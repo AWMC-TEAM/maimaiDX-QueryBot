@@ -544,7 +544,7 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
 
         y = 100
         for num, info in enumerate(diff):
-            im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'd-{num}.png')), (650, 235 + y * num))
+            im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'd_{num}.png')), (650, 235 + y * num))
             if info:
                 im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'ra-dx.png')), (850, 272 + y * num))
                 if dev:
@@ -822,18 +822,18 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         
         from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
         _theme = _Th.get_default().value
-        finished_bg = [Image.open(_rtp(maimaidir, _theme, f't-{_}.png')) for _ in range(4)]
+        finished_bg = [Image.open(_rtp(maimaidir, _theme, f't_{_}.png')) for _ in range(4)]
         unfinished_bg = Image.open(_rtp(maimaidir, _theme, 'unfinished_bg_2.png'))
         complete_bg = Image.open(_rtp(maimaidir, _theme, 'complete_bg_2.png'))
 
-        im = Image.open(platedir / f'{version}.png')
+        im = Image.open(platedir / f'plate_{version}.png')
         draw = ImageDraw.Draw(im)
         tr = DrawText(draw, TBFONT)
         mr = DrawText(draw, SIYUAN)
         
         im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'plate_num.png')), (185, 20))
         im.alpha_composite(
-            Image.open(platedir / f'{version}{"極" if plan == "极" else plan}.png').resize((1000, 161)), 
+            Image.open(platedir / f'plate_{version}{"極" if plan == "极" else plan}.png').resize((1000, 161)), 
             (200, 35)
         )
         lv: List[set[int]] = [set() for _ in range(number)]

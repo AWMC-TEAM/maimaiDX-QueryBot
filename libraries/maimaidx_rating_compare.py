@@ -83,8 +83,8 @@ async def _draw_b50_style_info_block(userinfo: UserInfo, qqid: Optional[int]) ->
     _t = _Th.get_default().value
     _tp = lambda f: _rtp(maimaidir, _t, f)
     # 牌子底
-    if userinfo.plate and (platedir / f'{userinfo.plate}.png').exists():
-        plate = Image.open(platedir / f'{userinfo.plate}.png').resize((800, 130)).convert('RGBA')
+    if userinfo.plate and (platedir / f'plate_{userinfo.plate}.png').exists():
+        plate = Image.open(platedir / f'plate_{userinfo.plate}.png').resize((800, 130)).convert('RGBA')
     else:
         plate = Image.open(_tp('UI_Plate_550101.png')).resize((800, 130)).convert('RGBA')
     im.paste(plate, (left, 60))
