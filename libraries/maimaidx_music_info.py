@@ -782,7 +782,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         
         # 舞/霸使用分页，默认显示第1页
         is_wu = version in ['舞', '霸']
-        plate_file = f'{version}-1.png' if is_wu else f'{version}.png'
+        plate_file = f'舞-1.png' if is_wu else f'{version}.png'
         
         # 获取版本映射，如果不存在则尝试从 plate_to_dx_version 获取
         if version in version_map:
