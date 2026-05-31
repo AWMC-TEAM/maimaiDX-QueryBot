@@ -434,7 +434,7 @@ class DrawBest(ScoreBaseImage):
         else:
             plate = Image.open(_tp('UI_Plate_550101.png')).resize((800, 130))
         self._im.alpha_composite(plate, (300, 60))
-        icon = Image.open(_tp('UI_Icon_309503.png')).resize((120, 120))
+        icon = Image.open(_tp('UI_Icon_509506.png')).resize((120, 120))
         self._im.alpha_composite(icon, (305, 65))
         if self.qqid:
             try:
@@ -564,7 +564,7 @@ class DrawCoopB50(ScoreBaseImage):
         self._im.alpha_composite(logo, (14, 60))
         plate = Image.open(_tp('UI_Plate_550101.png')).resize((800, 130))
         self._im.alpha_composite(plate, (300, 60))
-        icon = Image.open(_tp('UI_Icon_309503.png')).resize((120, 120))
+        icon = Image.open(_tp('UI_Icon_509506.png')).resize((120, 120))
         self._im.alpha_composite(icon, (305, 65))
         if self.qqid_a:
             try:

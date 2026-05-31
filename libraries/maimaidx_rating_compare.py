@@ -88,7 +88,7 @@ async def _draw_b50_style_info_block(userinfo: UserInfo, qqid: Optional[int]) ->
     else:
         plate = Image.open(_tp('UI_Plate_550101.png')).resize((800, 130)).convert('RGBA')
     im.paste(plate, (left, 60))
-    icon = Image.open(_tp('UI_Icon_309503.png')).resize((120, 120)).convert('RGBA')
+    icon = Image.open(_tp('UI_Icon_509506.png')).resize((120, 120)).convert('RGBA')
     im.paste(icon, (left + 5, 65), icon)
     if qqid:
         try:

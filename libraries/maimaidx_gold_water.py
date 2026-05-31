@@ -199,7 +199,7 @@ async def _draw_gold_water_image(
     else:
         plate = Image.open(_tp('UI_Plate_550101.png')).resize((800, 130))
     im.alpha_composite(plate, (left, 60))
-    icon = Image.open(_tp('UI_Icon_309503.png')).resize((120, 120))
+    icon = Image.open(_tp('UI_Icon_509506.png')).resize((120, 120))
     im.alpha_composite(icon, (left + 5, 65))
     if qqid:
         try:
