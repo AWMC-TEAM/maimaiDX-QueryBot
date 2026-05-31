@@ -824,14 +824,33 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         """
         music.sort(key=lambda x: x.ds[3], reverse=True)
         number = 4 if version not in ['霸', '舞'] else 5
+        # 与生成端 (update_plate.py) 一致：等级键按 reversed(levelList) 顺序预填。
+        # 否则 dict 插入顺序受 ds 排序影响（如 14 的最高 ds 大于 14+ 的最高 ds），
+        # 会让覆盖图层与底图行错位，导致 SSS / 完成图标贴到错误的曲目格上。
+        for _lv in reversed(levelList):
+            ra[_lv] = {}
+        _wu_remaster = mai.total_plate_id_list.get('舞ReMASTER', []) if number == 5 else []
         for _m in music:
-            if _m.level[3] not in ra:
-                ra[_m.level[3]] = {}
-            ra[_m.level[3]][_m.id] = [None for _ in range(number)]
+            if number == 5 and _m.id in _wu_remaster and len(_m.level) > 4:
+                _key = _m.level[4]
+            else:
+                _key = _m.level[3]
+            if _key not in ra:
+                ra[_key] = {}
+            ra[_key][_m.id] = [None for _ in range(number)]
+        # 与生成端 `if not songs: continue` 行为一致：跳过空等级
+        ra = {k: v for k, v in ra.items() if v}
         for _d in playerdata:
             if number == 4 and _d.level_index == 4:
                 continue
-            ra[_d.table_level[3]][str(_d.song_id)][_d.level_index] = _d
+            # 与上面的分组规则保持一致：舞 ReMASTER 谱面归到 level[4]
+            if number == 5 and _d.song_id in _wu_remaster and len(_d.table_level) > 4:
+                _key = _d.table_level[4]
+            else:
+                _key = _d.table_level[3]
+            if _key not in ra or str(_d.song_id) not in ra[_key]:
+                continue
+            ra[_key][str(_d.song_id)][_d.level_index] = _d
         
         from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
         _theme = _Th.get_default().value
