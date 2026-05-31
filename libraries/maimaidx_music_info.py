@@ -416,11 +416,11 @@ async def draw_music_info(
 
     im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'logo.png')).resize((249, 120)), (65, 25))
     if music.basic_info.is_new:
-        im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'UI_CMN_TabTitle_NewSong.png')).resize((249, 120)), (842, 100))
+        im.alpha_composite(Image.open(pic('UI_CMN_TabTitle_NewSong.png')).resize((249, 120)), (842, 100))
     songbg = Image.open(music_picture(music.id)).resize((242, 242))
     im.alpha_composite(rounded_corners(songbg, 17, (True, False, False, True)), (133, 197))
-    im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'{music.basic_info.version}.png')).resize((182, 90)), (800, 370))
-    im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'{music.type}.png')).resize((80, 30)), (295, 410))
+    im.alpha_composite(Image.open(pic(f'{music.basic_info.version}.png')).resize((182, 90)), (800, 370))
+    im.alpha_composite(Image.open(pic(f'{music.type}.png')).resize((80, 30)), (295, 410))
 
     title = music.title
     if coloumWidth(title) > 40:
@@ -528,8 +528,8 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
         cover = Image.open(music_picture(music_id))
         im.alpha_composite(cover.resize((300, 300)), (100, 260))
         im.alpha_composite(Image.open(pic(f'info_{category[music.basic_info.genre]}.png')), (100, 260))
-        im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'{music.basic_info.version}.png')).resize((183, 90)), (295, 205))
-        im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'{music.type}.png')).resize((55, 20)), (350, 560))
+        im.alpha_composite(Image.open(pic(f'{music.basic_info.version}.png')).resize((183, 90)), (295, 205))
+        im.alpha_composite(Image.open(pic(f'{music.type}.png')).resize((55, 20)), (350, 560))
         
         color = (124, 129, 255, 255)
         artist = music.basic_info.artist
@@ -545,7 +545,7 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
 
         y = 100
         for num, info in enumerate(diff):
-            im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'd_{num}.png')), (650, 235 + y * num))
+            im.alpha_composite(Image.open(pic(f'd_{num}.png')), (650, 235 + y * num))
             if info:
                 im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'ra_dx.png')).resize((102, 44)), (850, 272 + y * num))
                 if dev:
@@ -555,22 +555,22 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
                     rating, rate = info.ra, score_Rank_l[info.rate]
                     if dxnum != 0:
                         im.alpha_composite(
-                            Image.open(_rtp(maimaidir, _theme, f'UI_GAM_Gauge_DXScoreIcon_0{dxnum}.png')).resize((32, 19)), 
+                            Image.open(pic(f'UI_GAM_Gauge_DXScoreIcon_0{dxnum}.png')).resize((32, 19)), 
                             (851, 296 + y * num)
                         )
                     tb.draw(916, 304 + y * num, 13, f'{dxscore}/{_dxscore}', color, 'mm')
                 else:
                     rating, rate = computeRa(music.ds[num], info.achievements, israte=True)
                 
-                im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'fcfs.png')), (965, 265 + y * num))
+                im.alpha_composite(Image.open(pic('fcfs.png')), (965, 265 + y * num))
                 if info.fc:
                     im.alpha_composite(
-                        Image.open(_rtp(maimaidir, _theme, f'UI_CHR_PlayBonus_{fcl[info.fc]}.png')).resize((65, 65)), 
+                        Image.open(pic(f'UI_CHR_PlayBonus_{fcl[info.fc]}.png')).resize((65, 65)), 
                         (960, 261 + y * num)
                     )
                 if info.fs:
                     im.alpha_composite(
-                        Image.open(_rtp(maimaidir, _theme, f'UI_CHR_PlayBonus_{fsl[info.fs]}.png')).resize((65, 65)), 
+                        Image.open(pic(f'UI_CHR_PlayBonus_{fsl[info.fs]}.png')).resize((65, 65)), 
                         (1025, 261 + y * num)
                     )
                 im.alpha_composite(
@@ -697,9 +697,9 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
         
         from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
         _theme = _Th.get_default().value
-        rating_bg = Image.open(_rtp(maimaidir, _theme, 'rating_bg.png'))
-        unfinished_bg = Image.open(_rtp(maimaidir, _theme, 'unfinished_1.png'))
-        complete_bg = Image.open(_rtp(maimaidir, _theme, 'complete_1.png'))
+        rating_bg = Image.open(pic('complete.png'))
+        unfinished_bg = Image.open(pic('unfinished_1.png'))
+        complete_bg = Image.open(pic('complete_1.png'))
         
         bg = ratingdir / f'{rating}.png'
         
@@ -746,7 +746,7 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
                         continue
                     if _fc := fromid[music.id][music.lv]['fc']:
                         achievements_fc_list.append(combo_rank.index(_fc))
-                        fc = Image.open(_rtp(maimaidir, _theme, f'UI_MSS_MBase_Icon_{fcl[_fc]}.png')).resize((50, 50))
+                        fc = Image.open(pic(f'UI_MSS_MBase_Icon_{fcl[_fc]}.png')).resize((50, 50))
                         im.alpha_composite(complete_bg, (x + 2, y - 18))
                         im.alpha_composite(fc, (x + 15, y - 12))
 
@@ -754,7 +754,7 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
             r = calc_achievements_fc(achievements_fc_list, lvnum, isfc)
             if r != -1:
                 pic_name = fcl[combo_rank[r]] if isfc else score_Rank_l[score_Rank[-6:][r]]
-                im.alpha_composite(Image.open(_rtp(maimaidir, _theme, f'UI_MSS_Allclear_Icon_{pic_name}.png')), (40, 40))
+                im.alpha_composite(Image.open(pic(f'UI_MSS_Allclear_Icon_{pic_name}.png')), (40, 40))
         
         msg = MessageSegment.image(image_to_base64(im))
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
@@ -833,16 +833,16 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         
         from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
         _theme = _Th.get_default().value
-        finished_bg = [Image.open(_rtp(maimaidir, _theme, f't_{_}.png')) for _ in range(4)]
-        unfinished_bg = Image.open(_rtp(maimaidir, _theme, 'unfinished_2.png'))
-        complete_bg = Image.open(_rtp(maimaidir, _theme, 'complete_2.png'))
+        finished_bg = [Image.open(pic(f't_{_}.png')) for _ in range(5)]
+        unfinished_bg = Image.open(pic('unfinished_2.png'))
+        complete_bg = Image.open(pic('complete_2.png'))
 
         im = Image.open(plate_tabledir / plate_file)
         draw = ImageDraw.Draw(im)
         tr = DrawText(draw, TBFONT)
         mr = DrawText(draw, SIYUAN)
         
-        im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'plate_num.png')), (185, 20))
+        im.alpha_composite(Image.open(pic('plate_progress.png')), (185, 20))
         im.alpha_composite(
             Image.open(plate_versiondir / f'{version}{"極" if plan == "极" else plan}.png').resize((1000, 161)), 
             (200, 35)
@@ -882,7 +882,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                         if play is None or not play.fc: continue
                         if n == 3:
                             im.alpha_composite(complete_bg, (x, y))
-                            fc = Image.open(_rtp(maimaidir, _theme, f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((75, 75))
+                            fc = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((75, 75))
                             im.alpha_composite(fc, (x + 13, y + 3))
                         lv[n].add(play.song_id)
                         f.append(n)
@@ -926,7 +926,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                         if play is None or play.fc not in _fc: continue
                         if n == 3:
                             im.alpha_composite(complete_bg, (x, y))
-                            ap = Image.open(_rtp(maimaidir, _theme, f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((75, 75))
+                            ap = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((75, 75))
                             im.alpha_composite(ap, (x + 13, y + 3))
                         lv[n].add(play.song_id)
                         f.append(n)
@@ -949,7 +949,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                             continue
                         if n == 3:
                             im.alpha_composite(complete_bg, (x, y))
-                            fsd = Image.open(_rtp(maimaidir, _theme, f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).resize((75, 75))
+                            fsd = Image.open(pic(f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).resize((75, 75))
                             im.alpha_composite(fsd, (x + 13, y + 3))
                         lv[n].add(play.song_id)
                         f.append(n)
