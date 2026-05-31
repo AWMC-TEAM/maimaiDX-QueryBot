@@ -833,14 +833,14 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
         unfinished_bg = Image.open(_rtp(maimaidir, _theme, 'unfinished_2.png'))
         complete_bg = Image.open(_rtp(maimaidir, _theme, 'complete_2.png'))
 
-        im = Image.open(platedir / f'plate_{version}.png')
+        im = Image.open(platedir / f'plate_table_{version}.png')
         draw = ImageDraw.Draw(im)
         tr = DrawText(draw, TBFONT)
         mr = DrawText(draw, SIYUAN)
         
         im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'plate_num.png')), (185, 20))
         im.alpha_composite(
-            Image.open(platedir / f'plate_{version}{"極" if plan == "极" else plan}.png').resize((1000, 161)), 
+            Image.open(platedir / f'plate_table_{version}{"極" if plan == "极" else plan}.png').resize((1000, 161)), 
             (200, 35)
         )
         lv: List[set[int]] = [set() for _ in range(number)]

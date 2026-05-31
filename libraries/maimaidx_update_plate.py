@@ -218,7 +218,7 @@ async def update_plate_table() -> str:
 
             by = BytesIO()
             im.save(by, 'PNG')
-            async with aiofiles.open(platedir / f'plate_{_v}.png', 'wb') as f:
+            async with aiofiles.open(platedir / f'plate_table_{_v}.png', 'wb') as f:
                 await f.write(by.getbuffer())
             log.info(f'{_v}代牌子更新完成')
         return f'完成表更新完成'
