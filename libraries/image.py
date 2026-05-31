@@ -120,7 +120,11 @@ def music_picture(music_id: Union[int, str]) -> Path:
         for _id in [music_id + 10000, music_id - 10000]:
             if (_path := coverdir / f'{_id}.png').exists():
                 return _path
-    return coverdir / '11000.png'
+    # 默认占位封面：优先 11000.png（旧版命名），不存在则 0.png（beta 命名）
+    for _fallback in ('11000.png', '0.png'):
+        if (_path := coverdir / _fallback).exists():
+            return _path
+    return coverdir / '0.png'
 
 
 def text_to_image(text: str) -> Image.Image:
