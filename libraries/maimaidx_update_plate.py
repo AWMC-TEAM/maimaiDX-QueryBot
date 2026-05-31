@@ -11,6 +11,7 @@ from .maimaidx_music import Music, mai
 async def update_rating_table() -> str:
     """更新定数表"""
     try:
+        ratingdir.mkdir(parents=True, exist_ok=True)
         dx = Image.open(pic('DX.png')).convert('RGBA').resize((44, 16))
         diff = [Image.new('RGBA', (75, 16), color) for color in ScoreBaseImage.bg_color]
         sbi = ScoreBaseImage if maiconfig.saveinmem else ScoreBaseImage()
@@ -116,6 +117,7 @@ async def update_rating_table() -> str:
 async def update_plate_table() -> str:
     """更新完成表"""
     try:
+        platedir.mkdir(parents=True, exist_ok=True)
         version = list(_ for _ in plate_to_dx_version.keys())[1:]
         # version.append('霸')
         # version.append('舞')
