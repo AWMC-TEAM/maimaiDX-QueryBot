@@ -49,7 +49,7 @@ _THEME_NAMES = {
 }
 
 
-# 主题专属图片列表（存在于主题子目录中，不在 maimaidir 根目录）
+# 主题专属图片（标准名 → 主题子目录实际文件名见 _THEME_FILENAME_MAP）
 THEME_SPECIFIC_IMAGES = [
     'title.png',
     'title-lengthen.png',
@@ -63,26 +63,39 @@ def get_theme_display_name(theme: str) -> str:
     return _THEME_NAMES.get(theme, theme)
 
 
+# 主题子目录中的文件名映射（key=标准名，value=主题子目录中的实际文件名）
+_THEME_FILENAME_MAP = {
+    'b50_bg.png': 'b50.png',
+}
+
+
 def resolve_theme_path(maimaidir: Path, theme: str, filename: str) -> Path:
     """
     解析主题图片路径：
-    1. 优先当前主题子目录
+    1. 优先当前主题子目录（应用文件名映射）
     2. 不存在则遍历其他主题子目录
-    3. 都没有则返回当前主题路径（调用方会得到 FileNotFoundError，路径明确）
+    3. 都没有则回退到根目录原名
     """
+    mapped = _THEME_FILENAME_MAP.get(filename, filename)
+
     # 当前主题子目录
-    theme_path = maimaidir / theme / filename
+    theme_path = maimaidir / theme / mapped
     if theme_path.exists():
         return theme_path
 
     # 遍历其他主题子目录
     for t in Theme:
         if t.value != theme:
-            candidate = maimaidir / t.value / filename
+            candidate = maimaidir / t.value / mapped
             if candidate.exists():
                 return candidate
 
-    # 返回当前主题路径（让调用方得到明确的 FileNotFoundError）
+    # 回退到根目录原名
+    root_path = maimaidir / filename
+    if root_path.exists():
+        return root_path
+
+    # 都找不到，返回主题路径让调用方报明确错误
     return theme_path
 
 
