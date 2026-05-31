@@ -5,31 +5,31 @@
   - 用户通过「主题 xxx」指令切换主题
   - 主题偏好存储在 lxns_users 表的 theme 字段
   - DrawBest 通过 theme 参数选择背景图
-  - 主题背景图位于 static 目录的 theme/ 子目录
+  - 主题专属图片位于 static/mai/pic/{theme}/ 子目录
+  - 非主题图片（难度卡、aurora 等）从 static/mai/pic/ 直接加载
 """
 
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from ..config import maiconfig
-
 
 class Theme(str, Enum):
-    """可用主题枚举。"""
-    DEFAULT = 'default'
-    DARK = 'dark'
-    SAKURA = 'sakura'
-    OCEAN = 'ocean'
+    """可用主题枚举（值即 static/mai/pic/ 下的子目录名）。"""
+    PRISM_PLUS = 'prism_plus'
+    CIRCLE = 'circle'
+
+    @classmethod
+    def get_default(cls) -> 'Theme':
+        """默认主题。"""
+        return cls.PRISM_PLUS
 
     @classmethod
     def get_by_name(cls, name: str) -> Optional['Theme']:
         """通过中文名/英文名获取主题。"""
         _map = {
-            '默认': cls.DEFAULT, 'default': cls.DEFAULT,
-            '暗黑': cls.DARK, 'dark': cls.DARK,
-            '樱花': cls.SAKURA, 'sakura': cls.SAKURA,
-            '海洋': cls.OCEAN, 'ocean': cls.OCEAN,
+            '棱镜': cls.PRISM_PLUS, 'prism_plus': cls.PRISM_PLUS, 'prism+': cls.PRISM_PLUS,
+            '圆环': cls.CIRCLE, 'circle': cls.CIRCLE,
         }
         return _map.get(name.lower())
 
@@ -44,11 +44,18 @@ class Theme(str, Enum):
 
 
 _THEME_NAMES = {
-    'default': '默认',
-    'dark': '暗黑',
-    'sakura': '樱花',
-    'ocean': '海洋',
+    'prism_plus': '棱镜',
+    'circle': '圆环',
 }
+
+
+# 主题专属图片列表（存在于主题子目录中，不在 maimaidir 根目录）
+THEME_SPECIFIC_IMAGES = [
+    'title.png',
+    'title-lengthen.png',
+    'design.png',
+    'b50_bg.png',
+]
 
 
 def get_theme_display_name(theme: str) -> str:
@@ -56,24 +63,26 @@ def get_theme_display_name(theme: str) -> str:
     return _THEME_NAMES.get(theme, theme)
 
 
-def resolve_theme_bg(theme: str) -> Path:
+def resolve_theme_path(maimaidir: Path, theme: str, filename: str) -> Path:
     """
-    解析主题对应的 B50 背景图路径。
-    优先使用主题专属背景，不存在则回退到默认背景。
+    解析主题图片路径：优先主题子目录，不存在则回退到 maimaidir 根目录。
+    
+    Args:
+        maimaidir: static/mai/pic/ 路径
+        theme: 主题目录名（如 'prism_plus'）
+        filename: 图片文件名（如 'title.png'）
     """
-    from .maimaidx_best_50 import maimaidir  # 延迟导入避免循环
-
-    theme_dir = maimaidir / 'theme'
-    theme_bg = theme_dir / f'{theme}.png'
-    if theme_bg.exists():
-        return theme_bg
-    return maimaidir / 'b50_bg.png'
+    theme_path = maimaidir / theme / filename
+    if theme_path.exists():
+        return theme_path
+    return maimaidir / filename
 
 
 def get_user_theme(qqid: int) -> str:
     """获取用户主题偏好（从 DB）。"""
     from .maimaidx_lxns_db import lxns_db
-    return lxns_db.get_theme(qqid)
+    t = lxns_db.get_theme(qqid)
+    return t if t != 'default' else Theme.get_default().value
 
 
 def set_user_theme(qqid: int, theme: str):

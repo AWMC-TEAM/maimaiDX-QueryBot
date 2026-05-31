@@ -105,7 +105,10 @@ class ScoreBaseImage:
 
     @classmethod
     def _load_image(cls):
-        """将部分图片保存在内存"""
+        """将部分图片保存在内存（使用默认主题）"""
+        from .maimaidx_theme import Theme, resolve_theme_path
+        _theme = Theme.get_default().value
+        _r = lambda f: resolve_theme_path(maimaidir, _theme, f)
         cls._diff = [
             Image.open(maimaidir / 'b50_score_basic.png'), 
             Image.open(maimaidir / 'b50_score_advanced.png'), 
@@ -120,19 +123,19 @@ class ScoreBaseImage:
             Image.open(maimaidir / 'rise_score_master.png'),
             Image.open(maimaidir / 'rise_score_remaster.png')
         ]
-        cls.title_bg = Image.open(maimaidir / 'title.png')
-        cls.title_lengthen_bg = Image.open(maimaidir / 'title-lengthen.png')
-        cls.design_bg = Image.open(maimaidir / 'design.png')
+        cls.title_bg = Image.open(_r('title.png'))
+        cls.title_lengthen_bg = Image.open(_r('title-lengthen.png'))
+        cls.design_bg = Image.open(_r('design.png'))
         cls.aurora_bg = Image.open(maimaidir / 'aurora.png').convert('RGBA').resize((1400, 220))
         cls.shines_bg = Image.open(maimaidir / 'bg_shines.png').convert('RGBA')
         cls.pattern_bg = Image.open(maimaidir / 'pattern.png')
         cls.rainbow_bg = Image.open(maimaidir / 'rainbow.png').convert('RGBA')
         cls.rainbow_bottom_bg = Image.open(maimaidir / 'rainbow_bottom.png').convert('RGBA').resize((1200, 200))
     
-    def __init__(self, image: Image.Image = None) -> None:
+    def __init__(self, image: Image.Image = None, theme: str = None) -> None:
         self.play_counts: dict[tuple[int, int], int] = {}
         if not maiconfig.saveinmem:
-            self.load_image()
+            self.load_image(theme)
         
         if image is not None:
             self._im = image
@@ -140,8 +143,12 @@ class ScoreBaseImage:
             self._sy = DrawText(dr, SIYUAN)
             self._tb = DrawText(dr, TBFONT)
     
-    def load_image(self):
-        """在图片不保存在内存时使用"""
+    def load_image(self, theme: str = None):
+        """在图片不保存在内存时使用，按主题加载"""
+        from .maimaidx_theme import Theme, resolve_theme_path
+        if theme is None:
+            theme = Theme.get_default().value
+        _r = lambda f: resolve_theme_path(maimaidir, theme, f)
         self._diff = [
             Image.open(maimaidir / 'b50_score_basic.png'), 
             Image.open(maimaidir / 'b50_score_advanced.png'), 
@@ -156,9 +163,9 @@ class ScoreBaseImage:
             Image.open(maimaidir / 'rise_score_master.png'),
             Image.open(maimaidir / 'rise_score_remaster.png')
         ]
-        self.title_bg = Image.open(maimaidir / 'title.png')
-        self.title_lengthen_bg = Image.open(maimaidir / 'title-lengthen.png')
-        self.design_bg = Image.open(maimaidir / 'design.png')
+        self.title_bg = Image.open(_r('title.png'))
+        self.title_lengthen_bg = Image.open(_r('title-lengthen.png'))
+        self.design_bg = Image.open(_r('design.png'))
         self.aurora_bg = Image.open(maimaidir / 'aurora.png').convert('RGBA').resize((1400, 220))
         self.shines_bg = Image.open(maimaidir / 'bg_shines.png').convert('RGBA')
         self.pattern_bg = Image.open(maimaidir / 'pattern.png')
@@ -320,10 +327,13 @@ class DrawBest(ScoreBaseImage):
         hide_logo: bool = False,
         play_counts: Optional[dict[tuple[int, int], int]] = None,
         max_display: int = 50,
-        theme: str = 'default',
+        theme: str = None,
     ) -> None:
-        from .maimaidx_theme import resolve_theme_bg
-        super().__init__(Image.open(resolve_theme_bg(theme)).convert('RGBA'))
+        from .maimaidx_theme import Theme, resolve_theme_path
+        if theme is None:
+            theme = Theme.get_default().value
+        self._theme = theme
+        super().__init__(Image.open(resolve_theme_path(maimaidir, theme, 'b50_bg.png')).convert('RGBA'), theme=theme)
         if play_counts:
             self.play_counts = play_counts
         self.userName = UserInfo.nickname or UserInfo.username or '未知'
