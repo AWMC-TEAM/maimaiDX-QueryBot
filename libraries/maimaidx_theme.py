@@ -65,17 +65,25 @@ def get_theme_display_name(theme: str) -> str:
 
 def resolve_theme_path(maimaidir: Path, theme: str, filename: str) -> Path:
     """
-    解析主题图片路径：优先主题子目录，不存在则回退到 maimaidir 根目录。
-    
-    Args:
-        maimaidir: static/mai/pic/ 路径
-        theme: 主题目录名（如 'prism_plus'）
-        filename: 图片文件名（如 'title.png'）
+    解析主题图片路径：
+    1. 优先当前主题子目录
+    2. 不存在则遍历其他主题子目录
+    3. 都没有则返回当前主题路径（调用方会得到 FileNotFoundError，路径明确）
     """
+    # 当前主题子目录
     theme_path = maimaidir / theme / filename
     if theme_path.exists():
         return theme_path
-    return maimaidir / filename
+
+    # 遍历其他主题子目录
+    for t in Theme:
+        if t.value != theme:
+            candidate = maimaidir / t.value / filename
+            if candidate.exists():
+                return candidate
+
+    # 返回当前主题路径（让调用方得到明确的 FileNotFoundError）
+    return theme_path
 
 
 def get_user_theme(qqid: int) -> str:

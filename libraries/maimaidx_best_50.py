@@ -337,7 +337,8 @@ class DrawBest(ScoreBaseImage):
         if theme is None:
             theme = Theme.get_default().value
         self._theme = theme
-        super().__init__(Image.open(resolve_theme_path(maimaidir, theme, 'b50_bg.png')).convert('RGBA'), theme=theme)
+        bg_path = resolve_theme_path(maimaidir, theme, 'b50_bg.png')
+        super().__init__(Image.open(bg_path).convert('RGBA'), theme=theme)
         if play_counts:
             self.play_counts = play_counts
         self.userName = UserInfo.nickname or UserInfo.username or '未知'
