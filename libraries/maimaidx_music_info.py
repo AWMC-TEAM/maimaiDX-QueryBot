@@ -891,7 +891,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                     for n, play in enumerate(ra[level][_id]):
                         if play is None or not play.fc: continue
                         if n == (number - 1):
-                            im.alpha_composite(complete_bg, (x, yy))
+                            im.alpha_composite(complete_bg, (x + 1, yy + 1))
                             fc = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((60, 60))
                             im.alpha_composite(fc, (x + 10, yy + 12))
                         lv[n].add(play.song_id)
@@ -915,7 +915,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                     for n, play in enumerate(ra[level][_id]):
                         if play is None or play.achievements < 100: continue
                         if n == (number - 1):
-                            im.alpha_composite(complete_bg, (x, yy))
+                            im.alpha_composite(complete_bg, (x + 1, yy + 1))
                             rate = computeRa(play.ds, play.achievements, onlyrate=True)
                             rank = Image.open(_rtp(maimaidir, _theme, f'UI_TTR_Rank_{rate}.png')).resize((80, 36))
                             im.alpha_composite(rank, (x, yy + 22))
@@ -941,7 +941,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                     for n, play in enumerate(ra[level][_id]):
                         if play is None or play.fc not in _fc: continue
                         if n == (number - 1):
-                            im.alpha_composite(complete_bg, (x, yy))
+                            im.alpha_composite(complete_bg, (x + 1, yy + 1))
                             ap = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).resize((60, 60))
                             im.alpha_composite(ap, (x + 10, yy + 12))
                         lv[n].add(play.song_id)
@@ -967,7 +967,7 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
                         if play is None or play.fs not in fs:
                             continue
                         if n == (number - 1):
-                            im.alpha_composite(complete_bg, (x, yy))
+                            im.alpha_composite(complete_bg, (x + 1, yy + 1))
                             fsd = Image.open(pic(f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).resize((60, 60))
                             im.alpha_composite(fsd, (x + 10, yy + 12))
                         lv[n].add(play.song_id)
