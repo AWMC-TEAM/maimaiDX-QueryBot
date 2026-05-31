@@ -71,8 +71,6 @@ async def _(event: MessageEvent, match = RegexMatched()):
     plan = match.group(2)
     if ver in platecn:
         ver = platecn[ver]
-    if ver in ['舞', '霸']:
-        await plate_table_pfm.finish('暂不支持查询「舞」系和「霸者」的牌子', reply_message=True)
     if f'{ver}{plan}' == '真将':
         await plate_table_pfm.finish('真系没有真将哦', reply_message=True)
     pic = await draw_plate_table(event.user_id, ver, plan)
