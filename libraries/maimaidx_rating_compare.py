@@ -14,7 +14,7 @@ from typing import List, Optional, Tuple, Union
 
 from PIL import Image, ImageDraw, ImageFont
 
-from ..config import SHANGGUMONO, SIYUAN, TBFONT, maiconfig, maimaidir, platedir, static
+from ..config import SHANGGUMONO, SIYUAN, TBFONT, maiconfig, maimaidir, static
 from .image import DrawText, image_to_base64
 from .maimaidx_api_data import maiApi
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError
@@ -83,8 +83,13 @@ async def _draw_b50_style_info_block(userinfo: UserInfo, qqid: Optional[int]) ->
     _t = _Th.get_default().value
     _tp = lambda f: _rtp(maimaidir, _t, f)
     # 牌子底
-    if userinfo.plate and (platedir / f'plate_{userinfo.plate}.png').exists():
-        plate = Image.open(platedir / f'plate_{userinfo.plate}.png').resize((800, 130)).convert('RGBA')
+    if userinfo.plate:
+        from .maimaidx_table_image import plate_version_path
+        _pp = plate_version_path(userinfo.plate)
+        if _pp.exists():
+            plate = Image.open(_pp).resize((800, 130)).convert('RGBA')
+        else:
+            plate = Image.open(_tp('UI_Plate_550101.png')).resize((800, 130)).convert('RGBA')
     else:
         plate = Image.open(_tp('UI_Plate_550101.png')).resize((800, 130)).convert('RGBA')
     im.paste(plate, (left, 60))

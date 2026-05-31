@@ -111,6 +111,7 @@ pie_html_file: Path = static / 'temp_pie.html'                  # 饼图html文�
 maimaidir: Path = static / 'mai' / 'pic'
 coverdir: Path = static / 'mai' / 'cover'
 ratingdir: Path = static / 'mai' / 'rating'
+rating_table_dir: Path = static / 'mai' / 'rating_table'
 platedir: Path = static / 'mai' / 'plate'
 plate_versiondir: Path = static / 'mai' / 'plate_version'
 plate_tabledir: Path = static / 'mai' / 'plate_table'
@@ -132,6 +133,12 @@ TBFONT: Path = fontdir / 'Torus SemiBold.otf'
 SONGS_PER_PAGE: int = 25
 scoreRank: List[str] = ['d', 'c', 'b', 'bb', 'bbb', 'a', 'aa', 'aaa', 's', 's+', 'ss', 'ss+', 'sss', 'sss+']
 score_Rank: List[str] = ['d', 'c', 'b', 'bb', 'bbb', 'a', 'aa', 'aaa', 's', 'sp', 'ss', 'ssp', 'sss', 'sssp']
+STATISTICS_KEYS: List[str] = [
+    'clear', 's', 'sp', 'ss', 'ssp', 'sss', 'sssp',
+    'sync', 'fc', 'fcp', 'ap', 'app', 'fs', 'fsp', 'fsd', 'fsdp',
+]
+COMBO_SP: List[str] = ['fc', 'fcp', 'ap', 'app']
+SYNC_D_SP: List[str] = ['fs', 'fsp', 'fsd', 'fsdp']
 score_Rank_l: Dict[str, str] = {
     'd': 'D', 
     'c': 'C', 

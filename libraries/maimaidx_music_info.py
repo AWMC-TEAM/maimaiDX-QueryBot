@@ -612,153 +612,123 @@ def calc_achievements_fc(scorelist: Union[List[float], List[str]], lvlist_num: i
 
 
 def draw_rating(rating: str, path: Path) -> MessageSegment:
-    """
-    绘制指定定数表文字
-    
-    Params:
-        `rating`: 定数
-        `path`: 路径
-    Returns:
-        `MessageSegment`
-    """
-    im = Image.open(path)
+    """绘制只有等级文本的定数表（与 beta 一致）"""
+    from .maimaidx_table_image import TableImageAssets
+
+    TableImageAssets.ensure_loaded()
+    im = Image.open(path).convert('RGBA')
     dr = ImageDraw.Draw(im)
-    sy = DrawText(dr, SIYUAN)
-    sy.draw(700, 100, 65, f'Level.{rating}   定数表', (124, 129, 255, 255), 'mm', 5, (255, 255, 255, 255))
+    fot = DrawText(dr, TBFONT)
+    fot.draw(495, 220, 70, 'Level.', TableImageAssets.font_color, 'ld', 8, (255, 255, 255, 255))
+    fot.draw(750, 220, 100, rating, TableImageAssets.font_color, 'ld', 8, (255, 255, 255, 255))
     return MessageSegment.image(image_to_base64(im))
 
 
 async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union[MessageSegment, str]:
-    """
-    绘制定数表
-    
-    Params:
-        `qqid`: QQID
-        `rating`: 定数
-        `isfc`: 是否查询fc成绩
-    Returns:
-        `Union[MessageSegment, str]`
-    """
+    """绘制定数表（布局与 beta 分支一致）"""
+    from .maimaidx_table_image import RatingGridConfig, TableImageAssets, rating_table_path
+
     try:
+        TableImageAssets.ensure_loaded()
+        assets = TableImageAssets
         version = list(set(_v for _v in plate_to_dx_version.values()))
         obj = await maiApi.query_user_plate(qqid=qqid, version=version)
-        
-        statistics = {
-            'clear': 0,
-            'sync':  0,
-            's':     0,
-            'sp':    0,
-            'ss':    0,
-            'ssp':   0,
-            'sss':   0,
-            'sssp':  0,
-            'fc':    0,
-            'fcp':   0,
-            'ap':    0,
-            'app':   0,
-            'fs':    0,
-            'fsp':   0,
-            'fsd':   0,
-            'fsdp':  0,
-        }
-        fromid = {}
-        
-        sp = score_Rank[-6:]
+
+        from ..config import COMBO_SP, STATISTICS_KEYS, SYNC_D_SP, score_Rank_l
+
+        statistics = {k: 0 for k in STATISTICS_KEYS}
+        played_map: Dict[int, Dict[int, dict]] = {}
+        rank_sp = score_Rank[-6:]
+
         for _d in obj:
             if _d.level != rating:
                 continue
-            if (id := str(_d.song_id)) not in fromid:
-                fromid[id] = {}
-            fromid[id][str(_d.level_index)] = {
+            played_map.setdefault(_d.song_id, {})[_d.level_index] = {
                 'achievements': _d.achievements,
                 'fc': _d.fc,
-                'level': _d.level
             }
             rate = computeRa(_d.ds, _d.achievements, onlyrate=True).lower()
             if _d.achievements >= 80:
                 statistics['clear'] += 1
-            if rate in sp:
-                r_index = sp.index(rate)
-                for _r in range(r_index + 1):
-                    statistics[sp[_r]] += 1
-            if _d.fc:
-                fc_index = combo_rank.index(_d.fc)
-                for _f in range(fc_index + 1):
-                    statistics[combo_rank[_f]] += 1
+            if rate in rank_sp:
+                for r in rank_sp[: rank_sp.index(rate) + 1]:
+                    statistics[r] += 1
+            if _d.fc and _d.fc in COMBO_SP:
+                for f in COMBO_SP[: COMBO_SP.index(_d.fc) + 1]:
+                    statistics[f] += 1
             if _d.fs:
-                if _d.fs != 'sync':
-                    fs_index = sync_rank.index(_d.fs)
-                    for _s in range(fs_index + 1):
-                        statistics[sync_rank[_s]] += 1
-                else:
-                    statistics[_d.fs] += 1
+                if _d.fs == 'sync':
+                    statistics['sync'] += 1
+                elif _d.fs in SYNC_D_SP:
+                    for s in SYNC_D_SP[: SYNC_D_SP.index(_d.fs) + 1]:
+                        statistics[s] += 1
 
-        achievements_fc_list: List[Union[float, List[float]]] = []
-        lvlist = mai.total_level_data[rating]
-        lvnum = sum([len(v) for v in lvlist.values()])
-        
-        from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
-        _theme = _Th.get_default().value
-        rating_bg = Image.open(pic('complete.png')).convert('RGBA')
-        unfinished_bg = Image.open(pic('unfinished_1.png')).convert('RGBA')
-        complete_bg = Image.open(pic('complete_1.png')).convert('RGBA')
-        
-        bg = ratingdir / f'{rating}.png'
-        
-        im = Image.open(bg).convert('RGBA')
+        lv_data = mai.total_level_data[rating]
+        total_songs_count = sum(len(v) for v in lv_data.values())
+        achievements_or_fc_list: List[Union[float, int]] = []
+
+        im = Image.open(rating_table_path(rating)).convert('RGBA')
         dr = ImageDraw.Draw(im)
-        sy = DrawText(dr, SIYUAN)
         tb = DrawText(dr, TBFONT)
-        
-        im.alpha_composite(rating_bg, (600, 25))
-        sy.draw(305, 60, 65, f'Level.{rating}', (124, 129, 255, 255), 'mm', 5, (255, 255, 255, 255))
-        sy.draw(305, 130, 65, '定数表', (124, 129, 255, 255), 'mm', 5, (255, 255, 255, 255))
-        tb.draw(700, 130, 45, lvnum, (124, 129, 255, 255), 'mm', 5, (255, 255, 255, 255))
-        
-        y = 22
-        for n, v in enumerate(statistics):
-            if n % 8 == 0:
-                x = 824
-                y += 56
-            else:
-                x += 64
-            tb.draw(x, y, 20, statistics[v], (124, 129, 255, 255), 'mm', 2, (255, 255, 255, 255))
-        
-        y = 118
-        for ra in lvlist:
-            x = 158
-            y += 20
-            for num, music in enumerate(lvlist[ra]):
-                if num % 14 == 0:
-                    x = 158
-                    y += 85
-                else:
-                    x += 85
-                if music.id in fromid and music.lv in fromid[music.id]:
-                    if not isfc:
-                        score = fromid[music.id][music.lv]['achievements']
-                        achievements_fc_list.append(score)
-                        rate = computeRa(music.ds, score, onlyrate=True)
-                        rank = Image.open(_rtp(maimaidir, _theme, f'UI_TTR_Rank_{rate}.png')).resize((78, 35))
-                        if score >= 100:
-                            im.alpha_composite(complete_bg, (x + 2, y - 18))
-                        else:
-                            im.alpha_composite(unfinished_bg, (x + 2, y - 18))
-                        im.alpha_composite(rank, (x, y - 5))
-                        continue
-                    if _fc := fromid[music.id][music.lv]['fc']:
-                        achievements_fc_list.append(combo_rank.index(_fc))
-                        fc = Image.open(pic(f'UI_MSS_MBase_Icon_{fcl[_fc]}.png')).resize((50, 50))
-                        im.alpha_composite(complete_bg, (x + 2, y - 18))
-                        im.alpha_composite(fc, (x + 15, y - 12))
+        fot = DrawText(dr, TBFONT)
 
-        if len(achievements_fc_list) == lvnum:
-            r = calc_achievements_fc(achievements_fc_list, lvnum, isfc)
+        fot.draw(495, 160, 70, 'Level.', assets.font_color, 'ld', 8, (255, 255, 255, 255))
+        fot.draw(750, 160, 100, rating, assets.font_color, 'ld', 8, (255, 255, 255, 255))
+        im.alpha_composite(assets.table_complete_bg, (251, 190))
+        tb.draw(
+            394, RatingGridConfig.stats_first_line_y, 30,
+            f"{statistics['clear']}/{total_songs_count}",
+            assets.default_text_color, 'mm', 5, (255, 255, 255, 255),
+        )
+        for n, key in enumerate(STATISTICS_KEYS[1:]):
+            if n < 6:
+                x = RatingGridConfig.stats_first_line_x + (n % 6) * 102
+                y = RatingGridConfig.stats_first_line_y
+            else:
+                x = RatingGridConfig.stats_second_line_x + ((n - 6) % 9) * 102
+                y = RatingGridConfig.stats_second_line_y
+            tb.draw(x, y, 30, statistics[key], assets.default_text_color, 'mm', 2, (255, 255, 255, 255))
+
+        current_y = RatingGridConfig.start_y
+        from .maimaidx_theme import Theme
+        theme = Theme.get_default().value
+        for ra, songs in lv_data.items():
+            for num, music in enumerate(lv_data[ra]):
+                row, col = divmod(num, RatingGridConfig.row_count)
+                x = RatingGridConfig.start_x + col * RatingGridConfig.gap
+                y = current_y + row * RatingGridConfig.gap
+                record_map = played_map.get(int(music.id))
+                if record_map is None:
+                    continue
+                record = record_map.get(int(music.lv))
+                if record is None:
+                    continue
+                if not isfc:
+                    achievements_or_fc_list.append(record['achievements'])
+                    bg = assets.rating_complete_bg if record['achievements'] >= 100 else assets.rating_unfinished_bg
+                    im.alpha_composite(bg, (x + 1, y + 1))
+                    rate = computeRa(music.ds, record['achievements'], onlyrate=True)
+                    rank_icon = assets.get_rank_icon(rate, theme)
+                    if rank_icon:
+                        im.alpha_composite(rank_icon.resize((78, 35)), (x, y + 20))
+                    continue
+                if record['fc']:
+                    achievements_or_fc_list.append(combo_rank.index(record['fc']))
+                    im.alpha_composite(assets.rating_complete_bg, (x + 1, y + 1))
+                    fc_icon = assets.get_fc_icon(record['fc'])
+                    if fc_icon:
+                        im.alpha_composite(fc_icon, (x + 15, y + 13))
+            group_rows = (len(songs) - 1) // RatingGridConfig.row_count + 1
+            current_y += group_rows * RatingGridConfig.gap + 30
+
+        if len(achievements_or_fc_list) == total_songs_count:
+            r = calc_achievements_fc(achievements_or_fc_list, total_songs_count, isfc)
             if r != -1:
                 pic_name = fcl[combo_rank[r]] if isfc else score_Rank_l[score_Rank[-6:][r]]
                 im.alpha_composite(Image.open(pic(f'UI_MSS_Allclear_Icon_{pic_name}.png')), (40, 40))
-        
-        msg = MessageSegment.image(image_to_base64(im))
+
+        final_im = im.resize((int(im.size[0] * 0.8), int(im.size[1] * 0.8)), Image.Resampling.LANCZOS)
+        msg = MessageSegment.image(image_to_base64(final_im))
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         msg = str(e)
     except Exception as e:
@@ -767,41 +737,104 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
     return msg
 
 
-async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageSegment, str]:
+_PLATE_GRID_START_X = 180
+_PLATE_GRID_START_Y = 490
+_PLATE_GRID_GAP = 96
+_PLATE_GRID_ROW_COUNT = 12
+_PLATE_PLAN_FS = ['fsd', 'fdx', 'fsdp', 'fdxp']
+
+
+def _plate_is_remaster(song_id: int, wu_remaster: List[int]) -> bool:
+    return song_id in wu_remaster
+
+
+def _plate_display_level(music: Music, is_wu: bool, wu_remaster: List[int]) -> str:
+    if is_wu and _plate_is_remaster(int(music.id), wu_remaster) and len(music.level) > 4:
+        return music.level[4]
+    return music.level[3]
+
+
+def _plate_sort_ds(music: Music, is_wu: bool, wu_remaster: List[int]) -> float:
+    if is_wu and _plate_is_remaster(int(music.id), wu_remaster) and len(music.ds) > 4:
+        return music.ds[4]
+    return music.ds[3]
+
+
+def _plate_slot_count(music: Music, is_wu: bool, wu_remaster: List[int]) -> int:
+    if not is_wu:
+        return 4
+    return 5 if _plate_is_remaster(int(music.id), wu_remaster) else 4
+
+
+def _plate_is_qualified(play: Optional[PlayInfoDefault], plan: str) -> bool:
+    from ..config import COMBO_SP
+
+    if play is None:
+        return False
+    if plan in ('极', '極'):
+        return play.fc in COMBO_SP
+    if plan == '将':
+        return play.achievements >= 100
+    if plan == '者':
+        return play.achievements >= 80
+    if plan == '神':
+        return play.fc in ('ap', 'app')
+    if plan == '舞舞':
+        return play.fs in _PLATE_PLAN_FS
+    return False
+
+
+def _plate_get_icon(play: PlayInfoDefault, plan: str, theme: str) -> Image.Image:
+    from .maimaidx_theme import resolve_theme_path as _rtp
+
+    if plan == '将':
+        rate = computeRa(play.ds, play.achievements, onlyrate=True)
+        return Image.open(_rtp(maimaidir, theme, f'UI_TTR_Rank_{rate}.png')).convert('RGBA').resize((80, 36))
+    if plan in ('极', '極', '神'):
+        return Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).convert('RGBA').resize((60, 60))
+    return Image.open(pic(f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).convert('RGBA').resize((60, 60))
+
+
+async def draw_plate_table(
+    qqid: int,
+    version: str,
+    plan: str,
+    page: int = 1,
+) -> Union[MessageSegment, str]:
     """
-    绘制完成表
-    
+    绘制完成表（布局与 beta 分支 nonebot-plugin-maimaidx 一致）
+
     Params:
         `qqid`: QQID
         `version`: 版本
         `plan`: 计划
+        `page`: 页数（舞/霸者牌子分页，默认 1）
     Returns:
         `Union[MessageSegment, str]`
     """
     try:
         if version in platecn:
             version = platecn[version]
-        
-        # 舞/霸使用分页，默认显示第1页
+
         is_wu = version in ['舞', '霸']
-        plate_file = f'舞-1.png' if is_wu else f'{version}.png'
-        
-        # 获取版本映射，如果不存在则尝试从 plate_to_dx_version 获取
+        plate_file = f'舞-{page}.png' if is_wu else f'{version}.png'
+
         if version in version_map:
             ver, _ver = version_map[version]
         elif version in plate_to_dx_version:
             ver, _ver = [plate_to_dx_version[version]], version
         else:
             return f'未找到版本 {version} 的牌子数据'
-  
+
         music_id_list = mai.total_plate_id_list[_ver]
         music = mai.total_list.by_id_list(music_id_list)
         plate_total_num = len(music_id_list)
+        wu_remaster = mai.total_plate_id_list.get('舞ReMASTER', []) if is_wu else []
+        remaster_count = len(wu_remaster)
+        slot_num = 5 if is_wu else 4
+
         playerdata: List[PlayInfoDefault] = []
-        
         obj = await maiApi.query_user_plate(qqid=qqid, version=ver)
-        # if not obj:
-        #     return MessageSegment.image(Image.open(platedir / f'{version}.png'))
         for _d in obj:
             if _d.song_id not in music_id_list:
                 continue
@@ -810,256 +843,161 @@ async def draw_plate_table(qqid: int, version: str, plan: str) -> Union[MessageS
             _d.ds = round(float(_music.ds[_d.level_index]), 1)
             playerdata.append(_d)
 
-        ra: Dict[str, Dict[str, List[Optional[PlayInfoDefault]]]] = {}
-        """
-        {
-            "14+": {
-                "365": [None, None, None, PlayInfoDefault, None],
-                ...
-            },
-            "14": {
-                ...
-            }
+        # 按 reversed(levelList) 分组，组内按定数降序（与 update_plate 底图一致）
+        level_songs: Dict[str, Dict[str, List[Optional[PlayInfoDefault]]]] = {
+            lv: {} for lv in reversed(levelList)
         }
-        """
-        music.sort(key=lambda x: x.ds[3], reverse=True)
-        number = 4 if version not in ['霸', '舞'] else 5
-        # 与生成端 (update_plate.py) 一致：等级键按 reversed(levelList) 顺序预填。
-        # 否则 dict 插入顺序受 ds 排序影响（如 14 的最高 ds 大于 14+ 的最高 ds），
-        # 会让覆盖图层与底图行错位，导致 SSS / 完成图标贴到错误的曲目格上。
-        for _lv in reversed(levelList):
-            ra[_lv] = {}
-        _wu_remaster = mai.total_plate_id_list.get('舞ReMASTER', []) if number == 5 else []
         for _m in music:
-            if number == 5 and _m.id in _wu_remaster and len(_m.level) > 4:
-                _key = _m.level[4]
-            else:
-                _key = _m.level[3]
-            if _key not in ra:
-                ra[_key] = {}
-            ra[_key][_m.id] = [None for _ in range(number)]
-        # 与生成端 `if not songs: continue` 行为一致：跳过空等级
-        ra = {k: v for k, v in ra.items() if v}
+            _key = _plate_display_level(_m, is_wu, wu_remaster)
+            slots = _plate_slot_count(_m, is_wu, wu_remaster)
+            level_songs[_key][_m.id] = [None for _ in range(slots)]
+
         for _d in playerdata:
-            if number == 4 and _d.level_index == 4:
+            if not is_wu and _d.level_index == 4:
                 continue
-            # 与上面的分组规则保持一致：舞 ReMASTER 谱面归到 level[4]
-            if number == 5 and _d.song_id in _wu_remaster and len(_d.table_level) > 4:
+            sid = str(_d.song_id)
+            if is_wu and _d.song_id in wu_remaster and len(_d.table_level) > 4:
                 _key = _d.table_level[4]
             else:
                 _key = _d.table_level[3]
-            if _key not in ra or str(_d.song_id) not in ra[_key]:
+            if _key not in level_songs or sid not in level_songs[_key]:
                 continue
-            ra[_key][str(_d.song_id)][_d.level_index] = _d
-        
-        from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
+            if _d.level_index < len(level_songs[_key][sid]):
+                level_songs[_key][sid][_d.level_index] = _d
+
+        ordered_levels: List[tuple[str, List[tuple[str, List[Optional[PlayInfoDefault]]]]]] = []
+        for lv in reversed(levelList):
+            songs = level_songs.get(lv)
+            if not songs:
+                continue
+            sorted_items = sorted(
+                songs.items(),
+                key=lambda item: _plate_sort_ds(mai.total_list.by_id(item[0]), is_wu, wu_remaster),
+                reverse=True,
+            )
+            ordered_levels.append((lv, sorted_items))
+
+        level_keys = [lv for lv, _ in ordered_levels]
+        if is_wu:
+            idx = level_keys.index('13') if '13' in level_keys else len(level_keys)
+            display_levels = set(level_keys[:idx] if page == 1 else level_keys[idx:])
+        else:
+            display_levels = set(level_keys)
+
+        from .maimaidx_theme import Theme as _Th
+        from .maimaidx_table_image import PlateGridConfig, TableImageAssets
+
+        TableImageAssets.ensure_loaded()
+        assets = TableImageAssets
         _theme = _Th.get_default().value
-        finished_bg = [Image.open(pic(f't_{_}.png')).convert('RGBA') for _ in range(5)]
-        unfinished_bg = Image.open(pic('unfinished_2.png')).convert('RGBA')
-        complete_bg = Image.open(pic('complete_2.png')).convert('RGBA')
+        progress_width = 176 if is_wu else 230
 
         im = Image.open(plate_tabledir / plate_file).convert('RGBA')
         draw = ImageDraw.Draw(im)
-        tr = DrawText(draw, TBFONT)
-        mr = DrawText(draw, SIYUAN)
         fot = DrawText(draw, TBFONT)
-        
-        # 进度条背景 - beta: (175, 20)
-        # 舞/霸使用 plate_progress_wu，其他使用 plate_progress
-        progress_bg_name = 'plate_progress_wu.png' if is_wu else 'plate_progress.png'
-        im.alpha_composite(Image.open(pic(progress_bg_name)), (175, 20))
-        
-        # 牌子背景 - beta: (200, 45)
+
+        progress_bg = assets.plate_progress_wu_bg if is_wu else assets.plate_progress_bg
+        im.alpha_composite(progress_bg, (175, 20))
         im.alpha_composite(
-            Image.open(plate_versiondir / f'{version}{"極" if plan == "极" else plan}.png').convert('RGBA').resize((1000, 161)), 
-            (200, 45)
+            Image.open(plate_versiondir / f'{version}{"極" if plan == "极" else plan}.png').convert('RGBA').resize((1000, 161)),
+            (200, 45),
         )
-        lv: List[set[int]] = [set() for _ in range(number)]
-        # 曲绘起始 y 轴 - 与生成函数一致 (start_y=490, gap=96, row_count=12)
-        GRID_START_X = 180
-        GRID_START_Y = 490
-        GRID_GAP = 96
-        GRID_ROW_COUNT = 12
-        current_y = GRID_START_Y
-        # if plan == '者':
-        #     for level in ra:
-        #         x = 200
-        #         y += 15
-        #         for num, _id in enumerate(ra[level]):
-        #             if num % 10 == 0:
-        #                 x = 200
-        #                 y += 115
-        #             else:
-        #                 x += 115
-        #             f: List[int] = []
-        #             for num, play in enumerate(ra[level][_id]):
-        #                 if play.achievements or not play.achievements >= 80: continue
-        #                 fc = Image.open(pic(f'UI_MSS_MBase_Icon_{fcl[play.fc]}.png'))
-        #                 im.alpha_composite(fc, (x, y))
-        #                 f.append(n)
-        #             for n in f:
-        #                 im.alpha_composite(finished_bg[n], (x + 5 + 25 * n, y + 67))
-        if plan == '极' or plan == '極':
-            for level in ra:
-                if not ra[level]:
+
+        slot_counts = [0 for _ in range(slot_num)]
+        finished_songs: set[int] = set()
+        current_y = PlateGridConfig.start_y
+
+        for level, song_list in ordered_levels:
+            is_current_page = level in display_levels
+            rows = (len(song_list) - 1) // PlateGridConfig.row_count + 1
+
+            for idx, (song_id, results) in enumerate(song_list):
+                qualified_slots = [
+                    n for n, play in enumerate(results) if _plate_is_qualified(play, plan)
+                ]
+                if len(qualified_slots) == len(results):
+                    finished_songs.add(int(song_id))
+                for n in qualified_slots:
+                    slot_counts[n] += 1
+
+                if not is_current_page:
                     continue
-                rows = (len(ra[level]) - 1) // GRID_ROW_COUNT + 1
-                for idx, _id in enumerate(ra[level]):
-                    row, col = divmod(idx, GRID_ROW_COUNT)
-                    x = GRID_START_X + col * GRID_GAP
-                    yy = current_y + row * GRID_GAP
-                    f: List[int] = []
-                    for n, play in enumerate(ra[level][_id]):
-                        if play is None or not play.fc: continue
-                        if n == (number - 1):
-                            im.alpha_composite(complete_bg, (x + 1, yy + 1))
-                            fc = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).convert('RGBA').resize((60, 60))
-                            im.alpha_composite(fc, (x + 10, yy + 12))
-                        lv[n].add(play.song_id)
-                        f.append(n)
-                    for n in f:
-                        if is_wu and number == 5:
-                            im.alpha_composite(finished_bg[n].resize((14, 14)), (x + 1 + 16 * n, yy + 64))
-                        else:
-                            im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, yy + 63))
-                current_y += rows * GRID_GAP + 30
-        if plan == '将':
-            for level in ra:
-                if not ra[level]:
-                    continue
-                rows = (len(ra[level]) - 1) // GRID_ROW_COUNT + 1
-                for idx, _id in enumerate(ra[level]):
-                    row, col = divmod(idx, GRID_ROW_COUNT)
-                    x = GRID_START_X + col * GRID_GAP
-                    yy = current_y + row * GRID_GAP
-                    f: List[int] = []
-                    for n, play in enumerate(ra[level][_id]):
-                        if play is None or play.achievements < 100: continue
-                        if n == (number - 1):
-                            im.alpha_composite(complete_bg, (x + 1, yy + 1))
-                            rate = computeRa(play.ds, play.achievements, onlyrate=True)
-                            rank = Image.open(_rtp(maimaidir, _theme, f'UI_TTR_Rank_{rate}.png')).convert('RGBA').resize((80, 36))
-                            im.alpha_composite(rank, (x, yy + 22))
-                        lv[n].add(play.song_id)
-                        f.append(n)
-                    for n in f:
-                        if is_wu and number == 5:
-                            im.alpha_composite(finished_bg[n].resize((14, 14)), (x + 1 + 16 * n, yy + 64))
-                        else:
-                            im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, yy + 63))
-                current_y += rows * GRID_GAP + 30
-        if plan == '神':
-            _fc = ['ap', 'app']
-            for level in ra:
-                if not ra[level]:
-                    continue
-                rows = (len(ra[level]) - 1) // GRID_ROW_COUNT + 1
-                for idx, _id in enumerate(ra[level]):
-                    row, col = divmod(idx, GRID_ROW_COUNT)
-                    x = GRID_START_X + col * GRID_GAP
-                    yy = current_y + row * GRID_GAP
-                    f: List[int] = []
-                    for n, play in enumerate(ra[level][_id]):
-                        if play is None or play.fc not in _fc: continue
-                        if n == (number - 1):
-                            im.alpha_composite(complete_bg, (x + 1, yy + 1))
-                            ap = Image.open(pic(f'UI_CHR_PlayBonus_{fcl[play.fc]}.png')).convert('RGBA').resize((60, 60))
-                            im.alpha_composite(ap, (x + 10, yy + 12))
-                        lv[n].add(play.song_id)
-                        f.append(n)
-                    for n in f:
-                        if is_wu and number == 5:
-                            im.alpha_composite(finished_bg[n].resize((14, 14)), (x + 1 + 16 * n, yy + 64))
-                        else:
-                            im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, yy + 63))
-                current_y += rows * GRID_GAP + 30
-        if plan == '舞舞':
-            fs = ['fsd', 'fdx', 'fsdp', 'fdxp']
-            for level in ra:
-                if not ra[level]:
-                    continue
-                rows = (len(ra[level]) - 1) // GRID_ROW_COUNT + 1
-                for idx, _id in enumerate(ra[level]):
-                    row, col = divmod(idx, GRID_ROW_COUNT)
-                    x = GRID_START_X + col * GRID_GAP
-                    yy = current_y + row * GRID_GAP
-                    f: List[int] = []
-                    for n, play in enumerate(ra[level][_id]):
-                        if play is None or play.fs not in fs:
-                            continue
-                        if n == (number - 1):
-                            im.alpha_composite(complete_bg, (x + 1, yy + 1))
-                            fsd = Image.open(pic(f'UI_CHR_PlayBonus_{fsl[play.fs]}.png')).convert('RGBA').resize((60, 60))
-                            im.alpha_composite(fsd, (x + 10, yy + 12))
-                        lv[n].add(play.song_id)
-                        f.append(n)
-                    for n in f:
-                        if is_wu and number == 5:
-                            im.alpha_composite(finished_bg[n].resize((14, 14)), (x + 1 + 16 * n, yy + 64))
-                        else:
-                            im.alpha_composite(finished_bg[n], (x + 4 + 19 * n, yy + 63))
-                current_y += rows * GRID_GAP + 30
-        
-        # 统计信息 - 按照 beta 分支实现
-        # 默认颜色
-        default_text_color = (124, 129, 255, 255)
-        id_text_color = [
-            (69, 193, 36, 255),    # BASIC
-            (255, 168, 1, 255),    # ADVANCED
-            (255, 90, 102, 255),   # EXPERT
-            (134, 49, 200, 255),   # MASTER
-            (231, 173, 254, 255),  # Re:MASTER
-        ]
-        
-        # 计算总完成数（所有难度都达成）
-        if number == 4:
-            v = set.intersection(*lv[:4]) if all(lv[:4]) else set()
-        else:
-            v = set.intersection(*lv) if all(lv) else set()
-        completed_count = len(v)
-        
-        # 顶部总进度
+
+                row, col = divmod(idx, PlateGridConfig.row_count)
+                x = PlateGridConfig.start_x + col * PlateGridConfig.gap
+                y = current_y + row * PlateGridConfig.gap
+
+                last_idx = len(results) - 1
+                if last_idx in qualified_slots:
+                    play = results[last_idx]
+                    im.alpha_composite(assets.plate_complete_bg, (x + 1, y + 1))
+                    icon = _plate_get_icon(play, plan, _theme)
+                    dest = (x, y + 22) if plan == '将' else (x + 10, y + 12)
+                    im.alpha_composite(icon, dest)
+
+                for n in qualified_slots:
+                    if is_wu and len(results) == 5:
+                        im.alpha_composite(
+                            assets.plate_finished_bg[n].resize((14, 14)),
+                            (x + 1 + 16 * n, y + 64),
+                        )
+                    else:
+                        im.alpha_composite(
+                            assets.plate_finished_bg[n],
+                            (x + 4 + 19 * n, y + 63),
+                        )
+
+            if is_current_page:
+                current_y += rows * PlateGridConfig.gap + 30
+
+        default_text_color = assets.default_text_color
+        id_text_color = assets.id_text_color
+
+        completed_count = len(finished_songs)
         if completed_count == plate_total_num:
-            text = "COMPLETED!!!"
+            text = 'COMPLETED!!!'
         else:
-            text = f"{completed_count}/{plate_total_num}"
+            text = f'{completed_count}/{plate_total_num}'
         progress = completed_count / plate_total_num if plate_total_num else 0
-        
+
+        if progress:
+            bar = assets.plate_progress_big.crop((0, 0, int(993 * progress), 92))
+            im.alpha_composite(bar, (204, 219))
+
         fot.draw(700, 240, 30, text, default_text_color, 'mm', 3, (255, 255, 255, 255))
-        fot.draw(1190, 240, 30, f"{round(progress * 100, 2)}%", default_text_color, 'rm', 3, (255, 255, 255, 255))
-        
-        # 各难度统计 - beta 的位置
+        fot.draw(1190, 240, 30, f'{round(progress * 100, 2)}%', default_text_color, 'rm', 3, (255, 255, 255, 255))
+
         if is_wu:
             stats_start_x = 292
             stats_gap_x = 204
             progress_text_x = 89
+            progress_bar_x = 88
         else:
             stats_start_x = 320
             stats_gap_x = 253
             progress_text_x = 115
-        
+            progress_bar_x = 115
+
         stats_start_y = 300
-        for _l in range(number):
+        for _l in range(slot_num):
             x = stats_start_x + _l * stats_gap_x
-            complete_sum_group = len(lv[_l])
-            
-            # ReMASTER 使用 remaster_count，其他使用总数
-            plate_count = plate_total_num
-            if is_wu and _l == 4:
-                # 舞的 ReMASTER 难度使用 ReMASTER 数量
-                remaster_list = mai.total_plate_id_list.get('舞ReMASTER', [])
-                plate_count = len(remaster_list) if remaster_list else plate_total_num
-            
+            complete_sum_group = slot_counts[_l]
+            plate_count = remaster_count if is_wu and _l == 4 else plate_total_num
             progress_group = complete_sum_group / plate_count if plate_count else 0
-            
+            progress_small = assets.plate_progress_small_wu if is_wu else assets.plate_progress_small
+
+            if progress_group:
+                bar_group = progress_small.crop((0, 0, int(progress_width * progress_group), 46))
+                im.alpha_composite(bar_group, (x - progress_bar_x, 326))
+
             if complete_sum_group == plate_count and plate_count > 0:
-                fot.draw(x, stats_start_y, 24, "COMPLETED!!!", id_text_color[_l], 'mm', 4, (255, 255, 255, 255))
+                fot.draw(x, stats_start_y, 24, 'COMPLETED!!!', id_text_color[_l], 'mm', 4, (255, 255, 255, 255))
             else:
                 fot.draw(x, stats_start_y, 40, complete_sum_group, id_text_color[_l], 'mm', 4, (255, 255, 255, 255))
-            
-            fot.draw(x + progress_text_x, stats_start_y + 20, 14, f"/{plate_count}", id_text_color[_l], 'rd', 3, (255, 255, 255, 255))
-            fot.draw(x + progress_text_x, 343, 20, f"{round(progress_group * 100, 2)}%", default_text_color, 'rm', 2, (255, 255, 255, 255))
-        
+
+            fot.draw(x + progress_text_x, stats_start_y + 20, 14, f'/{plate_count}', id_text_color[_l], 'rd', 3, (255, 255, 255, 255))
+            fot.draw(x + progress_text_x, 343, 20, f'{round(progress_group * 100, 2)}%', default_text_color, 'rm', 2, (255, 255, 255, 255))
+
         msg = MessageSegment.image(image_to_base64(im))
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         msg = str(e)

@@ -15,7 +15,7 @@ update_table            = on_fullmatch('更新定数表', permission=SUPERUSER)
 update_plate            = on_fullmatch('更新完成表', permission=SUPERUSER)
 rating_table            = on_regex(r'([0-9]+\+?)定数表')
 rating_table_pfm        = on_regex(r'^([0-9]+\+?)(([apfcp]+|\+)+)?完成表$', re.IGNORECASE)
-plate_table_pfm         = on_regex(r'^([真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉舞霸熊華华爽煌星宙祭祝双宴镜彩])([極极将舞神者]舞?)完成表$')
+plate_table_pfm         = on_regex(r'^([真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉舞霸熊華华爽煌星宙祭祝双宴镜彩])([極极将舞神者]舞?)完成表\s?([0-9]+)?$')
 rise_score              = on_regex(r'^我要在?([0-9]+\+?)?[上加\+]([0-9]+)?分\s?(.+)?')
 plate_process           = on_regex(r'^([真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉舞霸熊華华爽煌星宙祭祝双宴镜彩])([極极将舞神者]舞?)进度\s?(.+)?')
 level_process           = on_regex(r'^([0-9]+\+?)\s?([abcdsfxp\+]+)\s?([\u4e00-\u9fa5]+)?\s?进度\s?([0-9]+)?(.+)?', re.IGNORECASE)
@@ -45,7 +45,8 @@ async def _(match = RegexMatched()):
     if args in levelList[:6]:
         await rating_table.finish('只支持查询lv7-15的定数表', reply_message=True)
     elif args in levelList[6:]:
-        path = ratingdir / f'{args}.png'
+        from ..libraries.maimaidx_table_image import rating_table_path
+        path = rating_table_path(args)
         pic = draw_rating(args, path)
         await rating_table.finish(pic, reply_message=True)
     else:
@@ -73,7 +74,8 @@ async def _(event: MessageEvent, match = RegexMatched()):
         ver = platecn[ver]
     if f'{ver}{plan}' == '真将':
         await plate_table_pfm.finish('真系没有真将哦', reply_message=True)
-    pic = await draw_plate_table(event.user_id, ver, plan)
+    page = int(match.group(3)) if match.group(3) else 1
+    pic = await draw_plate_table(event.user_id, ver, plan, page)
     await plate_table_pfm.finish(pic, reply_message=True)
 
 

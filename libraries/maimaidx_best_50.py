@@ -430,7 +430,8 @@ class DrawBest(ScoreBaseImage):
             logo = Image.open(_tp('logo.png')).resize((249, 120))
             self._im.alpha_composite(logo, (14, 60))
         if self.plate:
-            plate = Image.open(platedir / f'plate_{self.plate}.png').resize((800, 130))
+            from .maimaidx_table_image import open_plate_image
+            plate = open_plate_image(self.plate, _tp('UI_Plate_550101.png')).resize((800, 130))
         else:
             plate = Image.open(_tp('UI_Plate_550101.png')).resize((800, 130))
         self._im.alpha_composite(plate, (300, 60))
