@@ -9,7 +9,7 @@ from nonebot.adapters.onebot.v11 import MessageSegment
 from PIL import Image, ImageDraw
 
 from ..config import SIYUAN, achievementList, footer_generated, log, maiconfig, static
-from .image import DrawText, generate_frosted_card, image_to_base64, music_picture, rounded_corners
+from .image import DrawText, draw_centered_design_footer, generate_frosted_card, image_to_base64, music_picture, rounded_corners
 from .maimaidx_best_50 import _is_latest_version
 from .maimaidx_data_storage import DailySnapshot, ScoreRecord, data_storage
 
@@ -405,7 +405,14 @@ def _draw_report(
             SUBTEXT, 'lt', 1, (255, 255, 255, 210),
         )
 
-    dt.draw(width // 2, height - footer_h // 2 - 2, 17, footer_generated(), SUBTEXT, 'mm', 1, (255, 255, 255, 220))
+    draw_centered_design_footer(
+        im, dt, footer_generated(),
+        color=SUBTEXT,
+        margin_x=_MARGIN,
+        start_font_size=16,
+        min_font_size=10,
+        bottom_gap=max(12, footer_h // 2),
+    )
     return im
 
 

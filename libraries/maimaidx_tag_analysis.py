@@ -11,7 +11,7 @@ from typing import Dict, List, Tuple
 from PIL import Image, ImageDraw
 
 from ..config import SIYUAN, TAG_PILL_COLORS, footer_generated, maiconfig, static
-from .image import DrawText, generate_frosted_card, image_to_base64
+from .image import DrawText, draw_centered_design_footer, generate_frosted_card, image_to_base64
 
 CONFIG_TAGS_ORDER: List[str] = [
     '交互', '散打', '扫键', '绝赞段', '转圈', '大位移', '定拍', '拆弹',
@@ -313,9 +313,13 @@ def draw_analysis(stats: dict[str, dict[str, float]]) -> Image.Image:
         draw_text, '评价标签', title_y, text_size, title_size, ev_fill, ev_line,
     )
 
-    draw_text.draw(
-        total_w // 2, total_h - footer_h // 2, text_size,
-        footer_generated(), SUBTEXT, 'mm',
+    draw_centered_design_footer(
+        im, draw_text, footer_generated(),
+        color=SUBTEXT,
+        margin_x=int(48 * s),
+        start_font_size=text_size,
+        min_font_size=max(9, int(9 * s)),
+        bottom_gap=max(8, int(6 * s)),
     )
 
     out_w = SIDE_MARGIN * 2 + PANEL_W * 3 + PANEL_GAP * 2

@@ -34,7 +34,7 @@ def _get_dxrating_token() -> Optional[str]:
     return None
 
 
-from .image import rounded_corners
+from .image import rounded_corners, draw_centered_design_footer
 from .maimaidx_best_50 import *
 from .maimaidx_music import Music, mai
 
@@ -480,7 +480,14 @@ async def draw_music_info(
                 else:
                     rating = value
                 tb.draw(295 + 125 * _n, 1017 + 46 * (num - 2), size, rating, default_color, 'mm')
-    mr.draw(600, 1200, 30, footer_designed_generated(), default_color, 'mm')
+    draw_centered_design_footer(
+        im, mr, footer_designed_generated(),
+        color=default_color,
+        margin_x=48,
+        start_font_size=22,
+        min_font_size=9,
+        bottom_gap=20,
+    )
     return MessageSegment.image(image_to_base64(im))
 
 
@@ -593,7 +600,14 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
         if len(diff) == 4:
             mr.draw(800, 302 + y * 4, 30, '没有该难度', color, 'mm')
 
-        mr.draw(600, 827, 22, footer_designed_generated(), color, 'mm')
+        draw_centered_design_footer(
+            im, mr, footer_designed_generated(),
+            color=color,
+            margin_x=48,
+            start_font_size=18,
+            min_font_size=9,
+            bottom_gap=18,
+        )
         msg = MessageSegment.image(image_to_base64(im))
         
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError, MusicNotPlayError) as e:

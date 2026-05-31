@@ -15,7 +15,7 @@ from typing import List, Optional, Tuple, Union
 from PIL import Image, ImageDraw, ImageFont
 
 from ..config import SHANGGUMONO, SIYUAN, TBFONT, footer_designed_pipe_generated, maiconfig, maimaidir, static
-from .image import DrawText, image_to_base64
+from .image import DrawText, draw_centered_design_footer, image_to_base64
 from .maimaidx_api_data import maiApi
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError
 from .maimaidx_model import UserInfo, UserRanking
@@ -317,11 +317,19 @@ def _build_how_weak_image_sync(
     chart_y = chart_panel_y + CHART_TITLE_H + CHART_MARGIN
     full_im.paste(chart_im, (chart_x, chart_y))
 
-    footer_y = total_h - FOOTER_H // 2
     nick = getattr(maiconfig, "botName", "maimai") or "maimai"
     footer_text = footer_designed_pipe_generated('raincore', nick)
-    font_footer = ImageFont.truetype(str(SHANGGUMONO), FOOTER_FONT_SIZE)
-    dr.text((cx, footer_y), footer_text, font=font_footer, fill=(*_THEME["muted"], 255), anchor="mm")
+    footer_dt = DrawText(dr, SHANGGUMONO)
+    draw_centered_design_footer(
+        full_im,
+        footer_dt,
+        footer_text,
+        color=(*_THEME["muted"], 255),
+        margin_x=PADDING,
+        start_font_size=FOOTER_FONT_SIZE,
+        min_font_size=9,
+        bottom_gap=FOOTER_H // 2,
+    )
 
     return image_to_base64(full_im)
 

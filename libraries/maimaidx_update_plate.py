@@ -9,7 +9,7 @@ from ..config import (
     levelList,
     log,
     maiconfig,
-    footer_generated,
+    footer_designed_generated,
     plate_tabledir,
     plate_to_dx_version,
     platecn,
@@ -17,7 +17,7 @@ from ..config import (
     TBFONT,
     version_map,
 )
-from .image import DrawText, generate_frosted_card, music_picture
+from .image import DrawText, draw_centered_design_footer, generate_frosted_card, music_picture
 from .maimaidx_music import Music, mai
 from .maimaidx_table_image import TableImageAssets
 from .maimaidx_theme import pic
@@ -56,8 +56,14 @@ class UpdateTable:
         fot = DrawText(dr, TBFONT)
         fot.draw(495, 160, 70, 'Level.', assets.font_color, 'ld', 8, (255, 255, 255, 255))
         fot.draw(750, 160, 100, '15', assets.font_color, 'ld', 8, (255, 255, 255, 255))
-        fot.draw(700, height - 75, 30, 'Designed by Yuri-YuzuChaN & BlueDeer233.', assets.font_color, 'mm')
-        fot.draw(700, height - 30, 30, footer_generated(), assets.font_color, 'mm')
+        draw_centered_design_footer(
+            im, fot, footer_designed_generated(),
+            color=assets.font_color,
+            margin_x=72,
+            start_font_size=22,
+            min_font_size=10,
+            bottom_gap=24,
+        )
 
         im.alpha_composite(assets.table_complete_bg, (251, 190))
         unknown_chart = Image.open(music_picture(0)).convert('RGBA').resize((330, 330))
@@ -108,8 +114,14 @@ class UpdateTable:
             dr = ImageDraw.Draw(im)
             tb = DrawText(dr, TBFONT)
             fot = DrawText(dr, TBFONT)
-            fot.draw(700, height - 75, 30, 'Designed by Yuri-YuzuChaN & BlueDeer233.', assets.font_color, 'mm')
-            fot.draw(700, height - 30, 30, footer_generated(), assets.font_color, 'mm')
+            draw_centered_design_footer(
+                im, fot, footer_designed_generated(),
+                color=assets.font_color,
+                margin_x=72,
+                start_font_size=22,
+                min_font_size=10,
+                bottom_gap=24,
+            )
 
             start_y = 450
             for ds, songs in lvlist.items():
@@ -164,8 +176,14 @@ class UpdateTable:
         fot = DrawText(dr, TBFONT)
         if pages is not None:
             fot.draw(700, height - 140, 40, f'Pages {pages + 1}/2', assets.font_color, 'mm')
-        fot.draw(700, height - 75, 30, 'Designed by Yuri-YuzuChaN & BlueDeer233.', assets.font_color, 'mm')
-        fot.draw(700, height - 30, 30, footer_generated(), assets.font_color, 'mm')
+        draw_centered_design_footer(
+            im, fot, footer_designed_generated(),
+            color=assets.font_color,
+            margin_x=72,
+            start_font_size=22,
+            min_font_size=10,
+            bottom_gap=24,
+        )
 
         remaster_set = set(remaster_id_list or [])
         start_y = 490
