@@ -11,7 +11,7 @@ from .maimaidx_music import Music, mai
 async def update_rating_table() -> str:
     """更新定数表"""
     try:
-        dx = Image.open(maimaidir / 'DX.png').convert('RGBA').resize((44, 16))
+        dx = Image.open(pic('DX.png')).convert('RGBA').resize((44, 16))
         diff = [Image.new('RGBA', (75, 16), color) for color in ScoreBaseImage.bg_color]
         sbi = ScoreBaseImage if maiconfig.saveinmem else ScoreBaseImage()
         atime = 0
@@ -78,7 +78,7 @@ async def update_rating_table() -> str:
             for _lv in lvlist: 
                 x = 160
                 y += 20
-                _chara_lv = maimaidir / 'UI_CMN_Chara_Level_S_01.png'
+                _chara_lv = pic('UI_CMN_Chara_Level_S_01.png')
                 if _chara_lv.exists():
                     im.alpha_composite(
                         Image.open(_chara_lv).resize((80, 80)), (50, y + 80)
@@ -195,7 +195,7 @@ async def update_plate_table() -> str:
                     ralv[r].sort(key=lambda x: x.ds[3], reverse=True)
                 if ralv[r]:
                     y += 15
-                    _chara_lv2 = maimaidir / 'UI_CMN_Chara_Level_S_01.png'
+                    _chara_lv2 = pic('UI_CMN_Chara_Level_S_01.png')
                     if _chara_lv2.exists():
                         im.alpha_composite(
                             Image.open(_chara_lv2), (65, y + 115)

@@ -79,13 +79,16 @@ async def _draw_b50_style_info_block(userinfo: UserInfo, qqid: Optional[int]) ->
     rating_val = int(userinfo.rating or 0)
     add_rating_val = int(userinfo.additional_rating or 0) if userinfo.additional_rating is not None else 0
     im = Image.new('RGBA', (INFO_BLOCK_W, INFO_BLOCK_H), (0, 0, 0, 0))
+    from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
+    _t = _Th.get_default().value
+    _tp = lambda f: _rtp(maimaidir, _t, f)
     # 牌子底
     if userinfo.plate and (platedir / f'{userinfo.plate}.png').exists():
         plate = Image.open(platedir / f'{userinfo.plate}.png').resize((800, 130)).convert('RGBA')
     else:
-        plate = Image.open(maimaidir / 'UI_Plate_300501.png').resize((800, 130)).convert('RGBA')
+        plate = Image.open(_tp('UI_Plate_300501.png')).resize((800, 130)).convert('RGBA')
     im.paste(plate, (left, 60))
-    icon = Image.open(maimaidir / 'UI_Icon_309503.png').resize((120, 120)).convert('RGBA')
+    icon = Image.open(_tp('UI_Icon_309503.png')).resize((120, 120)).convert('RGBA')
     im.paste(icon, (left + 5, 65), icon)
     if qqid:
         try:
@@ -93,19 +96,19 @@ async def _draw_b50_style_info_block(userinfo: UserInfo, qqid: Optional[int]) ->
             im.paste(qq_logo, (left + 5, 65), qq_logo)
         except Exception:
             pass
-    dx_rating = Image.open(maimaidir / _find_ra_pic(rating_val)).resize((186, 35)).convert('RGBA')
+    dx_rating = Image.open(_tp(_find_ra_pic(rating_val))).resize((186, 35)).convert('RGBA')
     im.paste(dx_rating, (left + 135, 72), dx_rating)
     rating_str = f'{rating_val:05d}'
     for n, i in enumerate(rating_str):
-        num_img = Image.open(maimaidir / f'UI_NUM_Drating_{i}.png').resize((17, 20)).convert('RGBA')
+        num_img = Image.open(_tp(f'UI_NUM_Drating_{i}.png')).resize((17, 20)).convert('RGBA')
         im.paste(num_img, (left + 220 + 15 * n, 80), num_img)
-    name_img = Image.open(maimaidir / 'Name.png').convert('RGBA')
+    name_img = Image.open(_tp('Name.png')).convert('RGBA')
     im.paste(name_img, (left + 135, 115), name_img)
-    match_level = Image.open(maimaidir / _find_match_level(add_rating_val)).resize((80, 32)).convert('RGBA')
+    match_level = Image.open(_tp(_find_match_level(add_rating_val))).resize((80, 32)).convert('RGBA')
     im.paste(match_level, (left + 325, 120), match_level)
-    class_level = Image.open(maimaidir / 'UI_FBR_Class_00.png').resize((90, 54)).convert('RGBA')
+    class_level = Image.open(_tp('UI_FBR_Class_00.png')).resize((90, 54)).convert('RGBA')
     im.paste(class_level, (left + 320, 60), class_level)
-    rating_bar = Image.open(maimaidir / 'UI_CMN_Shougou_Rainbow.png').resize((270, 27)).convert('RGBA')
+    rating_bar = Image.open(_tp('UI_CMN_Shougou_Rainbow.png')).resize((270, 27)).convert('RGBA')
     im.paste(rating_bar, (left + 135, 160), rating_bar)
     dr = ImageDraw.Draw(im)
     sy = DrawText(dr, SIYUAN)

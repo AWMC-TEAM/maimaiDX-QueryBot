@@ -8,6 +8,7 @@ from nonebot.adapters.onebot.v11 import MessageSegment
 from PIL import Image, ImageDraw
 
 from ..config import *
+from .maimaidx_theme import pic
 from .image import DrawText, image_to_base64, music_picture
 from .maimaidx_api_data import maiApi
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError
@@ -184,18 +185,21 @@ async def _draw_gold_water_image(
     left = margin_side
     rating_val = int(userinfo.rating or 0)
     add_rating_val = int(userinfo.additional_rating or 0) if userinfo.additional_rating is not None else 0
-    dx_rating = Image.open(maimaidir / _find_ra_pic(rating_val)).resize((186, 35))
-    Name = Image.open(maimaidir / 'Name.png')
-    MatchLevel = Image.open(maimaidir / _find_match_level(add_rating_val)).resize((80, 32))
-    ClassLevel = Image.open(maimaidir / 'UI_FBR_Class_00.png').resize((90, 54))
-    rating_img = Image.open(maimaidir / 'UI_CMN_Shougou_Rainbow.png').resize((270, 27))
+    from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
+    _t = _Th.get_default().value
+    _tp = lambda f: _rtp(maimaidir, _t, f)
+    dx_rating = Image.open(_tp(_find_ra_pic(rating_val))).resize((186, 35))
+    Name = Image.open(_tp('Name.png'))
+    MatchLevel = Image.open(_tp(_find_match_level(add_rating_val))).resize((80, 32))
+    ClassLevel = Image.open(_tp('UI_FBR_Class_00.png')).resize((90, 54))
+    rating_img = Image.open(_tp('UI_CMN_Shougou_Rainbow.png')).resize((270, 27))
 
     if userinfo.plate:
         plate = Image.open(platedir / f'{userinfo.plate}.png').resize((800, 130))
     else:
-        plate = Image.open(maimaidir / 'UI_Plate_300501.png').resize((800, 130))
+        plate = Image.open(_tp('UI_Plate_300501.png')).resize((800, 130))
     im.alpha_composite(plate, (left, 60))
-    icon = Image.open(maimaidir / 'UI_Icon_309503.png').resize((120, 120))
+    icon = Image.open(_tp('UI_Icon_309503.png')).resize((120, 120))
     im.alpha_composite(icon, (left + 5, 65))
     if qqid:
         try:
@@ -207,7 +211,7 @@ async def _draw_gold_water_image(
     rating_str = f'{rating_val:05d}'
     for n, i in enumerate(rating_str):
         im.alpha_composite(
-            Image.open(maimaidir / f'UI_NUM_Drating_{i}.png').resize((17, 20)), (left + 220 + 15 * n, 80)
+            Image.open(_tp(f'UI_NUM_Drating_{i}.png')).resize((17, 20)), (left + 220 + 15 * n, 80)
         )
     im.alpha_composite(Name, (left + 135, 115))
     im.alpha_composite(MatchLevel, (left + 325, 120))
@@ -244,11 +248,11 @@ async def _draw_gold_water_image(
 
     # 10 张曲目卡：与常规 b50 相同 UI（_diff 底、曲绘、版本、评价、fc/fs、dx 星、定数显示为拟合定数 + 含金量/含水量）
     _diff = [
-        Image.open(maimaidir / 'b50_score_basic.png'),
-        Image.open(maimaidir / 'b50_score_advanced.png'),
-        Image.open(maimaidir / 'b50_score_expert.png'),
-        Image.open(maimaidir / 'b50_score_master.png'),
-        Image.open(maimaidir / 'b50_score_remaster.png'),
+        Image.open(pic('b50_score_basic.png')),
+        Image.open(pic('b50_score_advanced.png')),
+        Image.open(pic('b50_score_expert.png')),
+        Image.open(pic('b50_score_master.png')),
+        Image.open(pic('b50_score_remaster.png')),
     ]
     dy = 114
     y_row0 = 235
@@ -269,7 +273,7 @@ async def _draw_gold_water_image(
             level_index = 0
 
         cover = Image.open(music_picture(rec.song_id)).resize((75, 75))
-        version = Image.open(maimaidir / f'{rec.type.upper()}.png').resize((37, 14))
+        version = Image.open(pic(f'{rec.type.upper()}.png')).resize((37, 14))
         from .maimaidx_theme import Theme as _Th, resolve_theme_path as _rtp
         _t = _Th.get_default().value
         rate_key = getattr(rec, 'rate', None) or 'sss'
@@ -282,17 +286,17 @@ async def _draw_gold_water_image(
         im.alpha_composite(version, (x + 51, y + 91))
         im.alpha_composite(rate, (x + 92, y + 78))
         if getattr(rec, 'fc', None) and rec.fc:
-            fc = Image.open(maimaidir / f'UI_MSS_MBase_Icon_{fcl[rec.fc]}.png').resize((34, 34))
+            fc = Image.open(pic(f'UI_MSS_MBase_Icon_{fcl[rec.fc]}.png')).resize((34, 34))
             im.alpha_composite(fc, (x + 154, y + 77))
         if getattr(rec, 'fs', None) and rec.fs:
-            fs = Image.open(maimaidir / f'UI_MSS_MBase_Icon_{fsl[rec.fs]}.png').resize((34, 34))
+            fs = Image.open(pic(f'UI_MSS_MBase_Icon_{fsl[rec.fs]}.png')).resize((34, 34))
             im.alpha_composite(fs, (x + 185, y + 77))
         dxscore = _dx_max(rec.song_id, level_index)
         if dxscore:
             dxnum = dxScore(rec.dxScore / dxscore * 100)
             if dxnum:
                 im.alpha_composite(
-                    Image.open(maimaidir / f'UI_GAM_Gauge_DXScoreIcon_0{dxnum}.png').resize((47, 26)), (x + 217, y + 80)
+                    Image.open(pic(f'UI_GAM_Gauge_DXScoreIcon_0{dxnum}.png')).resize((47, 26)), (x + 217, y + 80)
                 )
 
         tb.draw(x + 26, y + 98, 13, rec.song_id, _ID_COLOR[level_index], anchor='mm')
