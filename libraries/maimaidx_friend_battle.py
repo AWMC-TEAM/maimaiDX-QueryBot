@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import random
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple, Union
 
 from nonebot.adapters.onebot.v11 import Bot
 
@@ -31,6 +32,32 @@ from .maimaidx_friend_battle_class import (
     get_class_state,
     settle_battle_cp_with_extras,
 )
+
+
+@dataclass
+class FriendBattleOutcome:
+    """友人对战结算数据（供图片渲染）。"""
+
+    verdict: str
+    winner_side: str  # me | opp | tie
+    used_pool: str
+    rating_delta: int
+    rating_limit: int
+    my_rating: int
+    opp_rating: int
+    opp_name: str
+    rel_zh: str
+    title: str
+    level: str
+    diff_name: str
+    music_id: int
+    level_index: int
+    my_achv: float
+    my_dx: int
+    o_achv: float
+    o_dx: int
+    cp_lines: List[str] = field(default_factory=list)
+
 
 def _b50_pool(user_charts) -> List[ChartInfo]:
     if not user_charts:
@@ -208,7 +235,7 @@ async def run_friend_battle(
     group_id: int,
     challenger_qq: int,
     user_rating_cap: Optional[int] = None,
-) -> str:
+) -> Union[str, FriendBattleOutcome]:
     if not getattr(maiconfig, "maimaidxtoken", None):
         return "友人对战需要配置开发者 Token（用于拉取全量成绩 dev 接口），请 Bot 管理员在配置中设置 maimaidxtoken。"
 
@@ -340,38 +367,47 @@ async def run_friend_battle(
             verdict = "平手"
 
     lim_used = _pair_rating_limit(my_rating, o_rating, user_rating_cap)
-    lines = [
-        f"友人对战 | {verdict}",
-        f"匹配：{used_pool}  |  本局总 rating |Δ|={abs(o_rating - my_rating)}（允许上限 ±{lim_used}，防碾压分档）",
-        f"总rating: 你 {my_rating}  vs  {oname} {o_rating}",
-        f"段位关系: {rel_zh}",
-        "",
-        f"随机谱：{title}  |  {level}  |  {diff_name}",
-        f"  你: {my_achv:.4f}%  DX {my_dx}",
-        f"  敌: {o_achv:.4f}%  DX {o_dx}  ({oname})",
-        "（胜负：先比达成率，相同再比 DX 分数）",
-    ]
+    if verdict == "你赢了":
+        winner_side = "me"
+    elif verdict == "平手":
+        winner_side = "tie"
+    else:
+        winner_side = "opp"
 
     if verdict == "平手":
-        lines.append("")
-        lines.append("── 段位·CP ──")
-        lines.append("本局平手，双方段位 CP 不变。")
-        lines.append(format_class_line(challenger_qq))
+        cp_lines = ["── 段位·CP ──", "本局平手，双方段位 CP 不变。"]
     else:
-        lines.append("")
-        lines.append(
-            settle_battle_cp_with_extras(
-                challenger_qq,
-                ouid,
-                verdict == "你赢了",
-                my_rating,
-                o_rating,
-                my_achv,
-                o_achv,
-                my_dx,
-                o_dx,
-            )
-        )
-        lines.append(format_class_line(challenger_qq))
+        cp_lines = settle_battle_cp_with_extras(
+            challenger_qq,
+            ouid,
+            verdict == "你赢了",
+            my_rating,
+            o_rating,
+            my_achv,
+            o_achv,
+            my_dx,
+            o_dx,
+        ).split("\n")
+    cp_lines.append(format_class_line(challenger_qq))
 
-    return "\n".join(lines)
+    return FriendBattleOutcome(
+        verdict=verdict,
+        winner_side=winner_side,
+        used_pool=used_pool,
+        rating_delta=abs(o_rating - my_rating),
+        rating_limit=lim_used,
+        my_rating=my_rating,
+        opp_rating=o_rating,
+        opp_name=oname,
+        rel_zh=rel_zh,
+        title=title,
+        level=level,
+        diff_name=diff_name,
+        music_id=music_id,
+        level_index=level_index,
+        my_achv=my_achv,
+        my_dx=my_dx,
+        o_achv=o_achv,
+        o_dx=o_dx,
+        cp_lines=cp_lines,
+    )

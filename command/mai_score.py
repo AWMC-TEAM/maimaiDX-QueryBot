@@ -55,6 +55,7 @@ from ..libraries.maimaidx_progress_report import generate_progress_report, gener
 from ..libraries.maimaidx_gain_recommend import generate_today_gain_recommendation
 from ..libraries.maimaidx_floor import generate_floor_query
 from ..libraries.maimaidx_friend_battle import run_friend_battle
+from ..libraries.maimaidx_friend_battle_draw import draw_friend_battle_image
 from ..libraries.maimaidx_gold_water import generate_gold_content, generate_water_content
 from ..libraries.maimaidx_rating_compare import generate_how_weak
 from ..libraries.maimaidx_tag_analysis import draw_analysis, image_to_message_segment
@@ -520,10 +521,13 @@ async def _friend_battle(event: MessageEvent, message: Message = CommandArg()):
         bot = get_bot()
     except Exception:
         bot = get_bot(str(event.self_id))
-    text = await run_friend_battle(
+    result = await run_friend_battle(
         bot, event.group_id, event.user_id, user_rating_cap=user_rating_cap
     )
-    await friend_battle.finish(text, reply_message=True)
+    if isinstance(result, str):
+        await friend_battle.finish(result, reply_message=True)
+        return
+    await friend_battle.finish(draw_friend_battle_image(result), reply_message=True)
 
 
 async def _get_bot_info(event: MessageEvent) -> tuple[Bot, int, str]:
