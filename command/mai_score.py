@@ -527,7 +527,7 @@ async def _friend_battle(event: MessageEvent, message: Message = CommandArg()):
     if isinstance(result, str):
         await friend_battle.finish(result, reply_message=True)
         return
-    await friend_battle.finish(draw_friend_battle_image(result), reply_message=True)
+    await friend_battle.finish(await draw_friend_battle_image(result), reply_message=True)
 
 
 async def _get_bot_info(event: MessageEvent) -> tuple[Bot, int, str]:

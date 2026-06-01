@@ -46,6 +46,9 @@ class FriendBattleOutcome:
     my_rating: int
     opp_rating: int
     opp_name: str
+    my_qq: int
+    opp_qq: int
+    my_name: str
     rel_zh: str
     title: str
     level: str
@@ -399,6 +402,9 @@ async def run_friend_battle(
         my_rating=my_rating,
         opp_rating=o_rating,
         opp_name=oname,
+        my_qq=challenger_qq,
+        opp_qq=ouid,
+        my_name=name_of(challenger_qq),
         rel_zh=rel_zh,
         title=title,
         level=level,
