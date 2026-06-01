@@ -77,13 +77,13 @@ def project_attribution_message() -> str:
     return (
         f'本机器人基于 项目地址：{UPSTREAM_REPO_URL}\n\n'
         f'由 AWMC TEAM 进行深度重制，{FORK_TEAM_URL}。\n\n'
-        f'官方群聊 {BOT_QQ_GROUP} | Made By AWMC TEAM with ❤️'
+        f'QQ Group {BOT_QQ_GROUP} | AWMC Bot Made By AWMC TEAM'
     )
 
 
 def footer_generated(bot_name: Optional[str] = None) -> str:
     """图片 / 文本回复底部短署名。"""
-    return f'官方群聊 {BOT_QQ_GROUP} | Made By AWMC TEAM with ❤️'
+    return f'QQ Group {BOT_QQ_GROUP} | AWMC Bot Made By AWMC TEAM'
 
 
 def footer_designed_generated(designer: str = IMAGE_DESIGNER, bot_name: Optional[str] = None) -> str:
