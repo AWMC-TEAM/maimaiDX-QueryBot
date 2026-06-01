@@ -25,6 +25,7 @@ from .maimaidx_error import (
     UserNotExistsError,
 )
 from .maimaidx_group_rating import get_group_member_ratings, _display_name
+from .maimaidx_timing import measure
 from .maimaidx_model import ChartInfo, PlayInfoDev, UserInfoDev
 from .maimaidx_score_formatter import get_difficulty_name
 from .maimaidx_friend_battle_class import (
@@ -266,7 +267,8 @@ async def run_friend_battle(
     ref_tier = _tier_limit_for_avg(my_rating)
 
     try:
-        raw = await bot.call_api("get_group_member_list", group_id=group_id)
+        with measure('fetch'):
+            raw = await bot.call_api("get_group_member_list", group_id=group_id)
     except Exception as e:
         return f"获取群成员失败：{e}"
     if not raw or not isinstance(raw, list):

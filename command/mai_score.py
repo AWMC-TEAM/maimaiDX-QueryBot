@@ -517,17 +517,20 @@ async def _friend_battle(event: MessageEvent, message: Message = CommandArg()):
             user_rating_cap = max(50, min(800, int(arg.split()[0])))
         except (ValueError, TypeError):
             pass
-    try:
-        bot = get_bot()
-    except Exception:
-        bot = get_bot(str(event.self_id))
-    result = await run_friend_battle(
-        bot, event.group_id, event.user_id, user_rating_cap=user_rating_cap
-    )
-    if isinstance(result, str):
-        await friend_battle.finish(result, reply_message=True)
-        return
-    await friend_battle.finish(await draw_friend_battle_image(result), reply_message=True)
+    async def _gen():
+        try:
+            bot = get_bot()
+        except Exception:
+            bot = get_bot(str(event.self_id))
+        result = await run_friend_battle(
+            bot, event.group_id, event.user_id, user_rating_cap=user_rating_cap
+        )
+        if isinstance(result, str):
+            return result
+        return await draw_friend_battle_image(result)
+
+    from ..libraries.maimaidx_timing import finish_timed
+    await finish_timed(friend_battle, _gen())
 
 
 async def _get_bot_info(event: MessageEvent) -> tuple[Bot, int, str]:
