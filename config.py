@@ -83,7 +83,8 @@ def project_attribution_message() -> str:
 
 def footer_generated(bot_name: Optional[str] = None) -> str:
     """图片 / 文本回复底部短署名。"""
-    return f'QQ Group {BOT_QQ_GROUP} | AWMC Bot Made By AWMC TEAM'
+    name = bot_name or maiconfig.botName
+    return f'QQ Group {BOT_QQ_GROUP} | {name} Bot Made By AWMC TEAM'
 
 
 def footer_designed_generated(designer: str = IMAGE_DESIGNER, bot_name: Optional[str] = None) -> str:
