@@ -4,8 +4,9 @@ from nonebot.exception import IgnoredException
 from nonebot.params import CommandArg, RegexMatched
 from nonebot.permission import SUPERUSER
 
-from ..libraries.maimaidx_music_info import *
+from ..config import project_attribution_message
 from ..libraries.maimaidx_music import feature_manager
+from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_player_score import *
 from ..libraries.maimaidx_timing import finish_timed, finish_timed_sync
 from ..libraries.maimaidx_update_plate import *
@@ -40,10 +41,7 @@ async def _():
 
 @maimaidxrepo.handle()
 async def _():
-    await maimaidxrepo.finish(
-        '项目地址：https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx\n求star，求宣传~', 
-        reply_message=True
-    )
+    await maimaidxrepo.finish(project_attribution_message(), reply_message=True)
 
 
 @mai_today.handle()
