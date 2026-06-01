@@ -77,7 +77,7 @@ def project_attribution_message() -> str:
     return (
         f'本机器人基于 项目地址：{UPSTREAM_REPO_URL}\n\n'
         f'由 AWMC TEAM 进行深度重制，{FORK_TEAM_URL}。\n\n'
-        f'QQ Group {BOT_QQ_GROUP} | AWMC Bot Made By AWMC TEAM'
+        f'QQ Group {BOT_QQ_GROUP} | AWMC BOT Made By AWMC TEAM'
     )
 
 
