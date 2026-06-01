@@ -86,6 +86,30 @@ def _cp_panel_height(lines: list[str]) -> int:
     return h
 
 
+_CHIP_H = 30
+_CHIP_GAP = 10
+
+
+def _chip_text_width(dt: DrawText, text: str) -> int:
+    fs = 14
+    return int(dt.get_box(text, fs)[2] - dt.get_box(text, fs)[0]) + 28
+
+
+def _duel_panel_height(outcome: FriendBattleOutcome) -> int:
+    """对战双方面板高度：头像区 + 标签行 + 段位关系独立一行。"""
+    inner_w = W - M * 2 - INSET * 2
+    dt = DrawText(ImageDraw.Draw(Image.new('RGBA', (1, 1))), SIYUAN)
+    pool_w = _chip_text_width(dt, outcome.used_pool)
+    delta = f'|Δrating| {outcome.rating_delta}  ·  允许 ±{outcome.rating_limit}'
+    delta_w = _chip_text_width(dt, delta)
+    chip_rows = 2 if pool_w + _CHIP_GAP + delta_w > inner_w else 1
+    # 标题 + 头像列 + 名/分 + 标签 + 段位关系
+    return (
+        PANEL_PAD * 2 + 30 + 44 + 72 + 18 + 24 + 22
+        + chip_rows * (_CHIP_H + 12) + 22
+    )
+
+
 def _frosted_panel(im: Image.Image, box: tuple[int, int, int, int]) -> Image.Image:
     return generate_frosted_card(im, box, alpha=PANEL_A)
 
@@ -140,8 +164,7 @@ def _draw_chip(dr: ImageDraw.ImageDraw, dt: DrawText, x: int, y: int, text: str,
     pad_x = 14
     fs = 14
     tw = int(dt.get_box(text, fs)[2] - dt.get_box(text, fs)[0]) + pad_x * 2
-    th = 30
-    dr.rounded_rectangle((x, y, x + tw, y + th), radius=15, fill=fill, outline=(*ACCENT[:3], 70), width=1)
+    dr.rounded_rectangle((x, y, x + tw, y + _CHIP_H), radius=15, fill=fill, outline=(*ACCENT[:3], 70), width=1)
     dt.draw(x + pad_x, y + 7, fs, text, TEXT, 'lt', 1, (255, 255, 255, 230))
     return tw
 
@@ -220,16 +243,18 @@ def _draw_duel_row(
     dt.draw(col_cx_l, ra_y, 15, f'Rating {outcome.my_rating}', SUBTEXT, 'mm', 1, (255, 255, 255, 220))
     dt.draw(col_cx_r, ra_y, 15, f'Rating {outcome.opp_rating}', SUBTEXT, 'mm', 1, (255, 255, 255, 220))
 
-    chip_y = ra_y + 34
+    chip_y = ra_y + 26
     cx = inner_l
+    delta = f'|Δrating| {outcome.rating_delta}  ·  允许 ±{outcome.rating_limit}'
     cw = _draw_chip(dr, dt, cx, chip_y, outcome.used_pool, (240, 242, 252, 255))
-    _draw_chip(
-        dr, dt, cx + cw + 10, chip_y,
-        f'|Δrating| {outcome.rating_delta}  ·  允许 ±{outcome.rating_limit}',
-        (235, 237, 248, 255),
-    )
-    rel_y = y1 - PANEL_PAD - 6
-    dt.draw(inner_l, rel_y, 14, f'段位关系 · {outcome.rel_zh}', MUTED, 'lb', 1, (255, 255, 255, 210))
+    if cx + cw + _CHIP_GAP + _chip_text_width(dt, delta) > inner_r:
+        chip_y2 = chip_y + _CHIP_H + 10
+        _draw_chip(dr, dt, cx, chip_y2, delta, (235, 237, 248, 255))
+        rel_y = chip_y2 + _CHIP_H + 14
+    else:
+        _draw_chip(dr, dt, cx + cw + _CHIP_GAP, chip_y, delta, (235, 237, 248, 255))
+        rel_y = chip_y + _CHIP_H + 14
+    dt.draw(inner_l, rel_y, 14, f'段位关系 · {outcome.rel_zh}', MUTED, 'lt', 1, (255, 255, 255, 210))
 
 
 def _draw_score_card(
@@ -259,7 +284,7 @@ def _draw_score_card(
 
 async def draw_friend_battle_image(outcome: FriendBattleOutcome) -> MessageSegment:
     hero_h = 112
-    duel_h = 268
+    duel_h = _duel_panel_height(outcome)
     cp_inner = _cp_panel_height(outcome.cp_lines)
     battle_h = 300
     card_h = 118
