@@ -54,7 +54,11 @@ from ..libraries.maimaidx_plate_count import (
 from ..libraries.maimaidx_progress_report import generate_progress_report, generate_progress_report_between
 from ..libraries.maimaidx_gain_recommend import generate_today_gain_recommendation
 from ..libraries.maimaidx_floor import generate_floor_query
-from ..libraries.maimaidx_friend_battle import run_friend_battle
+from ..libraries.maimaidx_friend_battle import (
+    check_friend_battle_cooldown,
+    mark_friend_battle_used,
+    run_friend_battle,
+)
 from ..libraries.maimaidx_friend_battle_draw import draw_friend_battle_image
 from ..libraries.maimaidx_gold_water import generate_gold_content, generate_water_content
 from ..libraries.maimaidx_rating_compare import generate_how_weak
@@ -510,6 +514,9 @@ async def _friend_battle(event: MessageEvent, message: Message = CommandArg()):
         await friend_battle.finish('该功能仅在群聊中可用。', reply_message=True)
     if not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
+    cd_msg = check_friend_battle_cooldown(event.user_id)
+    if cd_msg:
+        await friend_battle.finish(cd_msg, reply_message=True)
     arg = message.extract_plain_text().strip()
     user_rating_cap = None
     if arg:
@@ -518,6 +525,7 @@ async def _friend_battle(event: MessageEvent, message: Message = CommandArg()):
         except (ValueError, TypeError):
             pass
     async def _gen():
+        mark_friend_battle_used(event.user_id)
         try:
             bot = get_bot()
         except Exception:

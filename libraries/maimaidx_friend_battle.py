@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from nonebot.adapters.onebot.v11 import Bot
 
@@ -33,6 +34,37 @@ from .maimaidx_friend_battle_class import (
     get_class_state,
     settle_battle_cp_with_extras,
 )
+
+_last_friend_battle: Dict[int, float] = {}
+
+
+def friend_battle_cooldown_seconds() -> int:
+    return max(0, int(getattr(maiconfig, "maimaidx_friend_battle_cooldown_seconds", 180) or 0))
+
+
+def check_friend_battle_cooldown(qq: int) -> Optional[str]:
+    """若仍在冷却内则返回提示文案，否则返回 None。"""
+    cd = friend_battle_cooldown_seconds()
+    if cd <= 0:
+        return None
+    last = _last_friend_battle.get(qq)
+    if last is None:
+        return None
+    remain = cd - (time.time() - last)
+    if remain <= 0:
+        return None
+    if remain >= 60:
+        m, s = int(remain // 60), int(remain % 60)
+        hint = f"{m} 分 {s} 秒" if s else f"{m} 分钟"
+    else:
+        hint = f"{max(1, int(remain))} 秒"
+    return f"友人对战冷却中，请 {hint} 后再试。"
+
+
+def mark_friend_battle_used(qq: int) -> None:
+    if friend_battle_cooldown_seconds() <= 0:
+        return
+    _last_friend_battle[qq] = time.time()
 
 
 @dataclass

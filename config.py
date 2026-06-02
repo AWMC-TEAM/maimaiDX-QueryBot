@@ -62,6 +62,8 @@ class Config(BaseModel):
     # 启动时若本地缓存文件未过期则直接读取，跳过网络请求，加快启动速度。
     # 设为 0 则每次启动都从网络获取（旧行为）。可通过 .env 设置 MAIMAIDX_MUSIC_CACHE_SECONDS
     maimaidx_music_cache_seconds: int = 3600
+    # 友人对战：同一 QQ 两次发起之间的冷却（秒），默认 3 分钟；设为 0 关闭冷却。可通过 .env 设置 MAIMAIDX_FRIEND_BATTLE_COOLDOWN_SECONDS
+    maimaidx_friend_battle_cooldown_seconds: int = 180
 
 
 maiconfig = get_plugin_config(Config)

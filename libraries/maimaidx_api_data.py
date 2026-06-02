@@ -1,4 +1,6 @@
-from typing import Any, Dict
+from __future__ import annotations
+
+from typing import Any, Dict, Iterable, List, Optional, Set, Union
 
 import httpx
 
@@ -24,15 +26,53 @@ class MaimaiAPI:
         """封装Api"""
         self.headers = None
         self.token = None
+        self.tokens: List[str] = []
+        self._bad_tokens: Set[str] = set()
+        self._rr_idx: int = 0
         self.MaiProberProxyAPI = None
         self.MaiAliasProxyAPI = None
+
+    @staticmethod
+    def _parse_tokens(raw: Optional[str]) -> List[str]:
+        """支持用逗号/空白分隔配置多个 token。"""
+        if not raw:
+            return []
+        # 兼容：逗号、换行、空格、tab
+        parts = [p.strip() for p in raw.replace(",", " ").split()]
+        out: List[str] = []
+        for p in parts:
+            if p and p not in out:
+                out.append(p)
+        return out
 
     def load_token_proxy(self) -> None:
         self.MaiProberProxyAPI = self.MaiProberAPI if not maiconfig.maimaidxproberproxy else self.MaiProxyAPI + '/maimaidxprober'
         self.MaiAliasProxyAPI = self.MaiAliasAPI if not maiconfig.maimaidxaliasproxy else self.MaiProxyAPI + '/maimaidxaliases'
         self.token = maiconfig.maimaidxtoken
-        if self.token:
-            self.headers = {'developer-token': self.token}
+        self.tokens = self._parse_tokens(self.token)
+        self._bad_tokens = set()
+        self._rr_idx = 0
+        if self.tokens:
+            # 兼容旧逻辑：非 dev 接口也会带上 token，不影响
+            self.headers = {'developer-token': self.tokens[0]}
+        else:
+            self.headers = None
+
+    def _mark_token_bad(self, token: str) -> None:
+        if token:
+            self._bad_tokens.add(token)
+
+    def _iter_tokens_round_robin(self) -> Iterable[str]:
+        """返回当前可用 token 的轮询序列（每次调用起点不同）。"""
+        if not self.tokens:
+            return []
+        avail = [t for t in self.tokens if t not in self._bad_tokens]
+        if not avail:
+            return []
+        # round-robin 起点
+        start = self._rr_idx % len(avail)
+        self._rr_idx = (self._rr_idx + 1) % len(avail)
+        return avail[start:] + avail[:start]
 
     async def _requestalias(self, method: str, endpoint: str, **kwargs) -> APIResult:
         """
@@ -55,10 +95,11 @@ class MaimaiAPI:
             else:
                 raise UnknownError
 
-    async def _requestmai(
+    async def _requestmai_once(
         self, 
         method: str, 
         endpoint: str, 
+        headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
         """
@@ -81,7 +122,7 @@ class MaimaiAPI:
                 res = await session.request(
                     method, 
                     self.MaiProberProxyAPI + endpoint, 
-                    headers=self.headers, 
+                    headers=headers, 
                     **kwargs
                 )
         finally:
@@ -112,6 +153,44 @@ class MaimaiAPI:
         else:
             raise UnknownError
         return data
+
+    async def _requestmai(
+        self,
+        method: str,
+        endpoint: str,
+        **kwargs,
+    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+        """默认请求（不做 token 池轮询）。"""
+        return await self._requestmai_once(method, endpoint, headers=self.headers, **kwargs)
+
+    async def _requestmai_dev(
+        self,
+        method: str,
+        endpoint: str,
+        **kwargs,
+    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+        """
+        dev 接口请求：支持 token 池轮询。
+        - 某个 token 返回 token 相关错误 -> 标记坏并换下一个
+        - 都失败才抛最后一次的 token 错误
+        """
+        last_err: Optional[Exception] = None
+        for t in self._iter_tokens_round_robin():
+            try:
+                return await self._requestmai_once(
+                    method,
+                    endpoint,
+                    headers={"developer-token": t},
+                    **kwargs,
+                )
+            except (TokenError, TokenDisableError, TokenNotFoundError) as e:
+                self._mark_token_bad(t)
+                last_err = e
+                continue
+        if last_err is not None:
+            raise last_err
+        # 没配置 token 或全部被标坏
+        raise TokenNotFoundError
 
     async def music_data(self):
         """获取曲目数据"""
@@ -186,7 +265,7 @@ class MaimaiAPI:
         if username:
             params['username'] = username
         
-        result = await self._requestmai('GET', '/dev/player/records', params=params)
+        result = await self._requestmai_dev('GET', '/dev/player/records', params=params)
         return UserInfoDev.model_validate(result)
 
     async def query_user_post_dev(
@@ -213,7 +292,7 @@ class MaimaiAPI:
             json['username'] = username
         json['music_id'] = music_id
         
-        result = await self._requestmai('POST', '/dev/player/record', json=json)
+        result = await self._requestmai_dev('POST', '/dev/player/record', json=json)
         if result == {}:
             raise MusicNotPlayError
         
