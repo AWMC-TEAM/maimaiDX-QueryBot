@@ -160,20 +160,15 @@ class MaimaiAPI:
         endpoint: str,
         **kwargs,
     ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
-        """默认请求（不做 token 池轮询）。"""
-        return await self._requestmai_once(method, endpoint, headers=self.headers, **kwargs)
+        """
+        查分器请求：配置了 token 池时自动轮询。
+        - token 相关错误 -> 标记坏并换下一个
+        - 全部失败才抛最后一次 token 错误
+        - 未配置 token 时不带 developer-token 头
+        """
+        if not self.tokens:
+            return await self._requestmai_once(method, endpoint, headers=None, **kwargs)
 
-    async def _requestmai_dev(
-        self,
-        method: str,
-        endpoint: str,
-        **kwargs,
-    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
-        """
-        dev 接口请求：支持 token 池轮询。
-        - 某个 token 返回 token 相关错误 -> 标记坏并换下一个
-        - 都失败才抛最后一次的 token 错误
-        """
         last_err: Optional[Exception] = None
         for t in self._iter_tokens_round_robin():
             try:
@@ -189,8 +184,16 @@ class MaimaiAPI:
                 continue
         if last_err is not None:
             raise last_err
-        # 没配置 token 或全部被标坏
         raise TokenNotFoundError
+
+    async def _requestmai_dev(
+        self,
+        method: str,
+        endpoint: str,
+        **kwargs,
+    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+        """dev 接口（与 _requestmai 共用 token 池）。"""
+        return await self._requestmai(method, endpoint, **kwargs)
 
     async def music_data(self):
         """获取曲目数据"""
