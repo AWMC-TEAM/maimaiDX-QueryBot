@@ -24,6 +24,12 @@ from .maimaidx_lxns_client import (
 from .maimaidx_lxns_db import lxns_db
 from .maimaidx_model import ChartInfo, Data, PlayInfoDev, UserInfo
 from .maimaidx_music import mai
+from .maimaidx_player_cache import (
+    get_cached_player,
+    resolve_player_b50,
+    resolve_player_records,
+    save_cached_player,
+)
 
 _LEVEL_LABELS = ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master']
 
@@ -211,6 +217,7 @@ async def get_user_b50(
     username: Optional[str] = None,
     *,
     force_source: Optional[str] = None,
+    force_refresh: bool = False,
 ) -> UserInfo:
     """
     获取用户 b50（UserInfo）。根据数据源偏好选择水鱼/落雪。
@@ -223,15 +230,26 @@ async def get_user_b50(
     source = force_source or (get_user_source(qqid) if qqid and not username else 'divingfish')
 
     if source == 'lxns' and qqid and not username:
-        bests, nickname, rating, _ = await _lxns_get_bests_and_player(qqid)
-        if not bests:
-            raise LxnsDataError(
-                '落雪数据获取失败，请先绑定落雪查分器：发送 lxbind\n'
-                '或切换回水鱼数据源：数据源 水鱼'
-            )
-        return lxns_bests_to_userinfo(bests, nickname=nickname, rating=rating)
 
-    return await maiApi.query_user_b50(qqid=qqid, username=username)
+        async def _fetch_lxns_b50():
+            bests, nickname, rating, _ = await _lxns_get_bests_and_player(qqid)
+            if not bests:
+                raise LxnsDataError(
+                    '落雪数据获取失败，请先绑定落雪查分器：发送 lxbind\n'
+                    '或切换回水鱼数据源：数据源 水鱼'
+                )
+            return lxns_bests_to_userinfo(bests, nickname=nickname, rating=rating)
+
+        return await resolve_player_b50(
+            qqid, username, source, _fetch_lxns_b50, force_refresh=force_refresh
+        )
+
+    async def _fetch_df_b50():
+        return await maiApi.query_user_b50(qqid=qqid, username=username)
+
+    return await resolve_player_b50(
+        qqid, username, source, _fetch_df_b50, force_refresh=force_refresh
+    )
 
 
 async def get_user_b50_or_fallback(
@@ -254,6 +272,7 @@ async def get_user_records(
     username: Optional[str] = None,
     *,
     force_source: Optional[str] = None,
+    force_refresh: bool = False,
 ) -> Tuple[UserInfo, List[PlayInfoDev]]:
     """
     获取用户基础信息 + 全量成绩。根据数据源偏好选择水鱼/落雪。
@@ -268,36 +287,59 @@ async def get_user_records(
     source = force_source or (get_user_source(qqid) if qqid and not username else 'divingfish')
 
     if source == 'lxns' and qqid and not username:
-        from ..command.mai_lxns import _get_valid_access_token
-        access_token = await _get_valid_access_token(qqid)
-        if not access_token:
-            raise LxnsDataError(
-                '落雪全量成绩需要 OAuth 授权，请先发送 lxbind 绑定落雪查分器\n'
-                '或切换回水鱼数据源：数据源 水鱼'
+
+        async def _fetch_lxns_records():
+            from ..command.mai_lxns import _get_valid_access_token
+            access_token = await _get_valid_access_token(qqid)
+            if not access_token:
+                raise LxnsDataError(
+                    '落雪全量成绩需要 OAuth 授权，请先发送 lxbind 绑定落雪查分器\n'
+                    '或切换回水鱼数据源：数据源 水鱼'
+                )
+            try:
+                with _timing.measure('fetch'):
+                    scores = await user_get_scores(access_token)
+                    player = await user_get_player(access_token)
+            except Exception as e:
+                log.warning(f'[datasource] lxns OAuth scores failed qq={qqid}: {e}')
+                raise LxnsDataError(f'落雪成绩获取失败：{e}')
+            nickname = player.get('name', '') if player else ''
+            rating = player.get('rating', 0) if player else 0
+            userinfo = UserInfo(
+                nickname=nickname or '落雪用户',
+                rating=rating,
+                additional_rating=0,
+                username=nickname or '',
+                charts=None,
             )
-        try:
-            with _timing.measure('fetch'):
-                scores = await user_get_scores(access_token)
-                player = await user_get_player(access_token)
-        except Exception as e:
-            log.warning(f'[datasource] lxns OAuth scores failed qq={qqid}: {e}')
-            raise LxnsDataError(f'落雪成绩获取失败：{e}')
-        nickname = player.get('name', '') if player else ''
-        rating = player.get('rating', 0) if player else 0
-        userinfo = UserInfo(
-            nickname=nickname or '落雪用户',
-            rating=rating,
-            additional_rating=0,
-            username=nickname or '',
-            charts=None,
+            records = lxns_scores_to_records(scores)
+            return userinfo, records
+
+        return await resolve_player_records(
+            qqid, username, source, _fetch_lxns_records, force_refresh=force_refresh
         )
-        records = lxns_scores_to_records(scores)
-        return userinfo, records
 
     # 水鱼
     if username:
         qqid = None
-    userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
-    dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
-    records = list(dev.records or [])
-    return userinfo, records
+
+    async def _fetch_df_records():
+        partial = get_cached_player(qqid, username, source, force_refresh=force_refresh)
+        if partial and partial.records and partial.userinfo.charts is not None:
+            return partial.userinfo, partial.records
+        if partial and partial.records:
+            userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
+            return userinfo, partial.records
+        if partial and partial.userinfo.charts is not None:
+            dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
+            records = list(dev.records or [])
+            save_cached_player(qqid, username, source, partial.userinfo, records)
+            return partial.userinfo, records
+        userinfo = await maiApi.query_user_b50(qqid=qqid, username=username)
+        dev = await maiApi.query_user_get_dev(qqid=qqid, username=username)
+        records = list(dev.records or [])
+        return userinfo, records
+
+    return await resolve_player_records(
+        qqid, username, source, _fetch_df_records, force_refresh=force_refresh
+    )

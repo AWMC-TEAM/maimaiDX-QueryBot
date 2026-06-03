@@ -19,8 +19,7 @@ require("nonebot_plugin_apscheduler")
 from nonebot_plugin_apscheduler import scheduler
 
 from ..libraries.maimaidx_data_storage import data_storage, DailySnapshot, ScoreRecord
-from ..libraries.maimaidx_api_data import maiApi
-from ..libraries.maimaidx_model import UserInfo
+from ..libraries.maimaidx_datasource import get_user_records
 
 
 async def fetch_and_store_user_scores(
@@ -36,10 +35,9 @@ async def fetch_and_store_user_scores(
         是否成功
     """
     try:
-        # 获取用户所有成绩（需要开发者 Token）
-        userinfo = await maiApi.query_user_b50(qqid=qqid)
-        dev = await maiApi.query_user_get_dev(qqid=qqid)
-        records = list(dev.records or [])
+        # 强制刷新并写入玩家缓存，供其它指令复用
+        userinfo, dev_records = await get_user_records(qqid=qqid, force_refresh=True)
+        records = list(dev_records or [])
         
         if not records:
             log.warning(f"[DataScheduler] 用户 {qqid} 没有成绩数据")

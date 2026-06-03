@@ -24,6 +24,7 @@ from ..config import maiconfig
 from ..config import log
 from .maimaidx_data_storage import data_storage
 from .maimaidx_api_data import maiApi
+from .maimaidx_datasource import get_user_b50, get_user_records
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError, MusicNotPlayError
 from .maimaidx_score_formatter import (
     format_leaderboard_text,
@@ -160,7 +161,7 @@ async def get_group_member_ratings(
             return None
         async with sem:
             try:
-                userinfo = await maiApi.query_user_b50(qqid=int(uid))
+                userinfo = await get_user_b50(qqid=int(uid))
                 ra = int(userinfo.rating or 0)
                 name = _display_name(m)
                 return (int(uid), name, ra)
@@ -370,8 +371,8 @@ async def group_sun_lock_ranking(
                 return None
             async with sem:
                 try:
-                    dev = await maiApi.query_user_get_dev(qqid=int(uid))
-                    recs = list(dev.records or [])
+                    _ui, recs = await get_user_records(qqid=int(uid))
+                    recs = list(recs or [])
                     from .maimaidx_best_50 import filter_utage_records
                     recs = filter_utage_records(recs)
                 except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError, ValueError, TypeError):

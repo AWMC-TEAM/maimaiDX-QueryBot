@@ -19,6 +19,8 @@ from nonebot.adapters.onebot.v11 import Bot
 
 from ..config import log, maiconfig
 from .maimaidx_api_data import maiApi
+from .maimaidx_datasource import get_user_b50
+from .maimaidx_player_cache import get_cached_player
 from .maimaidx_data_storage import ScoreRecord, data_storage
 from .maimaidx_error import (
     UserDisabledQueryError,
@@ -243,7 +245,17 @@ async def _ensure_dev_cached(qqid: int, dev_cache: dict[int, Optional[UserInfoDe
         if qqid in dev_cache:
             return
         try:
-            dev_cache[qqid] = await maiApi.query_user_get_dev(qqid=qqid)
+            cached = get_cached_player(qqid, None, "divingfish")
+            if cached and cached.records:
+                dev_cache[qqid] = UserInfoDev(
+                    nickname=cached.userinfo.nickname,
+                    rating=cached.userinfo.rating,
+                    additional_rating=cached.userinfo.additional_rating or 0,
+                    username=cached.userinfo.username,
+                    records=cached.records,
+                )
+            else:
+                dev_cache[qqid] = await maiApi.query_user_get_dev(qqid=qqid)
         except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError, ValueError, TypeError):
             dev_cache[qqid] = None
         except Exception as e:
@@ -276,7 +288,7 @@ async def run_friend_battle(
         return "友人对战需要配置开发者 Token（用于拉取全量成绩 dev 接口），请 Bot 管理员在配置中设置 maimaidxtoken。"
 
     try:
-        me = await maiApi.query_user_b50(qqid=challenger_qq)
+        me = await get_user_b50(qqid=challenger_qq)
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         return str(e)
 

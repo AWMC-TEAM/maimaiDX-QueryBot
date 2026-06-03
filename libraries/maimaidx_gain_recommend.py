@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from ..config import footer_generated, log
-from .maimaidx_api_data import maiApi
 from .maimaidx_best_50 import _is_latest_version, computeRa
 from .maimaidx_data_storage import DailySnapshot, ScoreRecord, data_storage
 from .maimaidx_music import mai
@@ -132,8 +131,10 @@ async def generate_today_gain_recommendation(qqid: int, top_n: int = 12) -> str:
     b35_tail = int(b35[-1].ra) if b35 else 0
     b15_tail = int(b15[-1].ra) if b15 else 0
 
-    dev = await maiApi.query_user_get_dev(qqid=qqid)
-    records = list(dev.records or [])
+    from .maimaidx_datasource import get_user_records
+
+    _ui, dev_records = await get_user_records(qqid=qqid)
+    records = list(dev_records or [])
     from .maimaidx_best_50 import filter_utage_records
     records = filter_utage_records(records)
     if not records:

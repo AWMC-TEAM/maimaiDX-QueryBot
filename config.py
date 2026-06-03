@@ -58,6 +58,11 @@ class Config(BaseModel):
     maimaidx_tag_analysis_bg: Optional[str] = None
     # 我有多菜 / 我在群里有多菜：rating 数据缓存时长（秒），默认 15 分钟；可通过 .env 设置 MAIMAIDX_RATING_CACHE_SECONDS
     maimaidx_rating_cache_seconds: int = 900
+    # 玩家成绩（B50 + 全量 dev）SQLite 缓存时长（秒），默认 15 分钟；0=关闭。MAIMAIDX_PLAYER_CACHE_SECONDS
+    maimaidx_player_cache_seconds: int = 900
+    # 是否允许用「数据存储」最近快照作兜底（默认 24h 内有效）。MAIMAIDX_PLAYER_CACHE_USE_STORAGE
+    maimaidx_player_cache_use_storage: bool = True
+    maimaidx_player_storage_fallback_seconds: int = 86400
     # 曲库/谱面/别名数据本地缓存时长（秒），默认 1 小时。
     # 启动时若本地缓存文件未过期则直接读取，跳过网络请求，加快启动速度。
     # 设为 0 则每次启动都从网络获取（旧行为）。可通过 .env 设置 MAIMAIDX_MUSIC_CACHE_SECONDS

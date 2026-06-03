@@ -273,6 +273,8 @@ async def _lxb50(event: MessageEvent):
                 reply_message=True,
             )
         footer_lines = ['📊 数据源：落雪 | 可使用 数据源 水鱼/落雪 修改']
+        from ..libraries.maimaidx_player_cache import pop_data_freshness_footer_lines
+        footer_lines.extend(pop_data_freshness_footer_lines())
         from ..libraries.maimaidx_b50_warnings import pop_b50_warning_footer
         warning = pop_b50_warning_footer()
         if warning:

@@ -164,12 +164,12 @@ def format_plate_count_message_from_records(records: List[ScoreRecord], source_n
 
 
 async def fetch_dev_records_as_score_records(qqid: int) -> List[ScoreRecord]:
-    """拉取查分器 dev 全量成绩，转为与快照一致的 ScoreRecord（不写入本地）。"""
-    from .maimaidx_api_data import maiApi
+    """拉取查分器全量成绩（优先玩家缓存），转为与快照一致的 ScoreRecord。"""
     from .maimaidx_best_50 import filter_utage_records
+    from .maimaidx_datasource import get_user_records
 
-    dev = await maiApi.query_user_get_dev(qqid=qqid)
-    records = list(dev.records or [])
+    _ui, dev_records = await get_user_records(qqid=qqid)
+    records = list(dev_records or [])
     records = filter_utage_records(records)
     out: List[ScoreRecord] = []
     for r in records:

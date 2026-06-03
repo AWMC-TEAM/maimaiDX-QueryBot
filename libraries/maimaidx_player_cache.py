@@ -1,0 +1,407 @@
+"""
+玩家成绩本地缓存：减少对水鱼/落雪查分器的重复请求。
+
+- 任意经 datasource 成功拉取的数据会写入 SQLite 缓存
+- 未过期时优先读缓存；可选复用「数据存储」最近快照（更长 TTL）
+- username 查询单独缓存；落雪与水鱼分 source 存储
+"""
+
+from __future__ import annotations
+
+import contextvars
+import json
+import sqlite3
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from threading import Lock
+from typing import List, Optional, Tuple
+
+from ..config import log, maiconfig
+from .maimaidx_data_storage import DailySnapshot, ScoreRecord, data_storage
+from .maimaidx_model import PlayInfoDev, UserInfo
+
+DB_DIR = Path(__file__).parent.parent / "data" / "player_cache"
+DB_FILE = DB_DIR / "player_cache.db"
+
+
+@dataclass
+class CachedPlayerBundle:
+    userinfo: UserInfo
+    records: List[PlayInfoDev]
+    fetched_at: float
+    from_storage: bool = False
+
+
+@dataclass
+class PlayerFetchMeta:
+    """本次指令取数来源，供成绩图 footer 展示。"""
+
+    fetched_at: float
+    origin: str  # api | sqlite_cache | storage_snapshot
+    force_refresh: bool = False
+
+
+_FETCH_META: contextvars.ContextVar[Optional[PlayerFetchMeta]] = contextvars.ContextVar(
+    "player_fetch_meta", default=None
+)
+
+REFRESH_B50_HINT = '💡 刚打完机台？发送「刷新b50」可从查分器获取最新成绩'
+
+
+def _set_fetch_meta(
+    fetched_at: float,
+    origin: str,
+    *,
+    force_refresh: bool = False,
+) -> None:
+    _FETCH_META.set(
+        PlayerFetchMeta(
+            fetched_at=fetched_at,
+            origin=origin,
+            force_refresh=force_refresh,
+        )
+    )
+
+
+def clear_fetch_meta() -> None:
+    _FETCH_META.set(None)
+
+
+def pop_data_freshness_footer_lines() -> List[str]:
+    """取出并清除本次请求的取数元信息，转为 footer 行。"""
+    meta = _FETCH_META.get()
+    _FETCH_META.set(None)
+    if meta is None or _cache_ttl_seconds() <= 0:
+        return []
+    return _format_freshness_lines(meta)
+
+
+def _format_freshness_lines(meta: PlayerFetchMeta) -> List[str]:
+    ts = datetime.fromtimestamp(meta.fetched_at)
+    clock = ts.strftime("%m-%d %H:%M")
+    age_s = max(0, int(time.time() - meta.fetched_at))
+
+    if meta.origin == "api":
+        if meta.force_refresh:
+            label = f"🕐 数据更新：{clock}（刚刚已从查分器同步）"
+        else:
+            label = f"🕐 数据更新：{clock}（查分器实时）"
+        return [label]
+
+    if meta.origin == "storage_snapshot":
+        if age_s < 3600:
+            age_hint = f"{max(1, age_s // 60)} 分钟前"
+        elif age_s < 86400:
+            age_hint = f"{age_s // 3600} 小时前"
+        else:
+            age_hint = f"{age_s // 86400} 天前"
+        return [
+            f"🕐 数据更新：{clock}（本地存档，约 {age_hint}）",
+            REFRESH_B50_HINT,
+        ]
+
+    # sqlite_cache
+    if age_s < 60:
+        age_hint = "刚刚"
+    elif age_s < 3600:
+        age_hint = f"约 {max(1, age_s // 60)} 分钟前"
+    elif age_s < 86400:
+        age_hint = f"约 {age_s // 3600} 小时前"
+    else:
+        age_hint = f"约 {age_s // 86400} 天前"
+    return [
+        f"🕐 数据更新：{clock}（本地缓存，{age_hint}）",
+        REFRESH_B50_HINT,
+    ]
+
+
+def _cache_ttl_seconds() -> int:
+    return int(getattr(maiconfig, "maimaidx_player_cache_seconds", 900) or 900)
+
+
+def _storage_fallback_ttl_seconds() -> int:
+    """数据存储快照作为兜底时的最大年龄（默认 24h）。"""
+    return int(getattr(maiconfig, "maimaidx_player_storage_fallback_seconds", 86400) or 86400)
+
+
+def _use_storage_fallback() -> bool:
+    return bool(getattr(maiconfig, "maimaidx_player_cache_use_storage", True))
+
+
+def _cache_key(qqid: Optional[int], username: Optional[str], source: str) -> str:
+    if username:
+        return f"u:{source}:{username.strip().lower()}"
+    return f"q:{source}:{int(qqid)}"
+
+
+class PlayerCacheDB:
+    _instance = None
+    _lock = Lock()
+
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+        DB_DIR.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(DB_FILE), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_cache (
+                cache_key TEXT PRIMARY KEY,
+                qqid INTEGER,
+                username TEXT,
+                source TEXT NOT NULL,
+                userinfo_json TEXT NOT NULL,
+                records_json TEXT NOT NULL,
+                fetched_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_player_cache_fetched ON player_cache(fetched_at);
+            """
+        )
+        self._conn.commit()
+
+    def get(
+        self, qqid: Optional[int], username: Optional[str], source: str, ttl: int
+    ) -> Optional[CachedPlayerBundle]:
+        if ttl <= 0:
+            return None
+        key = _cache_key(qqid, username, source)
+        row = self._conn.execute(
+            "SELECT userinfo_json, records_json, fetched_at FROM player_cache WHERE cache_key = ?",
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        fetched_at = float(row["fetched_at"])
+        if time.time() - fetched_at > ttl:
+            return None
+        try:
+            userinfo = UserInfo.model_validate(json.loads(row["userinfo_json"]))
+            records = [
+                PlayInfoDev.model_validate(r) for r in json.loads(row["records_json"])
+            ]
+            return CachedPlayerBundle(
+                userinfo=userinfo, records=records, fetched_at=fetched_at
+            )
+        except Exception as e:
+            log.warning(f"[PlayerCache] 解析缓存失败 key={key}: {e}")
+            return None
+
+    def set(
+        self,
+        qqid: Optional[int],
+        username: Optional[str],
+        source: str,
+        userinfo: UserInfo,
+        records: List[PlayInfoDev],
+    ) -> None:
+        key = _cache_key(qqid, username, source)
+        now = time.time()
+        try:
+            ui_json = userinfo.model_dump_json()
+            rec_json = json.dumps(
+                [r.model_dump(mode="json") for r in records],
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            log.warning(f"[PlayerCache] 序列化失败 key={key}: {e}")
+            return
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO player_cache
+            (cache_key, qqid, username, source, userinfo_json, records_json, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                key,
+                int(qqid) if qqid else None,
+                (username or "").strip() or None,
+                source,
+                ui_json,
+                rec_json,
+                now,
+            ),
+        )
+        self._conn.commit()
+        log.debug(
+            f"[PlayerCache] 已写入 key={key} records={len(records)} rating={userinfo.rating}"
+        )
+
+
+player_cache_db = PlayerCacheDB()
+
+
+def _score_records_to_playinfo_dev(records: List[ScoreRecord]) -> List[PlayInfoDev]:
+    out: List[PlayInfoDev] = []
+    for r in records:
+        lv = r.level or ""
+        out.append(
+            PlayInfoDev(
+                song_id=int(r.song_id),
+                title=r.title or "",
+                level=lv,
+                level_label=lv,
+                level_index=int(r.level_index),
+                achievements=float(r.achievements),
+                fc=r.fc or "",
+                fs=r.fs or "",
+                type="SD",
+                ds=round(float(r.ds), 1),
+                dxScore=int(r.dxScore or 0),
+                ra=int(r.ra),
+                rate=r.rate or "",
+            )
+        )
+    return out
+
+
+def _bundle_from_snapshot(snap: DailySnapshot) -> CachedPlayerBundle:
+    userinfo = UserInfo(
+        nickname=snap.nickname,
+        rating=int(snap.rating or 0),
+        additional_rating=0,
+        username=snap.nickname or "",
+        charts=None,
+    )
+    records = _score_records_to_playinfo_dev(list(snap.records))
+    stored_at = snap.stored_at or f"{snap.date}T00:00:00"
+    try:
+        fetched_at = time.mktime(time.strptime(stored_at[:19], "%Y-%m-%dT%H:%M:%S"))
+    except Exception:
+        fetched_at = time.time()
+    return CachedPlayerBundle(
+        userinfo=userinfo,
+        records=records,
+        fetched_at=fetched_at,
+        from_storage=True,
+    )
+
+
+def _try_storage_snapshot(qqid: int, max_age: int) -> Optional[CachedPlayerBundle]:
+    if not _use_storage_fallback() or max_age <= 0:
+        return None
+    metas = data_storage.list_snapshots(qqid, limit=1)
+    if not metas:
+        return None
+    sid = metas[0].get("snapshot_id", "")
+    if not sid:
+        return None
+    snap = data_storage.load_snapshot_by_id(qqid, sid)
+    if not snap or not snap.records:
+        return None
+    bundle = _bundle_from_snapshot(snap)
+    if time.time() - bundle.fetched_at > max_age:
+        return None
+    log.debug(
+        f"[PlayerCache] 使用数据存储快照 qq={qqid} date={snap.date} records={len(snap.records)}"
+    )
+    return bundle
+
+
+def get_cached_player(
+    qqid: Optional[int],
+    username: Optional[str],
+    source: str,
+    *,
+    force_refresh: bool = False,
+) -> Optional[CachedPlayerBundle]:
+    """读取有效缓存（SQLite → 可选数据存储快照）。"""
+    if force_refresh:
+        return None
+    ttl = _cache_ttl_seconds()
+    hit = player_cache_db.get(qqid, username, source, ttl)
+    if hit is not None:
+        log.debug(
+            f"[PlayerCache] 命中 SQLite qq={qqid} user={username} source={source} "
+            f"age={int(time.time() - hit.fetched_at)}s"
+        )
+        _set_fetch_meta(hit.fetched_at, "sqlite_cache")
+        return hit
+    if qqid and not username:
+        snap_hit = _try_storage_snapshot(qqid, _storage_fallback_ttl_seconds())
+        if snap_hit is not None:
+            _set_fetch_meta(
+                snap_hit.fetched_at,
+                "storage_snapshot",
+            )
+        return snap_hit
+    return None
+
+
+def save_cached_player(
+    qqid: Optional[int],
+    username: Optional[str],
+    source: str,
+    userinfo: UserInfo,
+    records: List[PlayInfoDev],
+) -> None:
+    if _cache_ttl_seconds() <= 0:
+        return
+    # 合并旧缓存：避免「先拉全量、后拉 B50」时互相覆盖 charts / records
+    prev = player_cache_db.get(qqid, username, source, 10**9)
+    if prev is not None:
+        if userinfo.charts is None and prev.userinfo.charts is not None:
+            userinfo = prev.userinfo.model_copy(
+                update={
+                    "nickname": userinfo.nickname or prev.userinfo.nickname,
+                    "rating": userinfo.rating or prev.userinfo.rating,
+                    "username": userinfo.username or prev.userinfo.username,
+                    "additional_rating": userinfo.additional_rating
+                    if userinfo.additional_rating is not None
+                    else prev.userinfo.additional_rating,
+                }
+            )
+        if not records and prev.records:
+            records = prev.records
+    player_cache_db.set(qqid, username, source, userinfo, records)
+
+
+async def resolve_player_records(
+    qqid: Optional[int],
+    username: Optional[str],
+    source: str,
+    fetch_fn,
+    *,
+    force_refresh: bool = False,
+) -> Tuple[UserInfo, List[PlayInfoDev]]:
+    """
+    统一解析：先缓存，再 fetch_fn()，成功后写回缓存。
+    fetch_fn 应返回 (userinfo, records)。
+    """
+    cached = get_cached_player(qqid, username, source, force_refresh=force_refresh)
+    if cached is not None:
+        return cached.userinfo, cached.records
+    userinfo, records = await fetch_fn()
+    save_cached_player(qqid, username, source, userinfo, records)
+    _set_fetch_meta(time.time(), "api", force_refresh=force_refresh)
+    return userinfo, records
+
+
+async def resolve_player_b50(
+    qqid: Optional[int],
+    username: Optional[str],
+    source: str,
+    fetch_b50_fn,
+    *,
+    force_refresh: bool = False,
+) -> UserInfo:
+    """获取 B50：缓存中已有 charts 则直接返回，否则请求 API 并写回缓存。"""
+    cached = get_cached_player(qqid, username, source, force_refresh=force_refresh)
+    if cached is not None and cached.userinfo.charts is not None:
+        return cached.userinfo
+    userinfo = await fetch_b50_fn()
+    records = cached.records if cached is not None else []
+    save_cached_player(qqid, username, source, userinfo, records)
+    _set_fetch_meta(time.time(), "api", force_refresh=force_refresh)
+    return userinfo
