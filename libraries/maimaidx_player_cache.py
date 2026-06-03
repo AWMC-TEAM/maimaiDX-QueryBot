@@ -132,6 +132,37 @@ def _storage_fallback_ttl_seconds() -> int:
     return int(getattr(maiconfig, "maimaidx_player_storage_fallback_seconds", 86400) or 86400)
 
 
+def friend_battle_cache_seconds() -> int:
+    """友人对战允许使用的本地成绩最大年龄（默认 7 天）。"""
+    return int(getattr(maiconfig, "maimaidx_friend_battle_cache_seconds", 604800) or 604800)
+
+
+def get_cached_player_for_friend_battle(qqid: int) -> Optional[CachedPlayerBundle]:
+    """
+    友人对战专用：读取 SQLite 玩家缓存或数据存储快照（较长 TTL，重启后仍有效）。
+    不触发网络请求。
+    """
+    ttl = friend_battle_cache_seconds()
+    if ttl <= 0:
+        return None
+    try:
+        from .maimaidx_datasource import get_user_source
+
+        source = get_user_source(qqid)
+    except Exception:
+        source = "divingfish"
+    hit = player_cache_db.get(qqid, None, source, ttl)
+    if hit is not None and hit.records:
+        log.debug(
+            f"[PlayerCache] 友人对战命中 SQLite qq={qqid} age={int(time.time() - hit.fetched_at)}s"
+        )
+        return hit
+    snap_hit = _try_storage_snapshot(qqid, ttl)
+    if snap_hit is not None:
+        log.debug(f"[PlayerCache] 友人对战命中数据存储快照 qq={qqid}")
+    return snap_hit
+
+
 def _use_storage_fallback() -> bool:
     return bool(getattr(maiconfig, "maimaidx_player_cache_use_storage", True))
 

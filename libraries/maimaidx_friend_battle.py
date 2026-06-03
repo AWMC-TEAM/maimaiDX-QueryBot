@@ -4,8 +4,9 @@
 - 水平过滤：避免「高水平碾压 / 碾压低水平」。以双方总 rating 均值为档给出最大 |Δrating|；
   均分 ≥16000 → ±50，≥15000 → ±100，再低按阶梯放宽。可选指令数字在不超过该档前提下进一步收紧。
 - 对手池：优先同群中「已开启数据存储」且符合条件者；若无人则退化为同群其它符合条件者。
-- 对手成绩：优先用对方「数据存储」最近快照；否则用 query_user_get_dev 全量记录在本地筛该谱
-  （同一人同一场对战内缓存一次；`get_dev` 小并发异步拉取，快照不占并发槽）；未游玩该谱则不计入可匹配池。
+- 对手成绩：优先 SQLite 玩家缓存 / 数据存储快照（默认 7 天内有效，重启不丢）；
+  本地无数据时才经 datasource 拉取并写回缓存（同局内内存缓存；网络请求小并发）。
+  未游玩该谱则不计入可匹配池。
 """
 from __future__ import annotations
 
@@ -18,9 +19,8 @@ from typing import Dict, List, Optional, Tuple, Union
 from nonebot.adapters.onebot.v11 import Bot
 
 from ..config import log, maiconfig
-from .maimaidx_api_data import maiApi
-from .maimaidx_datasource import get_user_b50
-from .maimaidx_player_cache import get_cached_player
+from .maimaidx_datasource import get_user_b50, get_user_records, get_user_source
+from .maimaidx_player_cache import get_cached_player_for_friend_battle
 from .maimaidx_data_storage import ScoreRecord, data_storage
 from .maimaidx_error import (
     UserDisabledQueryError,
@@ -200,12 +200,26 @@ def _score_record_to_playinfo_dev(rec: ScoreRecord, music_id: int) -> PlayInfoDe
     )
 
 
-def _try_snapshot_play(qqid: int, music_id: int, level_index: int) -> Optional[PlayInfoDev]:
-    """仅从本地快照解析该谱（不占网络并发槽）。"""
+def _play_from_record_list(
+    records: List[PlayInfoDev], music_id: int, level_index: int
+) -> Optional[PlayInfoDev]:
     mid = int(music_id)
     li = int(level_index)
-    if not data_storage.is_enabled(qqid):
-        return None
+    for r in records:
+        if int(getattr(r, "song_id", 0)) == mid and int(getattr(r, "level_index", -1)) == li:
+            return r
+    return None
+
+
+def _try_local_records_play(qqid: int, music_id: int, level_index: int) -> Optional[PlayInfoDev]:
+    """SQLite 玩家缓存 / 数据存储快照（长 TTL，不占网络）。"""
+    bundle = get_cached_player_for_friend_battle(qqid)
+    if bundle and bundle.records:
+        hit = _play_from_record_list(bundle.records, music_id, level_index)
+        if hit is not None:
+            return hit
+    mid = int(music_id)
+    li = int(level_index)
     metas = data_storage.list_snapshots(qqid, limit=1)
     if not metas:
         return None
@@ -237,29 +251,48 @@ def _play_from_dev_cache(
     return None
 
 
+def _bundle_to_userinfo_dev(bundle) -> UserInfoDev:
+    return UserInfoDev(
+        nickname=bundle.userinfo.nickname,
+        rating=bundle.userinfo.rating,
+        additional_rating=bundle.userinfo.additional_rating or 0,
+        username=bundle.userinfo.username,
+        records=bundle.records,
+    )
+
+
 async def _ensure_dev_cached(qqid: int, dev_cache: dict[int, Optional[UserInfoDev]], sem: asyncio.Semaphore) -> None:
-    """仅对需要走查分器的 QQ 请求一次 get_dev；小并发信号量只包住网络请求。"""
+    """加载对手全量成绩：先长 TTL 本地库，没有再经 datasource 拉取并写入 SQLite。"""
     if qqid in dev_cache:
+        return
+    bundle = get_cached_player_for_friend_battle(qqid)
+    if bundle and bundle.records:
+        dev_cache[qqid] = _bundle_to_userinfo_dev(bundle)
         return
     async with sem:
         if qqid in dev_cache:
             return
+        bundle = get_cached_player_for_friend_battle(qqid)
+        if bundle and bundle.records:
+            dev_cache[qqid] = _bundle_to_userinfo_dev(bundle)
+            return
         try:
-            cached = get_cached_player(qqid, None, "divingfish")
-            if cached and cached.records:
+            source = get_user_source(qqid)
+            _ui, records = await get_user_records(qqid=qqid, force_source=source)
+            if records:
                 dev_cache[qqid] = UserInfoDev(
-                    nickname=cached.userinfo.nickname,
-                    rating=cached.userinfo.rating,
-                    additional_rating=cached.userinfo.additional_rating or 0,
-                    username=cached.userinfo.username,
-                    records=cached.records,
+                    nickname=_ui.nickname,
+                    rating=_ui.rating,
+                    additional_rating=_ui.additional_rating or 0,
+                    username=_ui.username,
+                    records=records,
                 )
             else:
-                dev_cache[qqid] = await maiApi.query_user_get_dev(qqid=qqid)
+                dev_cache[qqid] = None
         except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError, ValueError, TypeError):
             dev_cache[qqid] = None
         except Exception as e:
-            log.warning(f"[friend_battle] get_dev qq={qqid}: {e!r}")
+            log.warning(f"[friend_battle] fetch records qq={qqid}: {e!r}")
             dev_cache[qqid] = None
 
 
@@ -270,10 +303,10 @@ async def _fetch_song_on_level(
     dev_cache: dict[int, Optional[UserInfoDev]],
     sem: asyncio.Semaphore,
 ) -> Optional[PlayInfoDev]:
-    """对手该谱成绩：快照优先（并行不占槽），否则小并发拉 get_dev 后本地筛。"""
-    snap = _try_snapshot_play(qqid, music_id, level_index)
-    if snap is not None:
-        return snap
+    """对手该谱成绩：本地库优先（并行不占槽），否则小并发拉全量后本地筛。"""
+    local = _try_local_records_play(qqid, music_id, level_index)
+    if local is not None:
+        return local
     await _ensure_dev_cached(qqid, dev_cache, sem)
     return _play_from_dev_cache(qqid, music_id, level_index, dev_cache)
 
@@ -285,7 +318,10 @@ async def run_friend_battle(
     user_rating_cap: Optional[int] = None,
 ) -> Union[str, FriendBattleOutcome]:
     if not getattr(maiconfig, "maimaidxtoken", None):
-        return "友人对战需要配置开发者 Token（用于拉取全量成绩 dev 接口），请 Bot 管理员在配置中设置 maimaidxtoken。"
+        return (
+            "友人对战在本地无缓存时需要开发者 Token 拉取全量成绩；"
+            "请 Bot 管理员配置 maimaidxtoken，或让群友先发 b50/开启存储数据以积累本地库。"
+        )
 
     try:
         me = await get_user_b50(qqid=challenger_qq)
@@ -376,10 +412,10 @@ async def run_friend_battle(
         tasks = [asyncio.create_task(_try_uid(uid)) for uid in uids]
         return [x for x in await asyncio.gather(*tasks) if x is not None]
 
-    used_pool = "同群同水平(已开存储)"
+    used_pool = "同群同水平(优先本地库)"
     cands = await _valid_from_uids(prefer)
     if not cands and others:
-        used_pool = "同群同水平(未开存储)"
+        used_pool = "同群同水平"
         cands = await _valid_from_uids(others)
 
     if not cands:

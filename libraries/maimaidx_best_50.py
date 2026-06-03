@@ -243,8 +243,7 @@ class ScoreBaseImage:
                 dxscore_max = sum(music.charts[info.level_index].notes) * 3 if music and info.level_index < len(music.charts) else 0
             except Exception:
                 dxscore_max = 0
-            dx_pct = int(round(info.dxScore / dxscore_max * 100)) if dxscore_max and dxscore_max > 0 else 0
-            dxnum = dxScore(min(100, max(0, dx_pct)))
+            dxnum = dx_star_count(info.dxScore, dxscore_max)
             if dxnum:
                 self._im.alpha_composite(
                     Image.open(pic(f'UI_GAM_Gauge_DXScoreIcon_0{dxnum}.png')).resize((47, 26)), (x + 217, y + 80)
@@ -304,8 +303,7 @@ class ScoreBaseImage:
                 dxscore_max = sum(music.charts[info.level_index].notes) * 3 if music and info.level_index < len(music.charts) else 0
             except Exception:
                 dxscore_max = 0
-            dx_pct = int(round(info.dxScore / dxscore_max * 100)) if dxscore_max and dxscore_max > 0 else 0
-            dxnum = dxScore(min(100, max(0, dx_pct)))
+            dxnum = dx_star_count(info.dxScore, dxscore_max)
             if dxnum:
                 self._im.alpha_composite(
                     Image.open(pic(f'UI_GAM_Gauge_DXScoreIcon_0{dxnum}.png')).resize((47, 26)), (x + 217, y + 80)
@@ -624,12 +622,20 @@ class DrawCoopB50(ScoreBaseImage):
         return self._im
 
 
+def dx_star_count(dx_score: int, dx_max: int) -> int:
+    """由 dx 分子/分母计算星星数；须用浮点百分比，不可 round 到整数后再判星。"""
+    if not dx_max or dx_max <= 0:
+        return 0
+    pct = min(100.0, max(0.0, float(dx_score) / float(dx_max) * 100.0))
+    return dxScore(pct)
+
+
 def dxScore(dx: float) -> int:
     """
     获取 DX 评分星星数量（0～5），用于选择 UI_GAM_Gauge_DXScoreIcon_0x.png。
 
     阈值与游戏一致：≥97% 五星、≥95% 四星、≥93% 三星、≥90% 二星、≥85% 一星。
-    须用浮点百分比比较，不可 int 截断（否则 97.57% 会被算成 97% 而少一星）。
+    须用浮点百分比比较，不可先 round 成整数（否则 96.8% 会被算成 97% 而多一星）。
     """
     if dx is None:
         return 0

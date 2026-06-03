@@ -69,6 +69,8 @@ class Config(BaseModel):
     maimaidx_music_cache_seconds: int = 3600
     # 友人对战：同一 QQ 两次发起之间的冷却（秒），默认 3 分钟；设为 0 关闭冷却。可通过 .env 设置 MAIMAIDX_FRIEND_BATTLE_COOLDOWN_SECONDS
     maimaidx_friend_battle_cooldown_seconds: int = 180
+    # 友人对战读取本地成绩缓存的最长有效期（秒），默认 7 天；重启后仍可用 SQLite/存档，减少重复拉取水鱼。MAIMAIDX_FRIEND_BATTLE_CACHE_SECONDS
+    maimaidx_friend_battle_cache_seconds: int = 604800
 
 
 maiconfig = get_plugin_config(Config)
