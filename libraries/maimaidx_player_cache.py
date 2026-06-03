@@ -155,8 +155,7 @@ class PlayerCacheDB:
         DB_DIR.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(DB_FILE), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute(
-            """
+        self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS player_cache (
                 cache_key TEXT PRIMARY KEY,
                 qqid INTEGER,
@@ -166,9 +165,9 @@ class PlayerCacheDB:
                 records_json TEXT NOT NULL,
                 fetched_at REAL NOT NULL
             );
+
             CREATE INDEX IF NOT EXISTS idx_player_cache_fetched ON player_cache(fetched_at);
-            """
-        )
+        """)
         self._conn.commit()
 
     def get(
