@@ -50,6 +50,12 @@ _FETCH_META: contextvars.ContextVar[Optional[PlayerFetchMeta]] = contextvars.Con
 REFRESH_B50_HINT = '💡 刚打完机台？发送「刷新b50」可从查分器获取最新成绩'
 
 
+def footer_join_sections(sections: List[List[str]]) -> str:
+    """多段 footer 文案，段与段之间空一行。"""
+    parts = ['\n'.join(block) for block in sections if block]
+    return '\n\n' + '\n\n'.join(parts)
+
+
 def _set_fetch_meta(
     fetched_at: float,
     origin: str,

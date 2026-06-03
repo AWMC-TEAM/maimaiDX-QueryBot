@@ -148,31 +148,33 @@ def _build_footer(
 ) -> str:
     """构建成绩图下方文案：数据源 + 数据更新时间 + 主题 + 耗时（+ 落雪不支持提示）。"""
     from ..libraries.maimaidx_timing import get_fetch, format_summary
-    from ..libraries.maimaidx_player_cache import pop_data_freshness_footer_lines
+    from ..libraries.maimaidx_player_cache import footer_join_sections, pop_data_freshness_footer_lines
     source = forced_source or _source_label(qqid)
-    lines = [f'📊 数据源：{source} | 可使用 数据源 水鱼/落雪 修改']
+    sections: list[list[str]] = [
+        [f'📊 数据源：{source} | 可使用 数据源 水鱼/落雪 修改'],
+    ]
     freshness = pop_data_freshness_footer_lines()
     if freshness:
-        lines.extend(freshness)
-    # 当前用户主题提示（仅自己查自己时显示）
+        sections.append(freshness)
     if qqid is not None:
         try:
             from ..libraries.maimaidx_theme import get_user_theme, get_theme_display_name, Theme
             _t = get_user_theme(qqid)
             _name = get_theme_display_name(_t)
             _all = ' / '.join(get_theme_display_name(x.value) for x in Theme)
-            lines.append(f'🎨 主题：{_name} | 可使用 主题 {_all} 切换')
+            sections.append([f'🎨 主题：{_name} | 可使用 主题 {_all} 切换'])
         except Exception:
             pass
     if unsupported_feature and qqid is not None and source == '落雪':
-        lines.append(f'⚠️ {unsupported_feature}依赖水鱼独有数据，落雪暂不支持，已用水鱼生成')
+        sections.append([
+            f'⚠️ {unsupported_feature}依赖水鱼独有数据，落雪暂不支持，已用水鱼生成',
+        ])
     from ..libraries.maimaidx_b50_warnings import pop_b50_warning_footer
     warning = pop_b50_warning_footer()
     if warning:
-        lines.append('')
-        lines.append(warning)
-    lines.append(format_summary(total, get_fetch()))
-    return '\n' + '\n'.join(lines)
+        sections.append([warning])
+    sections.append([format_summary(total, get_fetch())])
+    return footer_join_sections(sections)
 
 
 async def _finish_score(

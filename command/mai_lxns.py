@@ -272,16 +272,17 @@ async def _lxb50(event: MessageEvent):
                 '3. Bot 是否配置了开发者 Token',
                 reply_message=True,
             )
-        footer_lines = ['📊 数据源：落雪 | 可使用 数据源 水鱼/落雪 修改']
-        from ..libraries.maimaidx_player_cache import pop_data_freshness_footer_lines
-        footer_lines.extend(pop_data_freshness_footer_lines())
+        from ..libraries.maimaidx_player_cache import footer_join_sections, pop_data_freshness_footer_lines
         from ..libraries.maimaidx_b50_warnings import pop_b50_warning_footer
+        sections = [['📊 数据源：落雪 | 可使用 数据源 水鱼/落雪 修改']]
+        freshness = pop_data_freshness_footer_lines()
+        if freshness:
+            sections.append(freshness)
         warning = pop_b50_warning_footer()
         if warning:
-            footer_lines.append('')
-            footer_lines.append(warning)
-        footer_lines.append(timing_text(total))
-        footer = '\n' + '\n'.join(footer_lines)
+            sections.append([warning])
+        sections.append([timing_text(total)])
+        footer = footer_join_sections(sections)
         await lxb50.finish(result + MessageSegment.text(footer), reply_message=True)
 
     except Exception as e:
