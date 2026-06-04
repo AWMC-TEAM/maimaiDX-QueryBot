@@ -175,6 +175,28 @@ def get_class_state(qqid: int) -> Tuple[int, int]:
     return idx, cp
 
 
+def list_battle_users() -> Dict[int, Dict[str, Any]]:
+    """已参与过友人对战的用户：qqid -> 存档字段（tier/cp/fb_win_streak 等）。"""
+    raw = _load_raw()
+    users = raw.get("users", {})
+    out: Dict[int, Dict[str, Any]] = {}
+    for k, v in users.items():
+        try:
+            out[int(k)] = dict(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def format_rank_brief(tier_idx: int, cp: int, streak: int = 0) -> str:
+    """排行展示用单行段位摘要。"""
+    rule = TIER_RULES[tier_idx]
+    tail = f"  友対{streak}连胜" if streak else ""
+    if rule.cp_to_next is None:
+        return f"{rule.name}  CP {cp}{tail}"
+    return f"{rule.name}  CP {cp}/{rule.cp_to_next}{tail}"
+
+
 def get_win_streak(qqid: int) -> int:
     """友人对战连胜场数（仅统计该玩法）。"""
     raw = _load_raw()

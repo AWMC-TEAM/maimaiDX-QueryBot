@@ -27,15 +27,54 @@ from .maimaidx_error import (
     UserNotFoundError,
     UserNotExistsError,
 )
-from .maimaidx_group_rating import get_group_member_ratings, _display_name
+from .maimaidx_group_rating import get_group_member_ratings, _display_name, build_forward_node
 from .maimaidx_timing import measure
 from .maimaidx_model import ChartInfo, PlayInfoDev, UserInfoDev
 from .maimaidx_score_formatter import get_difficulty_name
 from .maimaidx_friend_battle_class import (
+    TIER_INDEX,
     format_class_line,
+    format_rank_brief,
     get_class_state,
+    get_win_streak,
+    list_battle_users,
     settle_battle_cp_with_extras,
+    tier_name,
 )
+
+FRIEND_BATTLE_BATCH_MAX = 20
+
+_FATAL_BATTLE_ERRORS = (
+    "友人对战在本地无缓存",
+    "未找到你的 B50",
+    "你的 B50 为空",
+    "获取群成员失败",
+    "群成员列表为空",
+    "群内没有满足",
+)
+
+
+def parse_friend_battle_args(text: str) -> Tuple[int, Optional[int]]:
+    """
+    解析友人对战参数：1～20 为连战场数，50～800 为 rating 差收紧上限。
+    例：友人对战 10 → 10 连；友人对战 300 → 单局+±300；友人对战 10 300 → 十连且每局 ±300。
+    """
+    rounds = 1
+    rating_cap: Optional[int] = None
+    for part in (text or "").split():
+        try:
+            n = int(part)
+        except (ValueError, TypeError):
+            continue
+        if 50 <= n <= 800:
+            rating_cap = n
+        elif 1 <= n <= FRIEND_BATTLE_BATCH_MAX:
+            rounds = n
+    return rounds, rating_cap
+
+
+def _is_fatal_friend_battle_error(msg: str) -> bool:
+    return any(p in msg for p in _FATAL_BATTLE_ERRORS)
 
 _last_friend_battle: Dict[int, float] = {}
 
@@ -95,6 +134,115 @@ class FriendBattleOutcome:
     o_achv: float
     o_dx: int
     cp_lines: List[str] = field(default_factory=list)
+
+
+@dataclass
+class FriendBattleRoundSummary:
+    """连战中单局摘要（供连战结果图）。"""
+
+    round_no: int
+    title: str
+    diff_name: str
+    level: str
+    opp_name: str
+    winner_side: str  # me | opp | tie
+    my_achv: float
+    o_achv: float
+
+
+@dataclass
+class FriendBattleBatchOutcome:
+    """友人对战连战汇总（供连战结果图）。"""
+
+    my_qq: int
+    my_name: str
+    rounds: List[FriendBattleRoundSummary]
+    tier_start_idx: int
+    tier_start_cp: int
+    tier_end_idx: int
+    tier_end_cp: int
+    wins: int
+    losses: int
+    ties: int
+    requested: int
+    completed: int
+    skipped: int
+    rating_cap: Optional[int] = None
+    end_streak: int = 0
+
+
+def _outcome_to_round_summary(outcome: FriendBattleOutcome, round_no: int) -> FriendBattleRoundSummary:
+    return FriendBattleRoundSummary(
+        round_no=round_no,
+        title=outcome.title,
+        diff_name=outcome.diff_name,
+        level=outcome.level,
+        opp_name=outcome.opp_name,
+        winner_side=outcome.winner_side,
+        my_achv=outcome.my_achv,
+        o_achv=outcome.o_achv,
+    )
+
+
+async def run_friend_battle_batch(
+    bot: Bot,
+    group_id: int,
+    challenger_qq: int,
+    rounds: int,
+    user_rating_cap: Optional[int] = None,
+) -> Union[str, FriendBattleBatchOutcome]:
+    """连续进行 rounds 场友人对战（2～FRIEND_BATTLE_BATCH_MAX），跳过可重试的失败局。"""
+    rounds = max(2, min(FRIEND_BATTLE_BATCH_MAX, int(rounds)))
+    tier_start_idx, tier_start_cp = get_class_state(challenger_qq)
+    summaries: List[FriendBattleRoundSummary] = []
+    wins = losses = ties = skipped = 0
+    max_attempts = rounds * 3 + 5
+    attempts = 0
+    my_name = ""
+
+    while len(summaries) < rounds and attempts < max_attempts:
+        attempts += 1
+        result = await run_friend_battle(
+            bot, group_id, challenger_qq, user_rating_cap=user_rating_cap
+        )
+        if isinstance(result, str):
+            if _is_fatal_friend_battle_error(result):
+                if not summaries:
+                    return result
+                break
+            skipped += 1
+            continue
+        if not my_name:
+            my_name = result.my_name or "你"
+        if result.winner_side == "me":
+            wins += 1
+        elif result.winner_side == "opp":
+            losses += 1
+        else:
+            ties += 1
+        summaries.append(_outcome_to_round_summary(result, len(summaries) + 1))
+
+    if not summaries:
+        return "连战未能完成任何一局，请稍后重试或换群友/曲目条件。"
+
+    tier_end_idx, tier_end_cp = get_class_state(challenger_qq)
+    return FriendBattleBatchOutcome(
+        my_qq=challenger_qq,
+        my_name=my_name or "你",
+        rounds=summaries,
+        tier_start_idx=tier_start_idx,
+        tier_start_cp=tier_start_cp,
+        tier_end_idx=tier_end_idx,
+        tier_end_cp=tier_end_cp,
+        wins=wins,
+        losses=losses,
+        ties=ties,
+        requested=rounds,
+        completed=len(summaries),
+        skipped=skipped,
+        rating_cap=user_rating_cap,
+        end_streak=get_win_streak(challenger_qq),
+    )
 
 
 def _b50_pool(user_charts) -> List[ChartInfo]:
@@ -499,3 +647,81 @@ async def run_friend_battle(
         o_dx=o_dx,
         cp_lines=cp_lines,
     )
+
+
+_LEGEND_TIER_IDX = TIER_INDEX.get("LEGEND", len(TIER_INDEX) - 1)
+
+
+async def group_friend_battle_ranking(
+    bot: Bot,
+    group_id: int,
+    self_id: int,
+    bot_nickname: str,
+    current_qq: int,
+    top_n: int = 15,
+) -> Tuple[str, List[dict]]:
+    """
+    本群友人对战段位排行：仅统计已参与过友人对战的群成员，按段位→CP→连胜降序。
+    返回: (标题文案, 合并转发 nodes)。
+    """
+    top_n = max(1, min(50, int(top_n)))
+    battle_users = list_battle_users()
+    if not battle_users:
+        return "暂无友人对战段位数据，先发「友人对战」打几局吧。", []
+
+    try:
+        raw = await bot.call_api("get_group_member_list", group_id=group_id)
+    except Exception as e:
+        log.warning(f"[group_friend_battle_ranking] get_group_member_list failed: {e}")
+        return "获取群成员列表失败。", []
+    if not raw or not isinstance(raw, list):
+        return "群成员列表为空。", []
+
+    member_by_id = {int(m.get("user_id")): m for m in raw if m.get("user_id") is not None}
+    rows: List[Tuple[int, str, int, int, int]] = []
+    for uid, data in battle_users.items():
+        if uid not in member_by_id:
+            continue
+        tier_name_s = data.get("tier", "B5")
+        tier_idx = TIER_INDEX.get(tier_name_s, 0)
+        cp = int(data.get("cp", 0))
+        streak = max(0, int(data.get("fb_win_streak", 0)))
+        name = _display_name(member_by_id[uid])
+        rows.append((uid, name, tier_idx, cp, streak))
+
+    if not rows:
+        return "本群暂无友人对战记录，先发「友人对战」打几局吧。", []
+
+    rows.sort(key=lambda x: (x[2], x[3], x[4]), reverse=True)
+    total = len(rows)
+    legend_count = sum(1 for _uid, _n, ti, _cp, _s in rows if ti >= _LEGEND_TIER_IDX)
+
+    user_rank = None
+    user_brief = ""
+    for i, (uid, _name, tier_idx, cp, streak) in enumerate(rows):
+        if uid == current_qq:
+            user_rank = i + 1
+            user_brief = format_rank_brief(tier_idx, cp, streak)
+            break
+
+    take = rows[:top_n]
+    rank_lines: List[str] = []
+    if user_rank is not None:
+        rank_lines.append(f"你在本群排名第 {user_rank}/{total} 名（{user_brief}）")
+    else:
+        rank_lines.append("你尚未参与友人对战，暂无排名")
+
+    text = (
+        f"本群友人对战段位排行（前 {len(take)} 名）\n"
+        f"共 {total} 人参战，其中 LEGEND {legend_count} 人\n"
+        + "\n".join(rank_lines)
+    )
+
+    nodes = []
+    for i, (uid, name, tier_idx, cp, streak) in enumerate(take):
+        mark = "▶" if uid == current_qq else ""
+        brief = format_rank_brief(tier_idx, cp, streak)
+        line = f"{mark}{i + 1}. {name}  {brief}"
+        node_name = "你" if uid == current_qq else name
+        nodes.append(build_forward_node(str(self_id), str(node_name), line))
+    return text, nodes
