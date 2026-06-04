@@ -137,6 +137,22 @@ def friend_battle_cache_seconds() -> int:
     return int(getattr(maiconfig, "maimaidx_friend_battle_cache_seconds", 604800) or 604800)
 
 
+def get_cached_b50_for_friend_battle(qqid: int) -> Optional[UserInfo]:
+    """友人对战：仅读本地 B50（SQLite / 数据存储），不发起网络请求。"""
+    bundle = get_cached_player_for_friend_battle(qqid)
+    if bundle is None or bundle.userinfo.charts is None:
+        return None
+    return bundle.userinfo
+
+
+def get_cached_rating_for_friend_battle(qqid: int) -> Optional[int]:
+    """友人对战：从本地库读取总 rating，无则 None。"""
+    bundle = get_cached_player_for_friend_battle(qqid)
+    if bundle is None:
+        return None
+    return int(bundle.userinfo.rating or 0)
+
+
 def get_cached_player_for_friend_battle(qqid: int) -> Optional[CachedPlayerBundle]:
     """
     友人对战专用：读取 SQLite 玩家缓存或数据存储快照（较长 TTL，重启后仍有效）。
@@ -275,7 +291,21 @@ class PlayerCacheDB:
         )
 
 
-player_cache_db = PlayerCacheDB()
+class _LazyPlayerCacheDB:
+    """延迟初始化 SQLite，避免插件 import 阶段阻塞启动。"""
+
+    _db: Optional[PlayerCacheDB] = None
+
+    def _inst(self) -> PlayerCacheDB:
+        if self._db is None:
+            self._db = PlayerCacheDB()
+        return self._db
+
+    def __getattr__(self, name: str):
+        return getattr(self._inst(), name)
+
+
+player_cache_db = _LazyPlayerCacheDB()
 
 
 def _score_records_to_playinfo_dev(records: List[ScoreRecord]) -> List[PlayInfoDev]:

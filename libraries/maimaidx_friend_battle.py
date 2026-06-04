@@ -20,14 +20,18 @@ from nonebot.adapters.onebot.v11 import Bot
 
 from ..config import log, maiconfig
 from .maimaidx_datasource import get_user_b50, get_user_records, get_user_source
-from .maimaidx_player_cache import get_cached_player_for_friend_battle
+from .maimaidx_player_cache import (
+    get_cached_b50_for_friend_battle,
+    get_cached_player_for_friend_battle,
+    get_cached_rating_for_friend_battle,
+)
 from .maimaidx_data_storage import ScoreRecord, data_storage
 from .maimaidx_error import (
     UserDisabledQueryError,
     UserNotFoundError,
     UserNotExistsError,
 )
-from .maimaidx_group_rating import get_group_member_ratings, _display_name, build_forward_node
+from .maimaidx_group_rating import _display_name, build_forward_node
 from .maimaidx_timing import measure
 from .maimaidx_model import ChartInfo, PlayInfoDev, UserInfoDev
 from .maimaidx_score_formatter import get_difficulty_name
@@ -43,6 +47,9 @@ from .maimaidx_friend_battle_class import (
 )
 
 FRIEND_BATTLE_BATCH_MAX = 20
+# 单局友人对战：群 rating 补拉上限、对手全量成绩网络探测上限（其余仅本地库）
+_FRIEND_BATTLE_GROUP_B50_NET_MAX = 12
+_FRIEND_BATTLE_OPP_NET_MAX = 6
 
 _FATAL_BATTLE_ERRORS = (
     "友人对战在本地无缓存",
@@ -106,6 +113,16 @@ def mark_friend_battle_used(qq: int) -> None:
     if friend_battle_cooldown_seconds() <= 0:
         return
     _last_friend_battle[qq] = time.time()
+
+
+@dataclass
+class FriendBattleGroupContext:
+    """一局/连战共享的群成员与 rating 快照，避免重复拉群与全群 B50。"""
+
+    members_by_id: Dict[int, dict]
+    rating_rows: List[Tuple[int, str, int]]
+    ra_by_uid: Dict[int, int]
+    name_by_uid: Dict[int, str]
 
 
 @dataclass
@@ -200,10 +217,17 @@ async def run_friend_battle_batch(
     attempts = 0
     my_name = ""
 
+    ctx, ctx_err = await _build_friend_battle_group_context(bot, group_id)
+    if ctx_err:
+        return ctx_err
     while len(summaries) < rounds and attempts < max_attempts:
         attempts += 1
         result = await run_friend_battle(
-            bot, group_id, challenger_qq, user_rating_cap=user_rating_cap
+            bot,
+            group_id,
+            challenger_qq,
+            user_rating_cap=user_rating_cap,
+            group_ctx=ctx,
         )
         if isinstance(result, str):
             if _is_fatal_friend_battle_error(result):
@@ -450,13 +474,145 @@ async def _fetch_song_on_level(
     level_index: int,
     dev_cache: dict[int, Optional[UserInfoDev]],
     sem: asyncio.Semaphore,
+    *,
+    allow_network: bool,
 ) -> Optional[PlayInfoDev]:
-    """对手该谱成绩：本地库优先（并行不占槽），否则小并发拉全量后本地筛。"""
+    """对手该谱成绩：本地库优先；allow_network=False 时不拉全量。"""
     local = _try_local_records_play(qqid, music_id, level_index)
     if local is not None:
         return local
+    if not allow_network:
+        return None
     await _ensure_dev_cached(qqid, dev_cache, sem)
     return _play_from_dev_cache(qqid, music_id, level_index, dev_cache)
+
+
+async def _get_group_ratings_for_friend_battle(
+    bot: Bot,
+    group_id: int,
+    members: List[dict],
+) -> List[Tuple[int, str, int]]:
+    """
+    群友 rating：先读本地 SQLite/数据存储，仅对缺档且配置了 token 的少量成员补拉 B50。
+    结果仍写入群 rating 缓存，供其它群功能复用。
+    """
+    from .maimaidx_group_rating import _group_rating_cache_get, _group_rating_cache_set, _get_cache_ttl
+
+    ttl = _get_cache_ttl()
+    cached = _group_rating_cache_get(group_id)
+    if cached is not None:
+        return cached
+
+    rows: List[Tuple[int, str, int]] = []
+    need_net: List[dict] = []
+    for m in members:
+        uid = m.get("user_id")
+        if uid is None:
+            continue
+        name = _display_name(m)
+        qq = int(uid)
+        ra = get_cached_rating_for_friend_battle(qq)
+        if ra is not None and ra > 0:
+            rows.append((qq, name, ra))
+        else:
+            need_net.append(m)
+
+    has_token = bool(getattr(maiconfig, "maimaidxtoken", None))
+    if need_net and has_token:
+        sem = asyncio.Semaphore(5)
+        random.shuffle(need_net)
+        need_net = need_net[:_FRIEND_BATTLE_GROUP_B50_NET_MAX]
+
+        async def _fetch_one(m: dict) -> Optional[Tuple[int, str, int]]:
+            uid = m.get("user_id")
+            if uid is None:
+                return None
+            async with sem:
+                try:
+                    userinfo = await get_user_b50(qqid=int(uid))
+                    ra = int(userinfo.rating or 0)
+                    if ra <= 0:
+                        return None
+                    return (int(uid), _display_name(m), ra)
+                except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError, ValueError, TypeError):
+                    return None
+                except Exception:
+                    return None
+
+        gathered = await asyncio.gather(*[_fetch_one(m) for m in need_net])
+        rows.extend(r for r in gathered if r is not None)
+
+    rows.sort(key=lambda x: x[2], reverse=True)
+    _group_rating_cache_set(group_id, rows, ttl)
+    return rows
+
+
+async def _build_friend_battle_group_context(
+    bot: Bot,
+    group_id: int,
+) -> Tuple[Optional[FriendBattleGroupContext], Optional[str]]:
+    try:
+        with measure('fetch'):
+            raw = await bot.call_api("get_group_member_list", group_id=group_id)
+    except Exception as e:
+        return None, f"获取群成员失败：{e}"
+    if not raw or not isinstance(raw, list):
+        return None, "群成员列表为空。"
+
+    members_by_id = {int(m.get("user_id")): m for m in raw if m.get("user_id") is not None}
+    rating_rows = await _get_group_ratings_for_friend_battle(bot, group_id, raw)
+    ctx = FriendBattleGroupContext(
+        members_by_id=members_by_id,
+        rating_rows=rating_rows,
+        ra_by_uid={uid: ra for uid, _name, ra in rating_rows},
+        name_by_uid={uid: n for uid, n, _ in rating_rows},
+    )
+    return ctx, None
+
+
+async def _valid_from_uids_for_song(
+    uids: List[int],
+    music_id: int,
+    level_index: int,
+    name_of,
+    *,
+    allow_network: bool,
+) -> List[Tuple[int, str, PlayInfoDev]]:
+    """先同步扫本地库，仅对未命中者做小批量网络补拉。"""
+    if not uids:
+        return []
+    shuffled = list(uids)
+    random.shuffle(shuffled)
+
+    cands: List[Tuple[int, str, PlayInfoDev]] = []
+    need_net: List[int] = []
+    for uid in shuffled:
+        hit = _try_local_records_play(uid, music_id, level_index)
+        if hit is not None:
+            cands.append((uid, name_of(uid), hit))
+        else:
+            need_net.append(uid)
+
+    if not need_net or not allow_network:
+        return cands
+
+    dev_cache: dict[int, Optional[UserInfoDev]] = {}
+    dev_sem = asyncio.Semaphore(3)
+    net_budget = _FRIEND_BATTLE_OPP_NET_MAX
+
+    async def _try_net(uid: int) -> Optional[Tuple[int, str, PlayInfoDev]]:
+        r = await _fetch_song_on_level(
+            uid, music_id, level_index, dev_cache, dev_sem, allow_network=True
+        )
+        if r is None:
+            return None
+        return (uid, name_of(uid), r)
+
+    for uid in need_net[:net_budget]:
+        one = await _try_net(uid)
+        if one is not None:
+            cands.append(one)
+    return cands
 
 
 async def run_friend_battle(
@@ -464,20 +620,26 @@ async def run_friend_battle(
     group_id: int,
     challenger_qq: int,
     user_rating_cap: Optional[int] = None,
+    *,
+    group_ctx: Optional[FriendBattleGroupContext] = None,
 ) -> Union[str, FriendBattleOutcome]:
-    if not getattr(maiconfig, "maimaidxtoken", None):
-        return (
-            "友人对战在本地无缓存时需要开发者 Token 拉取全量成绩；"
-            "请 Bot 管理员配置 maimaidxtoken，或让群友先发 b50/开启存储数据以积累本地库。"
-        )
+    has_token = bool(getattr(maiconfig, "maimaidxtoken", None))
 
-    try:
-        me = await get_user_b50(qqid=challenger_qq)
-    except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
-        return str(e)
+    me = get_cached_b50_for_friend_battle(challenger_qq)
+    if me is None:
+        if not has_token:
+            return (
+                "未找到你的本地 B50 缓存。\n"
+                "请先发送 b50 生成缓存，或开启「存储数据」；"
+                "管理员也可配置 maimaidxtoken 以在无缓存时从查分器拉取。"
+            )
+        try:
+            me = await get_user_b50(qqid=challenger_qq)
+        except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
+            return str(e)
 
     if not me.charts:
-        return "未找到你的 B50 数据，请先绑定查分器。"
+        return "未找到你的 B50 数据，请先绑定查分器并发送 b50。"
 
     pool = _b50_pool(me.charts)
     if not pool:
@@ -494,20 +656,17 @@ async def run_friend_battle(
     diff_name = get_difficulty_name(level_index)
     ref_tier = _tier_limit_for_avg(my_rating)
 
-    try:
-        with measure('fetch'):
-            raw = await bot.call_api("get_group_member_list", group_id=group_id)
-    except Exception as e:
-        return f"获取群成员失败：{e}"
-    if not raw or not isinstance(raw, list):
-        return "群成员列表为空。"
+    if group_ctx is None:
+        group_ctx, ctx_err = await _build_friend_battle_group_context(bot, group_id)
+        if ctx_err:
+            return ctx_err
+    assert group_ctx is not None
 
-    members_by_id = {int(m.get("user_id")): m for m in raw if m.get("user_id") is not None}
+    members_by_id = group_ctx.members_by_id
     member_ids = set(members_by_id.keys())
-
-    rating_rows = await get_group_member_ratings(bot, group_id)
-    ra_by_uid: dict = {uid: ra for uid, _name, ra in rating_rows}
-    name_by_uid: dict = {uid: n for uid, n, _ in rating_rows}
+    rating_rows = group_ctx.rating_rows
+    ra_by_uid = group_ctx.ra_by_uid
+    name_by_uid = group_ctx.name_by_uid
 
     def name_of(uid: int) -> str:
         if uid in name_by_uid:
@@ -516,7 +675,6 @@ async def run_friend_battle(
             return _display_name(members_by_id[uid])
         return str(uid)
 
-    # 候选：同群、非本人、有 rating 记录、|Δrating| 在 spread 内
     band_uids: List[int] = []
     for uid, _n, ra in rating_rows:
         if uid == challenger_qq:
@@ -534,37 +692,25 @@ async def run_friend_battle(
             else "（按分档动态差限）"
         )
         return (
-            "群内没有满足「总 rating 水平接近」且已绑定查分器的群友，无法匹配。\n"
+            "群内没有满足「总 rating 水平接近」且本地/可查 rating 的群友，无法匹配。\n"
             f"你当前总 rating：{my_rating}；单人档位参考允许约 ±{ref_tier}{cap_desc}。\n"
-            "可让水平接近的群友绑定查分器，或发「友人对战 300」等在分档内进一步收紧差限，或稍后重试换谱。"
+            "可让群友先发 b50 或「开启存储数据」积累本地库，或发「友人对战 300」放宽差限。"
         )
 
     storage_in_group = {u for u in data_storage.get_enabled_users() if u in member_ids and u != challenger_qq}
     prefer = [u for u in band_uids if u in storage_in_group]
     others = [u for u in band_uids if u not in storage_in_group]
 
-    dev_cache: dict[int, Optional[UserInfoDev]] = {}
-    # 仅限制「查分器 get_dev」并发；快照读盘与内存筛谱不占槽，整体更快且仍护查分器
-    dev_sem = asyncio.Semaphore(5)
+    allow_opp_net = has_token
 
-    async def _try_uid(uid: int) -> Optional[Tuple[int, str, PlayInfoDev]]:
-        r = await _fetch_song_on_level(uid, music_id, level_index, dev_cache, dev_sem)
-        if r is None:
-            return None
-        return (uid, name_of(uid), r)
-
-    async def _valid_from_uids(uids: List[int]) -> List[Tuple[int, str, PlayInfoDev]]:
-        if not uids:
-            return []
-        random.shuffle(uids)
-        tasks = [asyncio.create_task(_try_uid(uid)) for uid in uids]
-        return [x for x in await asyncio.gather(*tasks) if x is not None]
-
-    used_pool = "同群同水平(优先本地库)"
-    cands = await _valid_from_uids(prefer)
+    used_pool = "同群同水平(仅本地库)" if not allow_opp_net else "同群同水平(优先本地库)"
+    cands = await _valid_from_uids_for_song(
+        prefer, music_id, level_index, name_of, allow_network=allow_opp_net
+    )
     if not cands and others:
-        used_pool = "同群同水平"
-        cands = await _valid_from_uids(others)
+        cands = await _valid_from_uids_for_song(
+            others, music_id, level_index, name_of, allow_network=allow_opp_net
+        )
 
     if not cands:
         return (
