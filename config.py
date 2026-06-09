@@ -291,6 +291,37 @@ version_map = {
     '镜': ([plate_to_dx_version['镜']], '镜&彩'),
     '彩': ([plate_to_dx_version['镜']], '镜&彩')
 }
+
+
+def resolve_plate_id_list(
+    plate_data: Optional[Dict[str, List[int]]],
+    plate_key: str,
+) -> Optional[List[int]]:
+    """
+    解析牌子曲目 ID 列表。优先用组合键（如 镜&彩）；别名库若仅有分键（镜、彩）则合并去重。
+    """
+    if not plate_data:
+        return None
+    direct = plate_data.get(plate_key)
+    if direct:
+        return list(direct)
+    if '&' not in plate_key:
+        return None
+    merged: List[int] = []
+    seen: set[int] = set()
+    for part in plate_key.split('&'):
+        part = part.strip()
+        if not part:
+            continue
+        for sid in plate_data.get(part) or []:
+            i = int(sid)
+            if i in seen:
+                continue
+            seen.add(i)
+            merged.append(i)
+    return merged or None
+
+
 platecn = {
     '晓': '暁',
     '樱': '櫻',

@@ -844,7 +844,14 @@ async def draw_plate_table(
         else:
             return f'未找到版本 {version} 的牌子数据'
 
-        music_id_list = mai.total_plate_id_list[_ver]
+        from ..config import resolve_plate_id_list
+
+        music_id_list = resolve_plate_id_list(mai.total_plate_id_list, _ver)
+        if not music_id_list:
+            return (
+                f'未找到版本 {version}（{_ver}）的牌子曲目列表。\n'
+                '别名库可能尚未同步该版本，请稍后重试或联系管理员更新牌子数据。'
+            )
         music = mai.total_list.by_id_list(music_id_list)
         plate_total_num = len(music_id_list)
         wu_remaster = mai.total_plate_id_list.get('舞ReMASTER', []) if is_wu else []

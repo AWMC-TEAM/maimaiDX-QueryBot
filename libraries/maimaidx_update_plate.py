@@ -14,6 +14,7 @@ from ..config import (
     plate_to_dx_version,
     platecn,
     rating_table_dir,
+    resolve_plate_id_list,
     TBFONT,
     version_map,
 )
@@ -40,7 +41,9 @@ class UpdateTable:
         return {lv: [] for lv in reversed(levelList)}
 
     def _get_song_list(self, version_name: str) -> List[Music]:
-        song_id_list = mai.total_plate_id_list[version_name]
+        song_id_list = resolve_plate_id_list(mai.total_plate_id_list, version_name)
+        if not song_id_list:
+            raise KeyError(f'牌子曲目列表缺失: {version_name}')
         return mai.total_list.by_id_list(song_id_list)
 
     async def update_level_15_rating_table(self) -> None:

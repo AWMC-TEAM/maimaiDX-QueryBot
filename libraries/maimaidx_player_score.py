@@ -672,7 +672,9 @@ async def player_plate_data(
     remaster: List[int] = []
     
     # 已游玩未完成曲目
-    plate_id_list = mai.total_plate_id_list[_ver]
+    plate_id_list = resolve_plate_id_list(mai.total_plate_id_list, _ver)
+    if not plate_id_list:
+        return f'未找到版本 {version}（{_ver}）的牌子曲目列表，请稍后重试或联系管理员更新牌子数据。'
     if _ver in ['舞', '霸']:
         remaster = mai.total_plate_id_list['舞ReMASTER']
         for music in verlist:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Set, Tuple
 
-from ..config import plate_to_dx_version, version_map
+from ..config import plate_to_dx_version, resolve_plate_id_list, version_map
 from .maimaidx_data_storage import DailySnapshot, ScoreRecord
 from .maimaidx_music import mai
 
@@ -117,7 +117,7 @@ def count_completed_plates_from_records(
 
     for vk in versions:
         _, _ver = version_map.get(vk, ([plate_to_dx_version.get(vk, "")], vk))
-        plate_ids = mai.total_plate_id_list.get(_ver)
+        plate_ids = resolve_plate_id_list(mai.total_plate_id_list, _ver)
         if not plate_ids:
             continue
         ids_int = [int(x) for x in plate_ids]
