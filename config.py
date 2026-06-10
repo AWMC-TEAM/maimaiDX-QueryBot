@@ -78,7 +78,7 @@ maiconfig = get_plugin_config(Config)
 BOT_QQ_GROUP = '1072033605'
 UPSTREAM_REPO_URL = 'https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx'
 FORK_TEAM_URL = 'https://github.com/AWMC-TEAM'
-IMAGE_DESIGNER = 'Yuri-YuzuChaN & BlueDeer233'  # 历史兼容，页脚已统一为 AWMC 署名
+IMAGE_DESIGNER = 'Yuri-YuzuChaN & BlueDeer233'
 
 
 def project_attribution_message() -> str:
@@ -97,11 +97,11 @@ def footer_generated(bot_name: Optional[str] = None) -> str:
 
 
 def footer_designed_generated(designer: str = IMAGE_DESIGNER, bot_name: Optional[str] = None) -> str:
-    return footer_generated(bot_name)
+    return f'Designed by {designer}. {footer_generated(bot_name)}'
 
 
 def footer_designed_pipe_generated(designer: str, bot_name: Optional[str] = None) -> str:
-    return footer_generated(bot_name)
+    return f'Designed by {designer} | {footer_generated(bot_name)}'
 
 # 谱面标签展示配置（后续多处复用，此处统一配置，勿在业务里写死）
 TAG_DISPLAY_ORDER: List[str] = ['配置', '难度', '评价']
