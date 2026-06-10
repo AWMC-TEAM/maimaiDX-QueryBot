@@ -93,6 +93,7 @@ yueji_ab50   = on_command('越级ab50', aliases={'越级a50'})
 version_b50  = on_regex(r'^\s*([初真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉霸舞熊华華爽煌宙星祭祝双宴镜彩])\s*代\s*b50\s*$')
 legacy_b50   = on_regex(r'^\s*l\s*(.+代)\s*b50\s*$')
 legacy_b35   = on_regex(r'^\s*l\s*(.+代)\s*b35\s*$')
+dx2025_b50   = on_command('dx2025b50', aliases={'DX2025b50'})
 dx2026_b35   = on_command('dx2026b35', aliases={'DX2026b35'})
 # 难度 B50：交给 DifficultyFilter 解析（支持：紫14+、13-14、master14.0 等）
 # 注意：排除纯 "b50/ab50"，避免与 on_command('b50/ab50') 冲突
@@ -1357,25 +1358,25 @@ async def _(
         await legacy_b35.finish(result + MessageSegment.text(_build_footer(qqid, _total)), reply_message=True)
 
 
-@dx2026_b35.handle()
+@dx2025_b50.handle()
 async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
-    """dx2026b35 别名：等价于 l彩代b35"""
+    """dx2025b50 别名：等价于 l镜代b50，展示 2025 版 B50 Rating（35+15）"""
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     from ..libraries.maimaidx_version_alias import resolve_version_alias, build_legacy_ds_map
     from ..libraries.maimaidx_b50_pipeline import b50_pipeline
-    version_name = resolve_version_alias("彩代")
+    version_name = resolve_version_alias("镜代")
     try:
         ds_map = build_legacy_ds_map(version_name)
     except FileNotFoundError:
-        await dx2026_b35.finish("未找到 dxdata.json 文件", reply_message=True)
+        await dx2025_b50.finish("未找到 dxdata.json 文件", reply_message=True)
         return
     except Exception as e:
-        await dx2026_b35.finish(f"加载定数数据失败：{e}", reply_message=True)
+        await dx2025_b50.finish(f"加载定数数据失败：{e}", reply_message=True)
         return
     if not ds_map:
-        await dx2026_b35.finish(f"「{version_name}」版本无定数变化数据", reply_message=True)
+        await dx2025_b50.finish(f"「{version_name}」版本无定数变化数据", reply_message=True)
         return
     import time as _t
     from ..libraries.maimaidx_timing import reset
@@ -1386,15 +1387,26 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
         recalculate=True,
         ds_map=ds_map,
         by_group=False,
-        max_display=35,
+        max_display=50,
         compact_layout=True,
         hide_logo=False,
     )
-    _total2 = _t.perf_counter() - _t0
+    _total = _t.perf_counter() - _t0
     if isinstance(result, str):
-        await dx2026_b35.finish(result, reply_message=True)
+        await dx2025_b50.finish(result, reply_message=True)
     else:
-        await dx2026_b35.finish(result + MessageSegment.text(_build_footer(qqid, _total2)), reply_message=True)
+        await dx2025_b50.finish(result + MessageSegment.text(_build_footer(qqid, _total)), reply_message=True)
+
+
+@dx2026_b35.handle()
+async def _(event: MessageEvent):
+    """dx2026b35 已废弃：2026 更新后 B35 即常规 b50"""
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
+        raise IgnoredException('功能已禁用')
+    await dx2026_b35.finish(
+        "喂喂喂？舞萌已经更新DX2026啦！请使用'b50'获得成绩图！",
+        reply_message=True,
+    )
 
 
 @tag_analysis.handle()
