@@ -1360,13 +1360,13 @@ async def _(
 
 @dx2025_b50.handle()
 async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
-    """dx2025b50 别名：等价于 l镜代b50，展示 2025 版 B50 Rating（35+15）"""
+    """dx2025b50：读取 2026-06-09 本地存档 + PRiSM 定数，按 2025 规则分 B35/B15 出图"""
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     from ..libraries.maimaidx_version_alias import resolve_version_alias, build_legacy_ds_map
-    from ..libraries.maimaidx_b50_pipeline import b50_pipeline
-    version_name = resolve_version_alias("镜代")
+    from ..libraries.maimaidx_b50_pipeline import DX2025_SNAPSHOT_DATE, dx2025_b50_pipeline
+    version_name = resolve_version_alias("dx2025")
     try:
         ds_map = build_legacy_ds_map(version_name)
     except FileNotFoundError:
@@ -1382,20 +1382,14 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
     from ..libraries.maimaidx_timing import reset
     reset()
     _t0 = _t.perf_counter()
-    result = await b50_pipeline(
-        qqid=qqid,
-        recalculate=True,
-        ds_map=ds_map,
-        by_group=False,
-        max_display=50,
-        compact_layout=True,
-        hide_logo=False,
-    )
+    result = await dx2025_b50_pipeline(qqid=qqid, ds_map=ds_map)
     _total = _t.perf_counter() - _t0
     if isinstance(result, str):
         await dx2025_b50.finish(result, reply_message=True)
     else:
-        await dx2025_b50.finish(result + MessageSegment.text(_build_footer(qqid, _total)), reply_message=True)
+        footer = _build_footer(qqid, _total)
+        footer += f"\n基于本地存档 {DX2025_SNAPSHOT_DATE} · {version_name} 定数"
+        await dx2025_b50.finish(result + MessageSegment.text(footer), reply_message=True)
 
 
 @dx2026_b35.handle()

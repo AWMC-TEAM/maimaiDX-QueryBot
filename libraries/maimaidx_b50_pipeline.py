@@ -24,12 +24,20 @@ from typing import Callable, List, Optional, Union
 
 from nonebot.adapters.onebot.v11 import MessageSegment
 
-from ..config import log
+from ..config import log, plate_to_dx_version
 from .image import image_to_base64
 from .maimaidx_api_data import maiApi
 from .maimaidx_best_50 import DrawBest, _is_latest_version, computeRa, filter_utage_records
 from .maimaidx_error import UserDisabledQueryError, UserNotExistsError, UserNotFoundError
 from .maimaidx_model import ChartInfo, Data, PlayInfoDev, UserInfo
+from .maimaidx_music import mai
+
+# DX2026 更新前最后一日本地存档，用于还原 2025 版 B35+B15
+DX2025_SNAPSHOT_DATE = "2026-06-09"
+_DX2025_B15_VERSIONS = frozenset({
+    plate_to_dx_version["镜"],
+    plate_to_dx_version["彩"],
+})
 
 
 # 筛选函数类型：接收 PlayInfoDev，返回是否保留
@@ -110,6 +118,24 @@ def _recalculate_rating(records: List[PlayInfoDev], ds_map: Optional[dict] = Non
         recalculated.append(new_r)
     log.debug(f"[b50_pipeline] 重算完成")
     return recalculated
+
+
+def _is_dx2025_latest_version(r: PlayInfoDev) -> bool:
+    """2025 版 B15 区：镜代 / 彩代曲目（不随当前 config 最新版本变化）。"""
+    try:
+        music = mai.total_list.by_id(str(r.song_id))
+        if music and getattr(music, "basic_info", None):
+            return getattr(music.basic_info, "version", None) in _DX2025_B15_VERSIONS
+    except Exception:
+        pass
+    return False
+
+
+def _group_records_dx2025(records: List[PlayInfoDev]) -> tuple[List[PlayInfoDev], List[PlayInfoDev]]:
+    """按 2025 版本规则拆分 B35（旧版）/ B15（镜彩）。"""
+    b15 = sorted([r for r in records if _is_dx2025_latest_version(r)], key=lambda x: -x.ra)[:15]
+    b35 = sorted([r for r in records if not _is_dx2025_latest_version(r)], key=lambda x: -x.ra)[:35]
+    return b35, b15
 
 
 def _group_records(
@@ -263,6 +289,78 @@ async def b50_pipeline(
         msg = str(e)
     except Exception as e:
         log.error(f"[b50_pipeline] 未知错误: {type(e).__name__}: {e}")
+        log.error(traceback.format_exc())
+        msg = f"未知错误：{type(e).__name__}\n请联系Bot管理员"
+    return msg
+
+
+async def dx2025_b50_pipeline(
+    qqid: int,
+    *,
+    ds_map: dict,
+    snapshot_date: str = DX2025_SNAPSHOT_DATE,
+) -> Union[MessageSegment, str]:
+    """
+    DX2025 版 B50：读取更新前本地存档（默认 2026-06-09），用 PRiSM 定数重算，
+    按镜彩曲目归入 B15、其余归入 B35，常规 B50 分区排版（非紧凑）。
+    """
+    from .maimaidx_data_storage import data_storage
+    from .maimaidx_datasource import get_user_b50
+    from .maimaidx_player_cache import _score_records_to_playinfo_dev
+
+    log.debug(f"[dx2025_b50] qqid={qqid} snapshot_date={snapshot_date}")
+    try:
+        snap = data_storage.load_daily_snapshot(qqid, snapshot_date)
+        if not snap or not snap.records:
+            return "诶呀... 没有找到数据！一定要多多使用AWMC BOT哦！"
+
+        records = filter_utage_records(_score_records_to_playinfo_dev(list(snap.records)))
+        if not records:
+            return f"{snapshot_date} 存档中无有效成绩数据"
+
+        records = _recalculate_rating(records, ds_map=ds_map)
+        b35, b15 = _group_records_dx2025(records)
+        if not b35 and not b15:
+            return f"{snapshot_date} 存档成绩不足以组成 B50"
+
+        plate = ""
+        additional_rating = 0
+        try:
+            user_basic = await get_user_b50(qqid=qqid)
+            plate = user_basic.plate or ""
+            additional_rating = (
+                user_basic.additional_rating if user_basic.additional_rating is not None else 0
+            )
+        except Exception as e:
+            log.debug(f"[dx2025_b50] 获取牌子信息失败 qq={qqid}: {e}")
+
+        base_userinfo = UserInfo(
+            nickname=snap.nickname or str(qqid),
+            plate=plate,
+            additional_rating=additional_rating,
+            rating=int(snap.rating or 0),
+            username=snap.nickname or "",
+            charts=None,
+        )
+        new_userinfo = _build_userinfo(base_userinfo, b35, b15)
+
+        from .maimaidx_b50_warnings import prepare_b50_warnings, resolve_b50_source
+
+        prepare_b50_warnings(new_userinfo, resolve_b50_source(qqid, None))
+        draw_best = DrawBest(
+            new_userinfo,
+            qqid,
+            compact_layout=False,
+            hide_logo=False,
+            max_display=50,
+        )
+        msg = MessageSegment.image(image_to_base64(await draw_best.draw()))
+        log.debug(
+            f"[dx2025_b50] 完成 qq={qqid} b35={len(b35)} b15={len(b15)} "
+            f"rating={new_userinfo.rating}"
+        )
+    except Exception as e:
+        log.error(f"[dx2025_b50] 未知错误: {type(e).__name__}: {e}")
         log.error(traceback.format_exc())
         msg = f"未知错误：{type(e).__name__}\n请联系Bot管理员"
     return msg
