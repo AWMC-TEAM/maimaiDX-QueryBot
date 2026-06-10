@@ -63,6 +63,14 @@ def _is_lock(a: float) -> bool:
     return False
 
 
+def _date_str(offset_days: int = 0) -> str:
+    return (datetime.now() - timedelta(days=offset_days)).strftime('%Y-%m-%d')
+
+
+def _snapshot_by_date(qqid: int, date: str) -> DailySnapshot | None:
+    return data_storage.load_daily_snapshot(qqid, date)
+
+
 def _collect_snapshots(qqid: int, days: int) -> List[DailySnapshot]:
     metas = data_storage.list_snapshots(qqid, limit=240)
     if not metas:
@@ -420,6 +428,33 @@ def _fmt_date(s: DailySnapshot) -> str:
     return s.stored_at.replace('T', ' ') if s.stored_at else s.date
 
 
+def _report_title(period_days: int) -> str:
+    if period_days <= 7:
+        return 'MAIMAI 周报'
+    if period_days <= 31:
+        return 'MAIMAI 月报'
+    return 'MAIMAI 年报'
+
+
+async def generate_daily_report(qqid: int) -> MessageSegment | str:
+    """对比今日与昨日存档（按日历日，非 24 小时滚动窗口）。"""
+    today = _snapshot_by_date(qqid, _date_str(0))
+    yesterday = _snapshot_by_date(qqid, _date_str(1))
+    if not today:
+        return '今日尚无存档，请先使用「立即存储数据」。'
+    if not yesterday:
+        return '昨日无存档，无法生成日报。请确保已开启数据存储并至少积累一天历史（每日凌晨自动存档或手动存档）。'
+
+    points = [int(yesterday.rating), int(today.rating)]
+    labels = [yesterday.date, today.date]
+    data = _analyze(yesterday, today)
+    _, _, data['new_b50'] = _build_b50(today.records)
+    nickname = today.nickname or str(qqid)
+    im = _draw_report('MAIMAI 日报', nickname, points, labels, data, _fmt_date(yesterday), _fmt_date(today))
+    log.debug(f'[progress_report] qq={qqid} daily delta={data["rating_delta"]}')
+    return MessageSegment.image(image_to_base64(im))
+
+
 async def generate_progress_report(qqid: int, period_days: int) -> MessageSegment | str:
     snaps = _collect_snapshots(qqid, period_days)
     if len(snaps) < 2:
@@ -433,12 +468,7 @@ async def generate_progress_report(qqid: int, period_days: int) -> MessageSegmen
 
     data = _analyze(oldest, latest)
     _, _, data['new_b50'] = _build_b50(latest.records)
-    if period_days <= 1:
-        title = 'MAIMAI 日报'
-    elif period_days <= 7:
-        title = 'MAIMAI 周报'
-    else:
-        title = 'MAIMAI 月报'
+    title = _report_title(period_days)
     nickname = latest.nickname or str(qqid)
     im = _draw_report(title, nickname, points, labels, data, _fmt_date(oldest), _fmt_date(latest))
     log.debug(f'[progress_report] qq={qqid} period={period_days} snapshots={len(snaps)} delta={data["rating_delta"]}')

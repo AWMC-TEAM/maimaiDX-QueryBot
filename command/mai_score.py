@@ -51,7 +51,11 @@ from ..libraries.maimaidx_plate_count import (
     format_plate_count_message,
     format_plate_count_message_from_records,
 )
-from ..libraries.maimaidx_progress_report import generate_progress_report, generate_progress_report_between
+from ..libraries.maimaidx_progress_report import (
+    generate_daily_report,
+    generate_progress_report,
+    generate_progress_report_between,
+)
 from ..libraries.maimaidx_gain_recommend import generate_today_gain_recommendation
 from ..libraries.maimaidx_floor import generate_floor_query
 from ..libraries.maimaidx_friend_battle import (
@@ -111,6 +115,7 @@ storage_history = on_command('存储历史', aliases={'查询存储历史', '存
 storage_snapshot = on_command('查看存档', aliases={'查看存储快照', '存档详情'})
 weekly_report = on_command('周报', aliases={'成绩周报', 'maimai周报'})
 monthly_report = on_command('月报', aliases={'成绩月报', 'maimai月报'})
+annual_report = on_command('年报', aliases={'成绩年报', 'maimai年报'})
 daily_report = on_command('日报', aliases={'成绩日报', 'maimai日报'})
 today_gain_recommend = on_command('今日吃分推荐', aliases={'吃分推荐', '今日推分推荐'})
 floor_query = on_command('地板', aliases={'b50地板', 'rating地板'})
@@ -1087,6 +1092,18 @@ async def _monthly_report(event: MessageEvent):
     await _finish_score(monthly_report, generate_progress_report(qqid, 30), qqid)
 
 
+@annual_report.handle()
+async def _annual_report(event: MessageEvent):
+    qqid = event.user_id
+    if not data_storage.is_enabled(qqid):
+        await annual_report.finish(
+            '你尚未开启数据存储功能，请先发送「开启存储数据」。',
+            reply_message=True,
+        )
+        return
+    await _finish_score(annual_report, generate_progress_report(qqid, 365), qqid)
+
+
 @daily_report.handle()
 async def _daily_report(event: MessageEvent):
     qqid = event.user_id
@@ -1096,7 +1113,7 @@ async def _daily_report(event: MessageEvent):
             reply_message=True,
         )
         return
-    await _finish_score(daily_report, generate_progress_report(qqid, 1), qqid)
+    await _finish_score(daily_report, generate_daily_report(qqid), qqid)
 
 
 @today_gain_recommend.handle()

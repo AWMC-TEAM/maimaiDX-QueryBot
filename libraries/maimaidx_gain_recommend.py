@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from ..config import footer_generated, log
@@ -54,6 +55,10 @@ def _build_b50(records: List[ScoreRecord]) -> tuple[list[ScoreRecord], list[Scor
     b35 = sorted([r for r in records_sorted if not _is_latest_version(r)], key=lambda x: int(x.ra), reverse=True)[:35]
     b50_map = {_song_key(r.song_id, r.level_index): r for r in (b35 + b15)}
     return b35, b15, b50_map
+
+
+def _default_abilities() -> Dict[str, _Ability]:
+    return {b: _Ability(avg_gain=0.05, improve_rate=0.35) for b in ['<12', '12.x', '13.x', '14.x', '14.7+']}
 
 
 def _load_recent_snapshots(qqid: int, limit: int = 20) -> List[DailySnapshot]:
@@ -121,15 +126,23 @@ def _pick_zone(prob: float, net_gain: int) -> str:
 
 
 async def generate_today_gain_recommendation(qqid: int, top_n: int = 12) -> str:
-    snaps = _load_recent_snapshots(qqid, limit=20)
-    if len(snaps) < 2:
-        return "历史快照不足（至少需要2次存档）\n请先使用「立即存储数据」积累历史后再试。"
+    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    yesterday_snap = data_storage.load_daily_snapshot(qqid, yesterday)
+    if not yesterday_snap:
+        return (
+            '昨日无存档，无法生成吃分推荐。\n'
+            '请确保已开启数据存储，并等待每日凌晨自动存档或手动存档至少一天。'
+        )
 
-    abilities = _calc_user_ability(snaps)
-    latest = snaps[-1]
-    b35, b15, b50_map = _build_b50(latest.records)
-    b35_tail = int(b35[-1].ra) if b35 else 0
-    b15_tail = int(b15[-1].ra) if b15 else 0
+    snaps = _load_recent_snapshots(qqid, limit=20)
+    if len(snaps) >= 2:
+        abilities = _calc_user_ability(snaps)
+    else:
+        today_snap = data_storage.load_daily_snapshot(qqid, datetime.now().strftime('%Y-%m-%d'))
+        if today_snap:
+            abilities = _calc_user_ability([yesterday_snap, today_snap])
+        else:
+            abilities = _default_abilities()
 
     from .maimaidx_datasource import get_user_records
 
@@ -138,7 +151,27 @@ async def generate_today_gain_recommendation(qqid: int, top_n: int = 12) -> str:
     from .maimaidx_best_50 import filter_utage_records
     records = filter_utage_records(records)
     if not records:
-        return "未读取到全量成绩，无法推荐。"
+        return '未读取到全量成绩，无法推荐。'
+
+    score_records = [
+        ScoreRecord(
+            song_id=int(r.song_id),
+            title=r.title,
+            level=r.level,
+            level_index=int(r.level_index),
+            ds=float(r.ds),
+            achievements=float(r.achievements),
+            rate=r.rate,
+            ra=int(r.ra),
+            fc=getattr(r, 'fc', None),
+            fs=getattr(r, 'fs', None),
+            dxScore=getattr(r, 'dxScore', 0),
+        )
+        for r in records
+    ]
+    b35, b15, b50_map = _build_b50(score_records)
+    b35_tail = int(b35[-1].ra) if b35 else 0
+    b15_tail = int(b15[-1].ra) if b15 else 0
 
     targets = [97.0, 98.0, 99.0, 99.5, 100.0, 100.5]
     picks: List[_Recommend] = []
@@ -206,8 +239,8 @@ async def generate_today_gain_recommendation(qqid: int, top_n: int = 12) -> str:
         groups[p.zone].append(p)
 
     lines = [
-        "今日吃分推荐（基于历史提分能力 + 拟合难度 + B35/B15门槛净收益）",
-        f"历史样本：{len(snaps)} 次快照",
+        '今日吃分推荐（对比昨日存档 + 实时成绩，拟合难度 + B35/B15 门槛净收益）',
+        f'基准：昨日存档（{yesterday}）· 能力样本 {max(len(snaps), 1)} 天',
     ]
     for zone in ["稳赚", "均衡", "冲刺"]:
         arr = groups[zone]
