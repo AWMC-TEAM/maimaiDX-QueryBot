@@ -194,12 +194,16 @@ class UpdateTable:
             if not songs:
                 continue
 
-            def sort_key(m: Music) -> float:
-                if remaster_id_list is not None and int(m.id) in remaster_set:
-                    return m.ds[4] if len(m.ds) > 4 else m.ds[3]
-                return m.ds[3]
+            is_wu = remaster_id_list is not None
 
-            songs.sort(key=sort_key, reverse=True)
+            def _sort_key(m: Music) -> tuple[float, int]:
+                if is_wu and int(m.id) in remaster_set and len(m.ds) > 4:
+                    ds = m.ds[4]
+                else:
+                    ds = m.ds[3]
+                return (-ds, int(m.id))
+
+            songs.sort(key=_sort_key)
             fot.draw(72, start_y + 40, 40, ds, assets.font_color, 'lm', 4, (255, 255, 255, 255))
             max_row = 0
             for num, music in enumerate(songs):

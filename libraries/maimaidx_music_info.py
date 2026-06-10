@@ -778,6 +778,11 @@ def _plate_sort_ds(music: Music, is_wu: bool, wu_remaster: List[int]) -> float:
     return music.ds[3]
 
 
+def _plate_sort_key(music: Music, is_wu: bool, wu_remaster: List[int]) -> tuple[float, int]:
+    """与 update_plate 底图一致：定数降序，同定数按曲目 ID 升序（避免覆盖层与底图错位）。"""
+    return (-_plate_sort_ds(music, is_wu, wu_remaster), int(music.id))
+
+
 def _plate_slot_count(music: Music, is_wu: bool, wu_remaster: List[int]) -> int:
     if not is_wu:
         return 4
@@ -897,8 +902,7 @@ async def draw_plate_table(
                 continue
             sorted_items = sorted(
                 songs.items(),
-                key=lambda item: _plate_sort_ds(mai.total_list.by_id(item[0]), is_wu, wu_remaster),
-                reverse=True,
+                key=lambda item: _plate_sort_key(mai.total_list.by_id(item[0]), is_wu, wu_remaster),
             )
             ordered_levels.append((lv, sorted_items))
 

@@ -288,8 +288,8 @@ version_map = {
     '祝': ([plate_to_dx_version['祭']], '祭&祝'),
     '双': ([plate_to_dx_version['双']], '双&宴'),
     '宴': ([plate_to_dx_version['双']], '双&宴'),
-    '镜': ([plate_to_dx_version['镜']], '镜&彩'),
-    '彩': ([plate_to_dx_version['镜']], '镜&彩')
+    '镜': ([plate_to_dx_version['镜'], plate_to_dx_version['彩']], '镜&彩'),
+    '彩': ([plate_to_dx_version['镜'], plate_to_dx_version['彩']], '镜&彩')
 }
 
 
