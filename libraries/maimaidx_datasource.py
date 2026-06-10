@@ -59,6 +59,49 @@ def _import_compute_ra():
     return computeRa
 
 
+def _flatten_lxns_scores(raw) -> list:
+    """将落雪成绩响应统一展平为 dict 列表（兼容 Score[] / SimpleScore[] / bests 结构）。"""
+    if not raw:
+        return []
+    if isinstance(raw, dict):
+        nested = raw.get('scores')
+        if isinstance(nested, list):
+            return _flatten_lxns_scores(nested)
+        out: list = []
+        for key in ('standard', 'dx'):
+            part = raw.get(key)
+            if isinstance(part, list):
+                out.extend(part)
+        if out:
+            return [s for s in out if isinstance(s, dict)]
+    if isinstance(raw, list):
+        return [s for s in raw if isinstance(s, dict)]
+    return []
+
+
+def _lxns_raw_song_id(score: dict) -> Optional[int]:
+    """从落雪成绩对象提取曲目 ID（兼容 id / song_id / diff_id）。"""
+    for key in ('id', 'song_id', 'diff_id'):
+        val = score.get(key)
+        if val is None:
+            continue
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _lxns_achievements_from_rate(rate: str) -> float:
+    """SimpleScore 无 achievements 时，按评级取下限达成率估算。"""
+    table = {
+        'd': 0.0, 'c': 50.0, 'b': 60.01, 'bb': 70.01, 'bbb': 75.01,
+        'a': 80.01, 'aa': 90.01, 'aaa': 94.01, 's': 97.01,
+        'sp': 98.01, 'ss': 99.01, 'ssp': 99.51, 'sss': 100.0, 'sssp': 100.5,
+    }
+    return table.get((rate or '').lower(), 0.0)
+
+
 def _resolve_local_music(lxns_id: int, lxns_type: str):
     """
     把落雪的 (id, type) 映射到本地（水鱼）曲目。
@@ -95,10 +138,19 @@ def _resolve_local_music(lxns_id: int, lxns_type: str):
 def _lxns_score_to_chartinfo(score: dict):
     """将 lxns score dict 转换为 ChartInfo（也兼容 PlayInfoDev，字段一致）。"""
     computeRa = _import_compute_ra()
-    lxns_id = int(score['id'])
-    level_index = score.get('level_index', 0)
-    achievements = score.get('achievements', 0.0)
+    raw_id = _lxns_raw_song_id(score)
+    if raw_id is None:
+        log.warning(f'[datasource] lxns score missing id/song_id: keys={list(score.keys())}')
+        return None
     lxns_type = score.get('type', 'standard')
+    if lxns_type == 'utage' or raw_id > 100000:
+        lxns_id = raw_id
+    else:
+        lxns_id = raw_id % 10000 if raw_id > 10000 else raw_id
+    level_index = score.get('level_index', 0)
+    achievements = score.get('achievements')
+    if achievements is None:
+        achievements = _lxns_achievements_from_rate(score.get('rate', ''))
     song_type = 'DX' if lxns_type == 'dx' else 'SD'
 
     music, local_id = _resolve_local_music(lxns_id, lxns_type)
@@ -163,7 +215,7 @@ def lxns_bests_to_userinfo(bests: dict, nickname: str = '', rating: int = 0) -> 
 def lxns_scores_to_records(scores: list) -> List[PlayInfoDev]:
     """将 lxns 全量成绩列表转换为 PlayInfoDev 列表。"""
     out: List[PlayInfoDev] = []
-    for s in (scores or []):
+    for s in _flatten_lxns_scores(scores):
         c = _lxns_score_to_chartinfo(s)
         if c is not None:
             out.append(PlayInfoDev(**c))
