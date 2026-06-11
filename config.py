@@ -288,8 +288,8 @@ version_map = {
     '祝': ([plate_to_dx_version['祭']], '祭&祝'),
     '双': ([plate_to_dx_version['双']], '双&宴'),
     '宴': ([plate_to_dx_version['双']], '双&宴'),
-    '镜': ([plate_to_dx_version['镜'], plate_to_dx_version['彩']], '镜&彩'),
-    '彩': ([plate_to_dx_version['镜'], plate_to_dx_version['彩']], '镜&彩')
+    '镜': ([plate_to_dx_version['镜']], '镜'),
+    '彩': ([plate_to_dx_version['彩']], '彩')
 }
 
 
@@ -298,7 +298,7 @@ def resolve_plate_id_list(
     plate_key: str,
 ) -> Optional[List[int]]:
     """
-    解析牌子曲目 ID 列表。优先用组合键（如 镜&彩）；别名库若仅有分键（镜、彩）则合并去重。
+    解析牌子曲目 ID 列表。优先用直接键（如 镜、彩、熊&华）；组合键缺失时回退合并分键。
     """
     if not plate_data:
         return None
