@@ -154,7 +154,17 @@ async def _(event: GroupMessageEvent):
 async def _(event: GroupMessageEvent):
     gid = event.group_id
     if gid in guess.Group:
-        msg = '已重置该群猜歌'
+        data = guess.Group[gid]
+        data.end = True
+        msg = (
+            MessageSegment.text('已重置该群猜歌，答案是：\n') +
+            await draw_music_info(data.music)
+        )
+        if isinstance(data, GuessPicData):
+            msg += (
+                MessageSegment.text('\n') +
+                MessageSegment.image(guess.render_pic_reveal(data))
+            )
         guess.end(gid)
     else:
         msg = '该群未处在猜歌状态'
