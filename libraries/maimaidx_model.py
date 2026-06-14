@@ -134,8 +134,8 @@ class GuessPicData(GuessData):
     max_scale: float
     full_w: int
     full_h: int
-    interference: str
-    interference_label: str
+    interferences: List[str]
+    interference_labels: List[str]
     difficulty: int
     expansion_count: int
     global_shown: bool = False

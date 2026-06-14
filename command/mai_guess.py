@@ -75,13 +75,13 @@ async def _(event: GroupMessageEvent):
     await guess_music_pic.send(
         dedent(f'''\
             开始猜曲绘！可以直接发送答案！
-            每隔15秒会给出进一步提示。发送 重置猜歌 可结束游戏。
-            当前难度：{data.difficulty}，当前干扰类型：{data.interference_label}
+            每隔10秒会给出进一步提示。发送 重置猜歌 可结束游戏。
+            当前难度：{data.difficulty}，当前干扰类型：{'、'.join(data.interference_labels)}
         ''')
     )
     await guess_music_pic.send(MessageSegment.image(guess.render_pic_crop(data)))
 
-    hint_interval = 15
+    hint_interval = 10
     timeout_after_global = 30
     global_at = (data.expansion_count + 1) * hint_interval
     total_duration = global_at + timeout_after_global

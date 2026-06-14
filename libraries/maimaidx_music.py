@@ -465,8 +465,24 @@ class Guess:
         ('blur', '模糊'),
         ('desaturate', '低饱和'),
         ('saturate', '高饱和'),
-        ('mirror', '镜像'),
+        ('mirror', '水平镜像'),
+        ('flip', '垂直翻转'),
+        ('pixelate', '像素化'),
+        ('noise', '噪点'),
+        ('low_contrast', '低对比'),
+        ('overexpose', '过曝'),
+        ('underexpose', '欠曝'),
+        ('rotate', '旋转'),
+        ('emboss', '浮雕'),
+        ('solarize', '曝光'),
+        ('posterize', '色阶'),
     ]
+
+    PIC_INTERFERENCE_COUNT = {
+        1: (1, 2),
+        2: (2, 3),
+        3: (2, 4),
+    }
 
     PIC_DIFFICULTY = {
         1: {'initial': 0.12, 'max': 0.50, 'expansions': 3},
@@ -487,8 +503,7 @@ class Guess:
         y = max(0, min(cy - h2 // 2, full_h - h2))
         return x, y, w2, h2
 
-    def _apply_pic_interference(self, im: Image.Image, kind: str) -> Image.Image:
-        im = im.convert('RGB')
+    def _apply_single_pic_interference(self, im: Image.Image, kind: str) -> Image.Image:
         if kind == 'hue':
             hsv = im.convert('HSV')
             h, s, v = hsv.split()
@@ -505,6 +520,37 @@ class Guess:
             return ImageEnhance.Color(im).enhance(2.5)
         if kind == 'mirror':
             return ImageOps.mirror(im)
+        if kind == 'flip':
+            return ImageOps.flip(im)
+        if kind == 'pixelate':
+            w, h = im.size
+            small = im.resize((max(1, w // 12), max(1, h // 12)), Image.NEAREST)
+            return small.resize((w, h), Image.NEAREST)
+        if kind == 'noise':
+            arr = np.array(im, dtype=np.int16)
+            noise = np.random.randint(-40, 41, arr.shape, dtype=np.int16)
+            arr = np.clip(arr + noise, 0, 255).astype(np.uint8)
+            return Image.fromarray(arr)
+        if kind == 'low_contrast':
+            return ImageEnhance.Contrast(im).enhance(0.35)
+        if kind == 'overexpose':
+            return ImageEnhance.Brightness(im).enhance(1.8)
+        if kind == 'underexpose':
+            return ImageEnhance.Brightness(im).enhance(0.35)
+        if kind == 'rotate':
+            return im.rotate(random.choice([-90, 90, 180]), expand=False)
+        if kind == 'emboss':
+            return im.filter(ImageFilter.EMBOSS)
+        if kind == 'solarize':
+            return ImageOps.solarize(im, threshold=128)
+        if kind == 'posterize':
+            return ImageOps.posterize(im, bits=3)
+        return im
+
+    def _apply_pic_interference(self, im: Image.Image, kinds: List[str]) -> Image.Image:
+        im = im.convert('RGB')
+        for kind in kinds:
+            im = self._apply_single_pic_interference(im, kind)
         return im
 
     def _load_pic_source(self, data: GuessPicData) -> Image.Image:
@@ -516,7 +562,7 @@ class Guess:
             data.crop_cx, data.crop_cy, data.current_scale, data.full_w, data.full_h
         )
         crop = im.crop((x, y, x + w, y + h))
-        crop = self._apply_pic_interference(crop, data.interference)
+        crop = self._apply_pic_interference(crop, data.interferences)
         crop = crop.resize((output_size, output_size), Image.LANCZOS)
         return image_to_base64(crop)
 
@@ -536,7 +582,7 @@ class Guess:
         draw.rectangle([sx, sy, sx + sw, sy + sh], outline=(255, 255, 255), width=3)
 
         crop = im.crop((x, y, x + w, y + h))
-        crop = self._apply_pic_interference(crop, data.interference)
+        crop = self._apply_pic_interference(crop, data.interferences)
         inset_size = min(100, max_width // 5)
         inset = crop.resize((inset_size, inset_size), Image.LANCZOS)
         border = 3
@@ -610,7 +656,11 @@ class Guess:
         x, y = self.select_crop_region(weights, temp_w, temp_h, top_p)
         cx, cy = x + temp_w // 2, y + temp_h // 2
 
-        interference, interference_label = random.choice(self.PIC_INTERFERENCE)
+        count_range = self.PIC_INTERFERENCE_COUNT[difficulty]
+        pick_count = random.randint(*count_range)
+        selected = random.sample(self.PIC_INTERFERENCE, pick_count)
+        interferences = [key for key, _ in selected]
+        interference_labels = [label for _, label in selected]
         answer = mai.total_alias_list.by_id(music.id)[0].Alias
         answer.append(music.id)
         return GuessPicData(
@@ -625,8 +675,8 @@ class Guess:
             max_scale=max_scale,
             full_w=w,
             full_h=h,
-            interference=interference,
-            interference_label=interference_label,
+            interferences=interferences,
+            interference_labels=interference_labels,
             difficulty=difficulty,
             expansion_count=expansion_count,
         )
