@@ -478,6 +478,11 @@ class Guess:
         ('posterize', '色阶'),
     ]
 
+    PIC_COLOR_INTERFERENCE = {
+        'hue', 'invert', 'desaturate', 'saturate', 'noise',
+        'low_contrast', 'overexpose', 'underexpose', 'solarize', 'posterize',
+    }
+
     PIC_INTERFERENCE_COUNT = {
         1: (1, 2),
         2: (2, 3),
@@ -489,6 +494,30 @@ class Guess:
         2: {'initial': 0.09, 'max': 0.42, 'expansions': 4},
         3: {'initial': 0.07, 'max': 0.35, 'expansions': 4},
     }
+
+    def _pick_pic_interferences(self, difficulty: int) -> Tuple[List[str], List[str]]:
+        count_range = self.PIC_INTERFERENCE_COUNT[difficulty]
+        pick_count = random.randint(*count_range)
+        selected = random.sample(self.PIC_INTERFERENCE, pick_count)
+        keys = [key for key, _ in selected]
+        label_map = dict(self.PIC_INTERFERENCE)
+
+        if 'pixelate' in keys:
+            keys = ['pixelate'] + [
+                key for key in keys
+                if key != 'pixelate' and key not in self.PIC_COLOR_INTERFERENCE
+            ]
+            non_color_pool = [
+                item for item in self.PIC_INTERFERENCE
+                if item[0] not in self.PIC_COLOR_INTERFERENCE and item[0] != 'pixelate'
+            ]
+            while len(keys) < pick_count:
+                candidates = [item for item in non_color_pool if item[0] not in keys]
+                if not candidates:
+                    break
+                keys.append(random.choice(candidates)[0])
+
+        return keys, [label_map[key] for key in keys]
 
     def _get_pic_crop_box(
         self,
@@ -680,11 +709,7 @@ class Guess:
         x, y = self.select_crop_region(weights, temp_w, temp_h, top_p)
         cx, cy = x + temp_w // 2, y + temp_h // 2
 
-        count_range = self.PIC_INTERFERENCE_COUNT[difficulty]
-        pick_count = random.randint(*count_range)
-        selected = random.sample(self.PIC_INTERFERENCE, pick_count)
-        interferences = [key for key, _ in selected]
-        interference_labels = [label for _, label in selected]
+        interferences, interference_labels = self._pick_pic_interferences(difficulty)
         answer = mai.total_alias_list.by_id(music.id)[0].Alias
         answer.append(music.id)
         return GuessPicData(
