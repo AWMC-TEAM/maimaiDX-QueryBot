@@ -36,7 +36,7 @@ async def _award_guess_points(
     data: GuessData,
 ) -> str:
     if isinstance(data, GuessPicData):
-        points = guess_score.PIC_POINTS.get(data.difficulty, 1)
+        points = guess_score.pic_points_for(data)
     else:
         points = guess_score.SONG_POINTS
     added, total, rank = await guess_score.add_score(

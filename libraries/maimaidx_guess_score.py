@@ -24,7 +24,13 @@ class GuessScoreStore(BaseModel):
 class GuessScoreManager:
 
     PIC_POINTS = {3: 3, 2: 2, 1: 1}
+    PIC_CLEAR_POINTS = 1
     SONG_POINTS = 1
+
+    def pic_points_for(self, data) -> int:
+        if data.interference_cleared:
+            return self.PIC_CLEAR_POINTS
+        return self.PIC_POINTS.get(data.difficulty, 1)
 
     def __init__(self) -> None:
         if guess_score_file.exists():
