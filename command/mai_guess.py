@@ -6,6 +6,7 @@ from nonebot.matcher import Matcher
 from nonebot.permission import SUPERUSER
 
 from ..libraries.maimaidx_music import guess
+from ..libraries.maimaidx_model import GuessPicData
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_update_plate import *
 
@@ -70,20 +71,53 @@ async def _(event: GroupMessageEvent):
     if gid in guess.Group:
         await guess_music_pic.finish('该群已有正在进行的猜歌或猜曲绘', reply_message=True)
     guess.startpic(gid)
+    data = guess.Group[gid]
     await guess_music_pic.send(
-        MessageSegment.text('以下裁切图片是哪首谱面的曲绘：\n') +
-        MessageSegment.image(guess.Group[gid].img) +
-        MessageSegment.text('请在30s内输入答案')
+        dedent(f'''\
+            开始猜曲绘！可以直接发送答案！
+            每隔15秒会给出进一步提示。发送 重置猜歌 可结束游戏。
+            当前难度：{data.difficulty}，当前干扰类型：{data.interference_label}
+        ''')
     )
-    for _ in range(30):
+    await guess_music_pic.send(MessageSegment.image(guess.render_pic_crop(data)))
+
+    hint_interval = 15
+    timeout_after_global = 30
+    global_at = (data.expansion_count + 1) * hint_interval
+    total_duration = global_at + timeout_after_global
+
+    for elapsed in range(1, total_duration + 1):
         await asyncio.sleep(1)
-        if gid in guess.Group:
-            if gid not in guess.switch.enable or guess.Group[gid].end:
-                await guess_music_pic.finish()
-        else:
+        if gid not in guess.Group:
             await guess_music_pic.finish()
-    guess.Group[gid].end = True
-    answer = MessageSegment.text('答案是：\n') + await draw_music_info(guess.Group[gid].music)
+        data = guess.Group[gid]
+        if gid not in guess.switch.enable or data.end:
+            await guess_music_pic.finish()
+
+        if elapsed % hint_interval != 0:
+            continue
+
+        step = elapsed // hint_interval
+        if step <= data.expansion_count:
+            guess.expand_pic_crop(data)
+            await guess_music_pic.send(
+                MessageSegment.text('[区域扩增!]\n') +
+                MessageSegment.image(guess.render_pic_crop(data))
+            )
+        elif step == data.expansion_count + 1 and not data.global_shown:
+            data.global_shown = True
+            await guess_music_pic.send(
+                MessageSegment.text('[全局视野!]\n') +
+                MessageSegment.image(guess.render_pic_global(data))
+            )
+
+    data.end = True
+    answer = (
+        MessageSegment.text('答案是：\n') +
+        await draw_music_info(data.music) +
+        MessageSegment.text('\n') +
+        MessageSegment.image(guess.render_pic_reveal(data))
+    )
     guess.end(gid)
     await guess_music_pic.finish(answer)
 
@@ -93,11 +127,19 @@ async def _(event: GroupMessageEvent):
     gid = event.group_id
     if gid not in guess.Group:
         await guess_music_solve.finish()
+    data = guess.Group[gid]
     ans = event.get_plaintext().strip()
-    if ans.lower() in guess.Group[gid].answer:
-        guess.Group[gid].end = True
-        answer = MessageSegment.text('猜对了，答案是：\n') + \
-            await draw_music_info(guess.Group[gid].music)
+    if ans.lower() in data.answer:
+        data.end = True
+        answer = (
+            MessageSegment.text('猜对了，答案是：\n') +
+            await draw_music_info(data.music)
+        )
+        if isinstance(data, GuessPicData):
+            answer += (
+                MessageSegment.text('\n') +
+                MessageSegment.image(guess.render_pic_reveal(data))
+            )
         guess.end(gid)
         await guess_music_solve.finish(answer, reply_message=True)
 

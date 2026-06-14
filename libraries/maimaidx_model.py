@@ -125,7 +125,20 @@ class GuessDefaultData(GuessData):
     options: List[str]
 
 
-class GuessPicData(GuessData): ...
+class GuessPicData(GuessData):
+
+    crop_cx: int
+    crop_cy: int
+    current_scale: float
+    initial_scale: float
+    max_scale: float
+    full_w: int
+    full_h: int
+    interference: str
+    interference_label: str
+    difficulty: int
+    expansion_count: int
+    global_shown: bool = False
 
 
 class Switch(BaseModel):

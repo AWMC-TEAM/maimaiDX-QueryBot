@@ -6,7 +6,7 @@ from copy import deepcopy
 from typing import Tuple
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 from ..config import *
 from .image import image_to_base64, music_picture
@@ -459,6 +459,127 @@ class Guess:
         top_left_x = chosen_index % valid_regions.shape[1]
         return top_left_x, top_left_y
     
+    PIC_INTERFERENCE = [
+        ('hue', '色相'),
+        ('invert', '反转'),
+        ('blur', '模糊'),
+        ('desaturate', '低饱和'),
+        ('saturate', '高饱和'),
+        ('mirror', '镜像'),
+    ]
+
+    PIC_DIFFICULTY = {
+        1: {'initial': 0.12, 'max': 0.50, 'expansions': 3},
+        2: {'initial': 0.09, 'max': 0.42, 'expansions': 4},
+        3: {'initial': 0.07, 'max': 0.35, 'expansions': 4},
+    }
+
+    def _get_pic_crop_box(
+        self,
+        cx: int,
+        cy: int,
+        scale: float,
+        full_w: int,
+        full_h: int,
+    ) -> Tuple[int, int, int, int]:
+        w2, h2 = int(full_w * scale), int(full_h * scale)
+        x = max(0, min(cx - w2 // 2, full_w - w2))
+        y = max(0, min(cy - h2 // 2, full_h - h2))
+        return x, y, w2, h2
+
+    def _apply_pic_interference(self, im: Image.Image, kind: str) -> Image.Image:
+        im = im.convert('RGB')
+        if kind == 'hue':
+            hsv = im.convert('HSV')
+            h, s, v = hsv.split()
+            s = s.point(lambda x: int(x * 0.12))
+            h = h.point(lambda x: (x + 48) % 256)
+            return Image.merge('HSV', (h, s, v)).convert('RGB')
+        if kind == 'invert':
+            return ImageOps.invert(im)
+        if kind == 'blur':
+            return im.filter(ImageFilter.GaussianBlur(radius=4))
+        if kind == 'desaturate':
+            return ImageEnhance.Color(im).enhance(0.0)
+        if kind == 'saturate':
+            return ImageEnhance.Color(im).enhance(2.5)
+        if kind == 'mirror':
+            return ImageOps.mirror(im)
+        return im
+
+    def _load_pic_source(self, data: GuessPicData) -> Image.Image:
+        return Image.open(music_picture(data.music.id)).convert('RGB')
+
+    def render_pic_crop(self, data: GuessPicData, output_size: int = 400) -> str:
+        im = self._load_pic_source(data)
+        x, y, w, h = self._get_pic_crop_box(
+            data.crop_cx, data.crop_cy, data.current_scale, data.full_w, data.full_h
+        )
+        crop = im.crop((x, y, x + w, y + h))
+        crop = self._apply_pic_interference(crop, data.interference)
+        crop = crop.resize((output_size, output_size), Image.LANCZOS)
+        return image_to_base64(crop)
+
+    def render_pic_global(self, data: GuessPicData, max_width: int = 560) -> str:
+        im = self._load_pic_source(data)
+        scale = max_width / im.width
+        full_h = int(im.height * scale)
+        full = im.resize((max_width, full_h), Image.LANCZOS)
+
+        x, y, w, h = self._get_pic_crop_box(
+            data.crop_cx, data.crop_cy, data.current_scale, data.full_w, data.full_h
+        )
+        sx, sy = int(x * scale), int(y * scale)
+        sw, sh = int(w * scale), int(h * scale)
+
+        draw = ImageDraw.Draw(full)
+        draw.rectangle([sx, sy, sx + sw, sy + sh], outline=(255, 255, 255), width=3)
+
+        crop = im.crop((x, y, x + w, y + h))
+        crop = self._apply_pic_interference(crop, data.interference)
+        inset_size = min(100, max_width // 5)
+        inset = crop.resize((inset_size, inset_size), Image.LANCZOS)
+        border = 3
+        ix = max_width - inset_size - 12
+        iy = full_h - inset_size - 12
+        draw.rectangle(
+            [ix - border, iy - border, ix + inset_size + border, iy + inset_size + border],
+            fill=(30, 30, 30),
+            outline=(255, 255, 255),
+            width=2,
+        )
+        full.paste(inset, (ix, iy))
+        return image_to_base64(full)
+
+    def render_pic_reveal(self, data: GuessPicData, max_width: int = 600) -> str:
+        im = self._load_pic_source(data)
+        x, y, w, h = self._get_pic_crop_box(
+            data.crop_cx, data.crop_cy, data.initial_scale, data.full_w, data.full_h
+        )
+        region = im.crop((x, y, x + w, y + h))
+        bright = ImageEnhance.Brightness(region).enhance(1.35)
+        bright = ImageEnhance.Contrast(bright).enhance(1.15)
+        im.paste(bright, (x, y))
+
+        scale = max_width / im.width
+        full_h = int(im.height * scale)
+        result = im.resize((max_width, full_h), Image.LANCZOS)
+
+        sx, sy = int(x * scale), int(y * scale)
+        sw, sh = int(w * scale), int(h * scale)
+        draw = ImageDraw.Draw(result)
+        for offset in (0, 2):
+            draw.rectangle(
+                [sx - offset, sy - offset, sx + sw + offset, sy + sh + offset],
+                outline=(255, 220, 50) if offset == 0 else (255, 255, 255),
+                width=3,
+            )
+        return image_to_base64(result)
+
+    def expand_pic_crop(self, data: GuessPicData) -> None:
+        step = (data.max_scale - data.initial_scale) / data.expansion_count
+        data.current_scale = min(data.current_scale + step, data.max_scale)
+
     def pic(self, music: Music) -> Image.Image:
         """裁切曲绘"""
         im = Image.open(music_picture(music.id))
@@ -474,10 +595,41 @@ class Guess:
     def guesspicdata(self) -> GuessPicData:
         """猜曲绘数据"""
         music = random.choice(mai.guess_data)
-        pic = self.pic(music)
+        im = Image.open(music_picture(music.id))
+        w, h = im.size
+        weights = self.calculate_frequency_weights(im)
+
+        difficulty = random.randint(1, 3)
+        cfg = self.PIC_DIFFICULTY[difficulty]
+        initial_scale = cfg['initial']
+        max_scale = cfg['max']
+        expansion_count = cfg['expansions']
+
+        temp_w, temp_h = int(w * initial_scale), int(h * initial_scale)
+        top_p = min(1.3 - np.power(initial_scale, 0.4), 0.95) * 100
+        x, y = self.select_crop_region(weights, temp_w, temp_h, top_p)
+        cx, cy = x + temp_w // 2, y + temp_h // 2
+
+        interference, interference_label = random.choice(self.PIC_INTERFERENCE)
         answer = mai.total_alias_list.by_id(music.id)[0].Alias
         answer.append(music.id)
-        return GuessPicData(music=music, img=image_to_base64(pic), answer=answer, end=False)
+        return GuessPicData(
+            music=music,
+            img='',
+            answer=answer,
+            end=False,
+            crop_cx=cx,
+            crop_cy=cy,
+            current_scale=initial_scale,
+            initial_scale=initial_scale,
+            max_scale=max_scale,
+            full_w=w,
+            full_h=h,
+            interference=interference,
+            interference_label=interference_label,
+            difficulty=difficulty,
+            expansion_count=expansion_count,
+        )
 
     def guessData(self) -> GuessDefaultData:
         """猜歌数据"""
