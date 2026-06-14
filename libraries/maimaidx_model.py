@@ -139,6 +139,7 @@ class GuessPicData(GuessData):
     difficulty: int
     expansion_count: int
     global_shown: bool = False
+    interference_cleared: bool = False
 
 
 class Switch(BaseModel):

@@ -82,9 +82,9 @@ async def _(event: GroupMessageEvent):
     await guess_music_pic.send(MessageSegment.image(guess.render_pic_crop(data)))
 
     hint_interval = 10
-    timeout_after_global = 30
-    global_at = (data.expansion_count + 1) * hint_interval
-    total_duration = global_at + timeout_after_global
+    timeout_after_clear = 30
+    clear_at = (data.expansion_count + 2) * hint_interval
+    total_duration = clear_at + timeout_after_clear
 
     for elapsed in range(1, total_duration + 1):
         await asyncio.sleep(1)
@@ -109,6 +109,12 @@ async def _(event: GroupMessageEvent):
             await guess_music_pic.send(
                 MessageSegment.text('[全局视野!]\n') +
                 MessageSegment.image(guess.render_pic_global(data))
+            )
+        elif step == data.expansion_count + 2 and not data.interference_cleared:
+            data.interference_cleared = True
+            await guess_music_pic.send(
+                MessageSegment.text('[干扰消除!]\n') +
+                MessageSegment.image(guess.render_pic_clear(data))
             )
 
     data.end = True

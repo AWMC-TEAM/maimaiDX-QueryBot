@@ -556,46 +556,45 @@ class Guess:
     def _load_pic_source(self, data: GuessPicData) -> Image.Image:
         return Image.open(music_picture(data.music.id)).convert('RGB')
 
-    def render_pic_crop(self, data: GuessPicData, output_size: int = 400) -> str:
+    def _render_pic_masked_region(
+        self,
+        data: GuessPicData,
+        *,
+        apply_interference: bool,
+        output_size: int = 400,
+        draw_border: bool = False,
+    ) -> str:
         im = self._load_pic_source(data)
         x, y, w, h = self._get_pic_crop_box(
             data.crop_cx, data.crop_cy, data.current_scale, data.full_w, data.full_h
         )
         crop = im.crop((x, y, x + w, y + h))
-        crop = self._apply_pic_interference(crop, data.interferences)
+        if apply_interference:
+            crop = self._apply_pic_interference(crop, data.interferences)
         crop = crop.resize((output_size, output_size), Image.LANCZOS)
+        if draw_border:
+            draw = ImageDraw.Draw(crop)
+            draw.rectangle(
+                [1, 1, output_size - 2, output_size - 2],
+                outline=(255, 255, 255),
+                width=3,
+            )
         return image_to_base64(crop)
 
-    def render_pic_global(self, data: GuessPicData, max_width: int = 560) -> str:
-        im = self._load_pic_source(data)
-        scale = max_width / im.width
-        full_h = int(im.height * scale)
-        full = im.resize((max_width, full_h), Image.LANCZOS)
-
-        x, y, w, h = self._get_pic_crop_box(
-            data.crop_cx, data.crop_cy, data.current_scale, data.full_w, data.full_h
+    def render_pic_crop(self, data: GuessPicData, output_size: int = 400) -> str:
+        return self._render_pic_masked_region(
+            data, apply_interference=True, output_size=output_size
         )
-        sx, sy = int(x * scale), int(y * scale)
-        sw, sh = int(w * scale), int(h * scale)
 
-        draw = ImageDraw.Draw(full)
-        draw.rectangle([sx, sy, sx + sw, sy + sh], outline=(255, 255, 255), width=3)
-
-        crop = im.crop((x, y, x + w, y + h))
-        crop = self._apply_pic_interference(crop, data.interferences)
-        inset_size = min(100, max_width // 5)
-        inset = crop.resize((inset_size, inset_size), Image.LANCZOS)
-        border = 3
-        ix = max_width - inset_size - 12
-        iy = full_h - inset_size - 12
-        draw.rectangle(
-            [ix - border, iy - border, ix + inset_size + border, iy + inset_size + border],
-            fill=(30, 30, 30),
-            outline=(255, 255, 255),
-            width=2,
+    def render_pic_global(self, data: GuessPicData, output_size: int = 400) -> str:
+        return self._render_pic_masked_region(
+            data, apply_interference=True, output_size=output_size, draw_border=True
         )
-        full.paste(inset, (ix, iy))
-        return image_to_base64(full)
+
+    def render_pic_clear(self, data: GuessPicData, output_size: int = 400) -> str:
+        return self._render_pic_masked_region(
+            data, apply_interference=False, output_size=output_size, draw_border=True
+        )
 
     def render_pic_reveal(self, data: GuessPicData, max_width: int = 600) -> str:
         im = self._load_pic_source(data)
