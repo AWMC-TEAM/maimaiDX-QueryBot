@@ -586,15 +586,40 @@ class Guess:
             data, apply_interference=True, output_size=output_size
         )
 
-    def render_pic_global(self, data: GuessPicData, output_size: int = 400) -> str:
-        return self._render_pic_masked_region(
-            data, apply_interference=True, output_size=output_size, draw_border=True
+    def render_pic_global(self, data: GuessPicData, max_width: int = 560) -> str:
+        return self._render_pic_canvas_view(
+            data, apply_interference=True, max_width=max_width
         )
 
-    def render_pic_clear(self, data: GuessPicData, output_size: int = 400) -> str:
-        return self._render_pic_masked_region(
-            data, apply_interference=False, output_size=output_size, draw_border=True
+    def render_pic_clear(self, data: GuessPicData, max_width: int = 560) -> str:
+        return self._render_pic_canvas_view(
+            data, apply_interference=False, max_width=max_width
         )
+
+    def _render_pic_canvas_view(
+        self,
+        data: GuessPicData,
+        *,
+        apply_interference: bool,
+        max_width: int = 560,
+    ) -> str:
+        im = self._load_pic_source(data)
+        scale = max_width / im.width
+        canvas_h = int(im.height * scale)
+        canvas = Image.new('RGB', (max_width, canvas_h), (255, 255, 255))
+
+        x, y, w, h = self._get_pic_crop_box(
+            data.crop_cx, data.crop_cy, data.current_scale, data.full_w, data.full_h
+        )
+        region = im.crop((x, y, x + w, y + h))
+        if apply_interference:
+            region = self._apply_pic_interference(region, data.interferences)
+
+        sx, sy = int(x * scale), int(y * scale)
+        sw, sh = max(1, int(w * scale)), max(1, int(h * scale))
+        region = region.resize((sw, sh), Image.LANCZOS)
+        canvas.paste(region, (sx, sy))
+        return image_to_base64(canvas)
 
     def render_pic_reveal(self, data: GuessPicData, max_width: int = 600) -> str:
         im = self._load_pic_source(data)

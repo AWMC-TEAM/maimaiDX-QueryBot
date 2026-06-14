@@ -1,12 +1,16 @@
 import asyncio
+import json
 
-from nonebot import on_command, on_message
-from nonebot.adapters.onebot.v11 import GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent
+from loguru import logger as log
+from nonebot import get_bot, on_command, on_message
+from nonebot.adapters.onebot.v11 import Bot, GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent
 from nonebot.matcher import Matcher
 from nonebot.permission import SUPERUSER
 
+from ..libraries.maimaidx_group_rating import build_forward_node
+from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_music import guess
-from ..libraries.maimaidx_model import GuessPicData
+from ..libraries.maimaidx_model import GuessData, GuessPicData
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_update_plate import *
 
@@ -20,6 +24,55 @@ guess_music_solve   = on_message(rule=is_now_playing_guess_music)
 guess_music_reset   = on_command('重置猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
 guess_music_enable  = on_command('开启mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
 guess_music_disable = on_command('关闭mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
+guess_score_rank    = on_command('猜歌积分排行')
+
+
+def _sender_name(event: GroupMessageEvent) -> str:
+    return event.sender.card or event.sender.nickname or str(event.user_id)
+
+
+async def _award_guess_points(
+    event: GroupMessageEvent,
+    data: GuessData,
+) -> str:
+    if isinstance(data, GuessPicData):
+        points = guess_score.PIC_POINTS.get(data.difficulty, 1)
+    else:
+        points = guess_score.SONG_POINTS
+    added, total, rank = await guess_score.add_score(
+        event.group_id,
+        event.user_id,
+        _sender_name(event),
+        points,
+    )
+    return guess_score.format_settlement_line(added, total, rank)
+
+
+async def _send_guess_score_forward(
+    bot: Bot,
+    event: GroupMessageEvent,
+    title: str,
+    nodes: list,
+) -> None:
+    if not nodes:
+        await guess_score_rank.finish(title, reply_message=True)
+    nickname = str(getattr(bot, 'nickname', None) or 'Bot')
+    title_node = build_forward_node(str(event.self_id), nickname, title)
+    all_nodes = [title_node] + nodes
+    try:
+        messages = json.loads(json.dumps(all_nodes, ensure_ascii=False))
+        await bot.call_api(
+            'send_group_forward_msg',
+            group_id=event.group_id,
+            messages=messages,
+        )
+    except TypeError as e:
+        log.warning(f'[maimai] 猜歌积分排行 合并转发序列化失败: {e}')
+        await guess_score_rank.finish('合并转发序列化失败，请稍后再试。', reply_message=True)
+    except Exception as e:
+        log.warning(f'[maimai] 猜歌积分排行 合并转发发送失败: {type(e).__name__}: {e}')
+        await guess_score_rank.finish('合并转发发送失败，请稍后再试。', reply_message=True)
+    await guess_score_rank.finish(reply_message=True)
 
 
 @guess_music_start.handle()
@@ -137,9 +190,11 @@ async def _(event: GroupMessageEvent):
     ans = event.get_plaintext().strip()
     if ans.lower() in data.answer:
         data.end = True
+        settlement = await _award_guess_points(event, data)
         answer = (
             MessageSegment.text('猜对了，答案是：\n') +
-            await draw_music_info(data.music)
+            await draw_music_info(data.music) +
+            MessageSegment.text(f'\n{settlement}')
         )
         if isinstance(data, GuessPicData):
             answer += (
@@ -169,6 +224,21 @@ async def _(event: GroupMessageEvent):
     else:
         msg = '该群未处在猜歌状态'
     await guess_music_reset.finish(msg, reply_message=True)
+
+
+@guess_score_rank.handle()
+async def _(event: GroupMessageEvent):
+    if event.group_id not in guess.switch.enable:
+        await guess_score_rank.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
+    try:
+        bot = get_bot()
+    except Exception:
+        bot = get_bot(str(event.self_id))
+    title, nodes = guess_score.build_ranking_forward(
+        event.group_id,
+        int(event.self_id),
+    )
+    await _send_guess_score_forward(bot, event, title, nodes)
 
 
 @guess_music_enable.handle()
