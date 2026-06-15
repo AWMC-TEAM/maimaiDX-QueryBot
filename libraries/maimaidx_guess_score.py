@@ -121,6 +121,23 @@ class GuessScoreManager:
             return 0
         return min(streak - 1, self.STREAK_BONUS_MAX)
 
+    def apply_guess_multipliers(
+        self,
+        raw_base: int,
+        *,
+        first_stage: bool,
+        first_guess: bool,
+    ) -> Tuple[int, List[str]]:
+        multiplier = 1
+        tags: List[str] = []
+        if first_stage:
+            multiplier *= 2
+            tags.append('首阶段×2')
+        if first_guess:
+            multiplier *= 2
+            tags.append('首答×2')
+        return raw_base * multiplier, tags
+
     def _get_group(self, gid: int) -> GuessGroupScores:
         gk = self._gid_key(gid)
         if gk not in self.store.groups:
@@ -214,8 +231,14 @@ class GuessScoreManager:
         rank: int,
         weekly_total: int,
         weekly_rank: int,
+        multiplier_tags: Optional[List[str]] = None,
     ) -> str:
-        bonus_part = f'（含连击 +{bonus}）' if bonus > 0 else ''
+        detail_parts: List[str] = []
+        if multiplier_tags:
+            detail_parts.extend(multiplier_tags)
+        if bonus > 0:
+            detail_parts.append(f'含连击 +{bonus}')
+        bonus_part = f'（{"，".join(detail_parts)}）' if detail_parts else ''
         streak_part = f'\n{streak} 连击！' if streak >= 2 else ''
         return (
             f'本次 +{added} 分{bonus_part}，总分 {total} 分，群内排名第 {rank} 名'

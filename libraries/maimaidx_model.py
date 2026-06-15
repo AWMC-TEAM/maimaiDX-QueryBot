@@ -1,5 +1,5 @@
 from collections import namedtuple
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -118,6 +118,8 @@ class GuessData(BaseModel):
     img: str
     answer: List[str]
     end: bool = False
+    hint_step: int = 0
+    user_attempts: Dict[str, int] = Field(default_factory=dict)
 
 
 class GuessDefaultData(GuessData):

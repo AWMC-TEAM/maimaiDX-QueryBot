@@ -35,11 +35,19 @@ def _sender_name(event: GroupMessageEvent) -> str:
 async def _award_guess_points(
     event: GroupMessageEvent,
     data: GuessData,
+    *,
+    first_stage: bool,
+    first_guess: bool,
 ) -> str:
     if isinstance(data, GuessPicData):
-        base_points = guess_score.pic_points_for(data)
+        raw_base = guess_score.pic_points_for(data)
     else:
-        base_points = guess_score.SONG_POINTS
+        raw_base = guess_score.SONG_POINTS
+    base_points, multiplier_tags = guess_score.apply_guess_multipliers(
+        raw_base,
+        first_stage=first_stage,
+        first_guess=first_guess,
+    )
     (
         added, base, bonus, streak, total, rank, weekly_total, weekly_rank,
     ) = await guess_score.award_correct_guess(
@@ -49,7 +57,8 @@ async def _award_guess_points(
         base_points,
     )
     return guess_score.format_settlement_lines(
-        added, base, bonus, streak, total, rank, weekly_total, weekly_rank
+        added, base, bonus, streak, total, rank, weekly_total, weekly_rank,
+        multiplier_tags,
     )
 
 
@@ -102,6 +111,7 @@ async def _(event: GroupMessageEvent):
             break
         if cycle < 6:
             await guess_music_start.send(f'{cycle + 1}/7 这首歌{guess.Group[gid].options[cycle]}')
+            guess.Group[gid].hint_step = cycle + 1
             await asyncio.sleep(8)
         else:
             await guess_music_start.send(
@@ -109,6 +119,7 @@ async def _(event: GroupMessageEvent):
                 MessageSegment.image(guess.Group[gid].img) + 
                 MessageSegment.text('答案将在30秒后揭晓')
             )
+            guess.Group[gid].hint_step = 7
             for _ in range(30):
                 await asyncio.sleep(1)
                 if gid in guess.Group:
@@ -164,18 +175,21 @@ async def _(event: GroupMessageEvent):
                 MessageSegment.text('[区域扩增!]\n') +
                 MessageSegment.image(guess.render_pic_crop(data))
             )
+            data.hint_step += 1
         elif step == data.expansion_count + 1 and not data.global_shown:
             data.global_shown = True
             await guess_music_pic.send(
                 MessageSegment.text('[全局视野!]\n') +
                 MessageSegment.image(guess.render_pic_global(data))
             )
+            data.hint_step += 1
         elif step == data.expansion_count + 2 and not data.interference_cleared:
             data.interference_cleared = True
             await guess_music_pic.send(
                 MessageSegment.text('[干扰消除!]\n') +
                 MessageSegment.image(guess.render_pic_clear(data))
             )
+            data.hint_step += 1
 
     data.end = True
     await guess_score.reset_all_streaks(gid)
@@ -196,9 +210,19 @@ async def _(event: GroupMessageEvent):
         await guess_music_solve.finish()
     data = guess.Group[gid]
     ans = event.get_plaintext().strip()
+    if not ans:
+        await guess_music_solve.finish()
+    uid_key = str(event.user_id)
+    data.user_attempts[uid_key] = data.user_attempts.get(uid_key, 0) + 1
+    first_guess = data.user_attempts[uid_key] == 1
     if ans.lower() in data.answer:
         data.end = True
-        settlement = await _award_guess_points(event, data)
+        settlement = await _award_guess_points(
+            event,
+            data,
+            first_stage=data.hint_step == 0,
+            first_guess=first_guess,
+        )
         answer = (
             MessageSegment.text('猜对了，答案是：\n') +
             await draw_music_info(data.music) +
