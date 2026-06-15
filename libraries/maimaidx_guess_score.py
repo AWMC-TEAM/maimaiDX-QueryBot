@@ -14,6 +14,7 @@ class GuessMemberScore(BaseModel):
     name: str = ''
     weekly_score: int = 0
     weekly_week: str = ''
+    streak: int = 0
 
 
 class GuessGroupScores(BaseModel):
@@ -29,6 +30,7 @@ class GuessScoreManager:
     PIC_POINTS = {3: 3, 2: 2, 1: 1}
     PIC_CLEAR_POINTS = 1
     SONG_POINTS = 1
+    STREAK_BONUS_MAX = 3
 
     def pic_points_for(self, data) -> int:
         if data.interference_cleared:
@@ -114,6 +116,65 @@ class GuessScoreManager:
                 return index
         return len(self.get_weekly_ranking(gid)) + 1
 
+    def streak_bonus(self, streak: int) -> int:
+        if streak < 2:
+            return 0
+        return min(streak - 1, self.STREAK_BONUS_MAX)
+
+    def _get_group(self, gid: int) -> GuessGroupScores:
+        gk = self._gid_key(gid)
+        if gk not in self.store.groups:
+            self.store.groups[gk] = GuessGroupScores()
+        return self.store.groups[gk]
+
+    def _get_member(self, gid: int, uid: int) -> GuessMemberScore:
+        group = self._get_group(gid)
+        uk = self._uid_key(uid)
+        if uk not in group.members:
+            group.members[uk] = GuessMemberScore()
+        return group.members[uk]
+
+    async def reset_all_streaks(self, gid: int) -> None:
+        group = self.store.groups.get(self._gid_key(gid))
+        if not group:
+            return
+        for member in group.members.values():
+            member.streak = 0
+        await self._save()
+
+    async def award_correct_guess(
+        self,
+        gid: int,
+        uid: int,
+        name: str,
+        base_points: int,
+    ) -> Tuple[int, int, int, int, int, int, int, int]:
+        group = self._get_group(gid)
+        uk = self._uid_key(uid)
+        for member_uid, member in group.members.items():
+            if member_uid != uk:
+                member.streak = 0
+        winner = self._get_member(gid, uid)
+        self._ensure_weekly(winner)
+        winner.streak += 1
+        bonus = self.streak_bonus(winner.streak)
+        total_added = base_points + bonus
+        winner.score += total_added
+        winner.weekly_score += total_added
+        if name:
+            winner.name = name
+        await self._save()
+        return (
+            total_added,
+            base_points,
+            bonus,
+            winner.streak,
+            winner.score,
+            self.get_rank(gid, uid),
+            winner.weekly_score,
+            self.get_weekly_rank(gid, uid),
+        )
+
     async def add_score(
         self,
         gid: int,
@@ -146,13 +207,19 @@ class GuessScoreManager:
     @staticmethod
     def format_settlement_lines(
         added: int,
+        base: int,
+        bonus: int,
+        streak: int,
         total: int,
         rank: int,
         weekly_total: int,
         weekly_rank: int,
     ) -> str:
+        bonus_part = f'（含连击 +{bonus}）' if bonus > 0 else ''
+        streak_part = f'\n{streak} 连击！' if streak >= 2 else ''
         return (
-            f'本次 +{added} 分，总分 {total} 分，群内排名第 {rank} 名\n'
+            f'本次 +{added} 分{bonus_part}，总分 {total} 分，群内排名第 {rank} 名'
+            f'{streak_part}\n'
             f'本周 {weekly_total} 分，群内周排名第 {weekly_rank} 名'
         )
 

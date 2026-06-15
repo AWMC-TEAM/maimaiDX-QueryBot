@@ -37,17 +37,19 @@ async def _award_guess_points(
     data: GuessData,
 ) -> str:
     if isinstance(data, GuessPicData):
-        points = guess_score.pic_points_for(data)
+        base_points = guess_score.pic_points_for(data)
     else:
-        points = guess_score.SONG_POINTS
-    added, total, rank, weekly_total, weekly_rank = await guess_score.add_score(
+        base_points = guess_score.SONG_POINTS
+    (
+        added, base, bonus, streak, total, rank, weekly_total, weekly_rank,
+    ) = await guess_score.award_correct_guess(
         event.group_id,
         event.user_id,
         _sender_name(event),
-        points,
+        base_points,
     )
     return guess_score.format_settlement_lines(
-        added, total, rank, weekly_total, weekly_rank
+        added, base, bonus, streak, total, rank, weekly_total, weekly_rank
     )
 
 
@@ -115,6 +117,7 @@ async def _(event: GroupMessageEvent):
                 else:
                     await guess_music_start.finish()
             guess.Group[gid].end = True
+            await guess_score.reset_all_streaks(gid)
             answer = MessageSegment.text('答案是：\n') + await draw_music_info(guess.Group[gid].music)
             guess.end(gid)
             await guess_music_start.finish(answer)
@@ -175,6 +178,7 @@ async def _(event: GroupMessageEvent):
             )
 
     data.end = True
+    await guess_score.reset_all_streaks(gid)
     answer = (
         MessageSegment.text('答案是：\n') +
         await draw_music_info(data.music) +
@@ -224,6 +228,7 @@ async def _(event: GroupMessageEvent):
                 MessageSegment.text('\n') +
                 MessageSegment.image(guess.render_pic_reveal(data))
             )
+        await guess_score.reset_all_streaks(gid)
         guess.end(gid)
     else:
         msg = '该群未处在猜歌状态'
