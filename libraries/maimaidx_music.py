@@ -478,10 +478,7 @@ class Guess:
         ('posterize', '色阶'),
     ]
 
-    PIC_COLOR_INTERFERENCE = {
-        'hue', 'invert', 'desaturate', 'saturate', 'noise',
-        'low_contrast', 'overexpose', 'underexpose', 'solarize', 'posterize',
-    }
+    PIC_SOLO_INTERFERENCE = {'pixelate', 'emboss'}
 
     PIC_INTERFERENCE_COUNT = {
         1: (1, 2),
@@ -502,20 +499,10 @@ class Guess:
         keys = [key for key, _ in selected]
         label_map = dict(self.PIC_INTERFERENCE)
 
-        if 'pixelate' in keys:
-            keys = ['pixelate'] + [
-                key for key in keys
-                if key != 'pixelate' and key not in self.PIC_COLOR_INTERFERENCE
-            ]
-            non_color_pool = [
-                item for item in self.PIC_INTERFERENCE
-                if item[0] not in self.PIC_COLOR_INTERFERENCE and item[0] != 'pixelate'
-            ]
-            while len(keys) < pick_count:
-                candidates = [item for item in non_color_pool if item[0] not in keys]
-                if not candidates:
-                    break
-                keys.append(random.choice(candidates)[0])
+        solo_hits = [key for key in keys if key in self.PIC_SOLO_INTERFERENCE]
+        if solo_hits:
+            solo = random.choice(solo_hits) if len(solo_hits) > 1 else solo_hits[0]
+            return [solo], [label_map[solo]]
 
         return keys, [label_map[key] for key in keys]
 
