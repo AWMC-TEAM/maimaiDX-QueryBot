@@ -25,6 +25,7 @@ guess_music_reset   = on_command('重置猜歌', permission=SUPERUSER | GROUP_OW
 guess_music_enable  = on_command('开启mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
 guess_music_disable = on_command('关闭mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
 guess_score_rank    = on_command('猜歌积分排行')
+guess_score_weekly  = on_command('猜歌积分周榜')
 
 
 def _sender_name(event: GroupMessageEvent) -> str:
@@ -39,23 +40,26 @@ async def _award_guess_points(
         points = guess_score.pic_points_for(data)
     else:
         points = guess_score.SONG_POINTS
-    added, total, rank = await guess_score.add_score(
+    added, total, rank, weekly_total, weekly_rank = await guess_score.add_score(
         event.group_id,
         event.user_id,
         _sender_name(event),
         points,
     )
-    return guess_score.format_settlement_line(added, total, rank)
+    return guess_score.format_settlement_lines(
+        added, total, rank, weekly_total, weekly_rank
+    )
 
 
 async def _send_guess_score_forward(
+    matcher: Matcher,
     bot: Bot,
     event: GroupMessageEvent,
     title: str,
     nodes: list,
 ) -> None:
     if not nodes:
-        await guess_score_rank.finish(title, reply_message=True)
+        await matcher.finish(title, reply_message=True)
     nickname = str(getattr(bot, 'nickname', None) or 'Bot')
     title_node = build_forward_node(str(event.self_id), nickname, title)
     all_nodes = [title_node] + nodes
@@ -68,11 +72,11 @@ async def _send_guess_score_forward(
         )
     except TypeError as e:
         log.warning(f'[maimai] 猜歌积分排行 合并转发序列化失败: {e}')
-        await guess_score_rank.finish('合并转发序列化失败，请稍后再试。', reply_message=True)
+        await matcher.finish('合并转发序列化失败，请稍后再试。', reply_message=True)
     except Exception as e:
         log.warning(f'[maimai] 猜歌积分排行 合并转发发送失败: {type(e).__name__}: {e}')
-        await guess_score_rank.finish('合并转发发送失败，请稍后再试。', reply_message=True)
-    await guess_score_rank.finish(reply_message=True)
+        await matcher.finish('合并转发发送失败，请稍后再试。', reply_message=True)
+    await matcher.finish(reply_message=True)
 
 
 @guess_music_start.handle()
@@ -238,7 +242,23 @@ async def _(event: GroupMessageEvent):
         event.group_id,
         int(event.self_id),
     )
-    await _send_guess_score_forward(bot, event, title, nodes)
+    await _send_guess_score_forward(guess_score_rank, bot, event, title, nodes)
+
+
+@guess_score_weekly.handle()
+async def _(event: GroupMessageEvent):
+    if event.group_id not in guess.switch.enable:
+        await guess_score_weekly.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
+    try:
+        bot = get_bot()
+    except Exception:
+        bot = get_bot(str(event.self_id))
+    title, nodes = guess_score.build_ranking_forward(
+        event.group_id,
+        int(event.self_id),
+        weekly=True,
+    )
+    await _send_guess_score_forward(guess_score_weekly, bot, event, title, nodes)
 
 
 @guess_music_enable.handle()
