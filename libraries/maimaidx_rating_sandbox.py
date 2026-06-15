@@ -36,8 +36,20 @@ def _song_key(r) -> Tuple[int, int]:
     return int(r.song_id), int(r.level_index)
 
 
+def _best_per_song(records) -> list:
+    """每曲只保留 ra 最高的一条（与游戏 B50 规则一致）。"""
+    best: Dict[int, object] = {}
+    for r in records:
+        sid = int(r.song_id)
+        prev = best.get(sid)
+        if prev is None or int(r.ra) > int(prev.ra):
+            best[sid] = r
+    return list(best.values())
+
+
 def _build_b50(records) -> Tuple[list, list, Dict[Tuple[int, int], object]]:
-    sorted_records = sorted(records, key=lambda x: int(x.ra), reverse=True)
+    pool = _best_per_song(records)
+    sorted_records = sorted(pool, key=lambda x: int(x.ra), reverse=True)
     b15 = sorted([r for r in sorted_records if _is_latest_version(r)], key=lambda x: int(x.ra), reverse=True)[:15]
     b35 = sorted([r for r in sorted_records if not _is_latest_version(r)], key=lambda x: int(x.ra), reverse=True)[:35]
     b50_map = {_song_key(r): r for r in (b35 + b15)}
@@ -63,7 +75,7 @@ def _candidate_changes(records, b35, b15, b50_map) -> List[_Change]:
     picks: List[_Change] = []
     seen: set[Tuple[int, int, float]] = set()
 
-    for r in records:
+    for r in _best_per_song(records):
         key = _song_key(r)
         achv_now = float(r.achievements)
         if achv_now >= 100.5:
@@ -162,13 +174,16 @@ async def generate_rating_sandbox(
         return '没有成绩数据（需开发者 Token 获取全量成绩）。'
 
     b35, b15, b50_map = _build_b50(records)
-    current = int(sum(int(r.ra) for r in b35) + sum(int(r.ra) for r in b15))
+    b50_sum = int(sum(int(r.ra) for r in b35) + sum(int(r.ra) for r in b15))
+    current = int(userinfo.rating or 0) or b50_sum
     nickname = userinfo.nickname or userinfo.username or '未知'
 
     if target <= current:
+        extra = ''
+        if b50_sum and abs(b50_sum - current) > 3:
+            extra = f'\n（B50 重算合计 {b50_sum}，与查分器略有偏差）'
         return (
-            f'{nickname} 当前 B50 合计 {current}，已达成或超过目标 {target}。\n'
-            f'（查分器展示 Rating：{int(userinfo.rating or 0)}）\n\n{footer_generated()}'
+            f'{nickname} 当前 DX Rating {current}，已达成或超过目标 {target}。{extra}\n\n{footer_generated()}'
         )
 
     gap = target - current
@@ -179,7 +194,7 @@ async def generate_rating_sandbox(
     plan = _greedy_plan(changes, gap)
     if not plan:
         return (
-            f'当前 B50 合计 {current}，距离目标 {target} 还差 {gap}。\n'
+            f'当前 DX Rating {current}，距离目标 {target} 还差 {gap}。\n'
             '暂未找到单步可执行的改动方案，建议配合「今日吃分推荐」查看。'
             f'\n\n{footer_generated()}'
         )
@@ -187,7 +202,7 @@ async def generate_rating_sandbox(
     projected = current + sum(c.ra_gain for c in plan)
     lines = [
         f'目标 Rating 沙盘 · {nickname}',
-        f'当前 B50 合计：{current}  →  目标：{target}  （差 {gap}）',
+        f'当前 DX Rating：{current}  →  目标：{target}  （差 {gap}）',
         f'以下方案为贪心估算（每曲取一档提升，独立计算不进 B50 替换联动）：',
         '',
     ]

@@ -1,9 +1,11 @@
-"""弱项处方单：根据 B50 底力短板标签，推荐未 SSS+ 且标签匹配的练习曲目。"""
+"""弱项处方单：根据 B50 底力短板标签，推荐贴合当前水平的练习曲目。"""
 
 from __future__ import annotations
 
+import statistics
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 from nonebot.adapters.onebot.v11 import MessageSegment
 from PIL import Image, ImageDraw
@@ -26,6 +28,11 @@ TAG_STROKE = (230, 150, 60, 255)
 
 _SSS_THRESHOLD = 97.0
 _MAX_PICKS = 12
+# 推荐达成率区间：已会打、离 SSS 不远
+_ACHV_SWEET_MIN = 90.0
+_ACHV_SWEET_MAX = _SSS_THRESHOLD
+# 定数允许偏离 B50 中位的天花板
+_DS_BAND = 0.8
 
 
 @dataclass
@@ -39,6 +46,18 @@ class _Pick:
     score: float
 
 
+def _level_bucket(ds: float) -> str:
+    if ds < 12:
+        return '<12'
+    if ds < 13:
+        return '12.x'
+    if ds < 14:
+        return '13.x'
+    if ds < 14.7:
+        return '14.x'
+    return '14.7+'
+
+
 def _identify_weak_tags(stats: Dict[str, Dict[str, int]], top_n: int = 3) -> List[Tuple[str, int]]:
     counts = stats.get('配置') or {}
     ranked = sorted(
@@ -46,6 +65,61 @@ def _identify_weak_tags(stats: Dict[str, Dict[str, int]], top_n: int = 3) -> Lis
         key=lambda x: (x[1], CONFIG_TAGS_ORDER.index(x[0])),
     )
     return ranked[:top_n]
+
+
+def _b50_ds_ref(userinfo) -> Tuple[float, float, float]:
+    """B50 定数参考：中位、下限、上限。"""
+    ds_list: List[float] = []
+    for chart_list in (
+        getattr(userinfo.charts, 'sd', None) or [],
+        getattr(userinfo.charts, 'dx', None) or [],
+    ):
+        for c in chart_list:
+            ds_list.append(float(c.ds))
+    if not ds_list:
+        return 13.5, 12.5, 14.5
+    ds_list.sort()
+    mid = statistics.median(ds_list)
+    return float(mid), float(ds_list[0]), float(ds_list[-1])
+
+
+def _ability_profile(records) -> Dict[str, float]:
+    """各定数段已游玩谱面的中位达成率。"""
+    buckets: Dict[str, List[float]] = defaultdict(list)
+    for r in records:
+        buckets[_level_bucket(float(r.ds))].append(float(r.achievements))
+    return {b: float(statistics.median(v)) for b, v in buckets.items() if v}
+
+
+def _achv_floor_for(ds: float, ability: Dict[str, float]) -> float:
+    """该定数段内视为「会打」的最低达成率。"""
+    bucket_med = ability.get(_level_bucket(ds))
+    if bucket_med is None:
+        return 85.0
+    # 低于段位中位太多，多半是偶发低分，不作为练习推荐
+    return max(80.0, bucket_med - 10.0)
+
+
+def _score_pick(
+    *,
+    matched: List[str],
+    weak_count: int,
+    achv: float,
+    ds: float,
+    ref_ds: float,
+    in_b50: bool,
+) -> float:
+    tag_part = (len(matched) / max(weak_count, 1)) * 35.0
+    if achv >= _ACHV_SWEET_MIN:
+        proximity = min(1.0, (achv - _ACHV_SWEET_MIN) / (_ACHV_SWEET_MAX - _ACHV_SWEET_MIN))
+    else:
+        proximity = max(0.0, (achv - 80.0) / (_ACHV_SWEET_MIN - 80.0)) * 0.35
+    ds_gap = abs(ds - ref_ds)
+    ds_part = max(0.0, 1.0 - ds_gap / _DS_BAND) * 30.0
+    b50_part = 8.0 if in_b50 else 0.0
+    # 定数明显高于 B50 中心时额外惩罚
+    over_penalty = max(0.0, ds - ref_ds - _DS_BAND) * 25.0
+    return tag_part + proximity * 30.0 + ds_part + b50_part - over_penalty
 
 
 def _short_title(title: str, n: int = 20) -> str:
@@ -57,6 +131,7 @@ def _draw_prescription(
     nickname: str,
     weak_tags: List[Tuple[str, int]],
     picks: List[_Pick],
+    ref_ds: float,
 ) -> Image.Image:
     width = 920
     row_h = 34
@@ -72,7 +147,11 @@ def _draw_prescription(
     dr = ImageDraw.Draw(im)
     dt = DrawText(dr, SIYUAN)
     dt.draw(32, 28, 30, '弱项处方单', ACCENT, 'lt', 2, (255, 255, 255, 240))
-    dt.draw(32, 62, 18, f'{nickname}  ·  针对 B50 配置标签短板推荐练习曲目（未达 SSS）', SUBTEXT, 'lt', 1, (255, 255, 255, 220))
+    dt.draw(
+        32, 62, 18,
+        f'{nickname}  ·  已游玩且定数≈{ref_ds:.1f}、接近SSS的短板练习曲',
+        SUBTEXT, 'lt', 1, (255, 255, 255, 220),
+    )
 
     y = 92
     dt.draw(44, y, 22, '短板标签', ACCENT, 'lt', 2, (255, 255, 255, 230))
@@ -89,7 +168,11 @@ def _draw_prescription(
     dt.draw(44, y, 22, '推荐练习', ACCENT, 'lt', 2, (255, 255, 255, 230))
     y += 36
     if not picks:
-        dt.draw(48, y, 18, '暂无匹配曲目（可能标签库未配置或相关谱面已达 SSS）', MUTED, 'lt')
+        dt.draw(
+            48, y, 18,
+            '暂无贴合水平的匹配曲目（可提高相近定数成绩后再试）',
+            MUTED, 'lt',
+        )
     else:
         for i, p in enumerate(picks, 1):
             tag_txt = '、'.join(p.tags[:3])
@@ -126,6 +209,9 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
 
     weak_tags = _identify_weak_tags(stats)
     weak_set = {t for t, _ in weak_tags}
+    ref_ds, _, _ = _b50_ds_ref(userinfo)
+    ds_min = max(0.0, ref_ds - 1.2)
+    ds_max = ref_ds + _DS_BAND
 
     from .maimaidx_datasource import get_user_records
 
@@ -137,6 +223,8 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
     records = filter_utage_records(records or [])
     if not records:
         return '未读取到全量成绩，无法推荐练习曲目（需开发者 Token）。'
+
+    ability = _ability_profile(records)
 
     b50_keys = set()
     for chart_list in (
@@ -151,6 +239,12 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
         achv = float(r.achievements)
         if achv >= _SSS_THRESHOLD:
             continue
+        ds = float(r.ds)
+        if ds < ds_min or ds > ds_max:
+            continue
+        if achv < _achv_floor_for(ds, ability):
+            continue
+
         music = mai.total_list.by_id(str(r.song_id))
         title = (getattr(music, 'title', None) or getattr(r, 'title', '') or '').strip()
         if not title:
@@ -160,10 +254,18 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
         matched = [t for t in cfg_tags if t in weak_set]
         if not matched:
             continue
-        ds = float(r.ds)
+
         in_b50 = (int(r.song_id), int(r.level_index)) in b50_keys
-        bonus = 2.0 if in_b50 else 0.0
-        score = len(matched) * 10 + ds + bonus
+        score = _score_pick(
+            matched=matched,
+            weak_count=len(weak_set),
+            achv=achv,
+            ds=ds,
+            ref_ds=ref_ds,
+            in_b50=in_b50,
+        )
+        if score <= 0:
+            continue
         picks.append(
             _Pick(
                 title=title,
@@ -176,9 +278,9 @@ async def generate_weakness_prescription(qqid: int) -> Union[str, MessageSegment
             )
         )
 
-    picks.sort(key=lambda x: (-x.score, -x.ds))
+    picks.sort(key=lambda x: (-x.score, -x.achv, abs(x.ds - ref_ds)))
     picks = picks[:_MAX_PICKS]
 
     nickname = userinfo.nickname or userinfo.username or '未知'
-    im = _draw_prescription(nickname, weak_tags, picks)
+    im = _draw_prescription(nickname, weak_tags, picks, ref_ds)
     return MessageSegment.image(image_to_base64(im))
