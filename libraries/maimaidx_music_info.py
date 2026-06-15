@@ -191,6 +191,17 @@ def get_music_tags_by_difficulty(music_id: str) -> Dict[str, List[str]]:
     return out
 
 
+def get_chart_tags_by_group(title: str, level_index: int) -> Dict[str, List[str]]:
+    """按曲名与难度索引返回分组标签（配置/难度/评价）。"""
+    _load_tags_from_json()
+    index = _tags_by_difficulty_and_group
+    if not index or not title:
+        return {}
+    sheet = LEVEL_INDEX_TO_SHEET[min(max(0, level_index), 4)]
+    by_group = index.get((title.strip(), sheet))
+    return {gk: list(gv) for gk, gv in by_group.items()} if by_group else {}
+
+
 def get_b50_tag_stats(userinfo) -> Dict[str, Dict[str, int]]:
     """根据 B50 用户数据统计各分组标签出现次数，用于底力分析图。"""
     _load_tags_from_json()

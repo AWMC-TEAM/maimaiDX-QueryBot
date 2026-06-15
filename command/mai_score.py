@@ -71,6 +71,10 @@ from ..libraries.maimaidx_friend_battle_batch_draw import draw_friend_battle_bat
 from ..libraries.maimaidx_gold_water import generate_gold_content, generate_water_content
 from ..libraries.maimaidx_rating_compare import generate_how_weak
 from ..libraries.maimaidx_tag_analysis import draw_analysis, image_to_message_segment
+from ..libraries.maimaidx_weakness_prescription import generate_weakness_prescription
+from ..libraries.maimaidx_b50_risk import generate_b50_risk_warning
+from ..libraries.maimaidx_head_to_head import generate_head_to_head
+from ..libraries.maimaidx_rating_sandbox import generate_rating_sandbox
 from ..libraries.maimaidx_update_plate import *
 
 best50       = on_command('b50', aliases={'B50'})
@@ -122,6 +126,10 @@ floor_query = on_command('地板', aliases={'b50地板', 'rating地板'})
 plate_count_stats = on_command('牌子统计', aliases={'统计牌子'})
 compare_report = on_command('对比存档', aliases={'存档对比', '报告对比'})
 tag_analysis = on_command('底力分析', aliases={'底力分析'})
+weakness_prescription = on_command('弱项处方', aliases={'弱项处方单', '底力处方', '练习推荐'})
+b50_risk_warning = on_command('b50风险', aliases={'B50风险', 'b50风险预警', '风险预警'})
+head_to_head = on_command('对战战绩', aliases={'headtohead', 'h2h', '对决战绩'})
+rating_sandbox = on_command('目标rating', aliases={'rating沙盘', '目标分', '推分沙盘'})
 minfo   = on_command('minfo', aliases={'minfo', 'Minfo', 'MINFO', 'info', 'Info', 'INFO'})
 ginfo   = on_command('ginfo', aliases={'ginfo', 'Ginfo', 'GINFO'})
 score   = on_command('分数线')
@@ -1437,6 +1445,96 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
 
     from ..libraries.maimaidx_timing import finish_timed
     await finish_timed(tag_analysis, _gen())
+
+
+@weakness_prescription.handle()
+async def _weakness_prescription(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'tag_analysis'):
+        raise IgnoredException('功能已禁用')
+    qqid = user_id or event.user_id
+
+    async def _gen():
+        return await generate_weakness_prescription(qqid)
+
+    from ..libraries.maimaidx_timing import finish_timed
+    await finish_timed(weakness_prescription, _gen())
+
+
+@b50_risk_warning.handle()
+async def _b50_risk_warning(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
+        raise IgnoredException('功能已禁用')
+    qqid = user_id or event.user_id
+
+    async def _gen():
+        return await generate_b50_risk_warning(qqid)
+
+    from ..libraries.maimaidx_timing import finish_timed
+    await finish_timed(b50_risk_warning, _gen())
+
+
+@head_to_head.handle()
+async def _head_to_head(
+    event: MessageEvent,
+    message: Message = CommandArg(),
+    at_qq: Optional[int] = Depends(get_at_qq),
+):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
+        raise IgnoredException('功能已禁用')
+    if not at_qq:
+        await head_to_head.finish('请使用「对战战绩@某人」并 @ 一位群友。', reply_message=True)
+    if at_qq == event.user_id:
+        await head_to_head.finish('请 @ 除自己以外的另一位群友。', reply_message=True)
+
+    nick_a = _display_name_from_sender(event.sender) or str(event.user_id)
+    nick_b = str(at_qq)
+    if isinstance(event, GroupMessageEvent):
+        try:
+            try:
+                bot = get_bot()
+            except Exception:
+                bot = get_bot(str(event.self_id))
+            member = await bot.call_api('get_group_member_info', group_id=event.group_id, user_id=at_qq)
+            card = (member.get('card') or '').strip()
+            nick_b = card or (member.get('nickname') or str(at_qq)).strip() or '未知'
+        except Exception:
+            pass
+
+    async def _gen():
+        return await generate_head_to_head(event.user_id, at_qq, nick_a, nick_b)
+
+    from ..libraries.maimaidx_timing import finish_timed
+    await finish_timed(head_to_head, _gen())
+
+
+@rating_sandbox.handle()
+async def _rating_sandbox(
+    event: MessageEvent,
+    message: Message = CommandArg(),
+    user_id: Optional[int] = Depends(get_at_qq),
+):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
+        raise IgnoredException('功能已禁用')
+    qqid = user_id or event.user_id
+    arg = message.extract_plain_text().strip()
+    if not arg:
+        await rating_sandbox.finish('请指定目标 Rating，例如：目标rating 16000', reply_message=True)
+    try:
+        target = int(arg.split()[0])
+    except (ValueError, IndexError):
+        await rating_sandbox.finish('目标 Rating 格式不正确，例如：目标rating 16000', reply_message=True)
+
+    username = ''
+    parts = arg.split()
+    if len(parts) > 1:
+        username = ' '.join(parts[1:]).strip()
+
+    await _finish_score(
+        rating_sandbox,
+        generate_rating_sandbox(None if username else qqid, target, username or None),
+        None if username else qqid,
+        username=username or None,
+    )
 
 
 @minfo.handle()
