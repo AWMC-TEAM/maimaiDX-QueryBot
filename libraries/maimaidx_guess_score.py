@@ -1,10 +1,11 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
+from loguru import logger as log
 from pydantic import BaseModel, Field
 
-from ..config import guess_score_file
+from ..config import guess_score_file, guess_score_history_file
 from .maimaidx_group_rating import build_forward_node
 from .tool import writefile
 
@@ -35,17 +36,40 @@ class GuessMemberScore(BaseModel):
 
 class GuessGroupScores(BaseModel):
     members: Dict[str, GuessMemberScore] = Field(default_factory=dict)
+    archived_periods: Dict[str, str] = Field(default_factory=dict)
 
 
 class GuessScoreStore(BaseModel):
     groups: Dict[str, GuessGroupScores] = Field(default_factory=dict)
 
 
+class GuessHistoryEntry(BaseModel):
+    uid: str
+    name: str
+    score: int
+
+
+class GuessHistoryRecord(BaseModel):
+    period: str
+    period_key: str
+    archived_at: str
+    ranking: List[GuessHistoryEntry] = Field(default_factory=list)
+
+
+class GuessHistoryGroup(BaseModel):
+    records: List[GuessHistoryRecord] = Field(default_factory=list)
+
+
+class GuessScoreHistoryStore(BaseModel):
+    groups: Dict[str, GuessHistoryGroup] = Field(default_factory=dict)
+
+
 class GuessScoreManager:
 
     PIC_POINTS = {3: 3, 2: 2, 1: 1}
     PIC_CLEAR_POINTS = 1
-    SONG_POINTS = 1
+    SONG_MAX_POINTS = 7
+    MAX_HISTORY_PER_PERIOD = 30
 
     PERIODS: Dict[str, PeriodSpec] = {
         'daily': PeriodSpec('daily_score', 'daily_key', '今日', '日榜', '日榜'),
@@ -60,12 +84,21 @@ class GuessScoreManager:
             return self.PIC_CLEAR_POINTS
         return self.PIC_POINTS.get(data.difficulty, 1)
 
+    def song_points_for(self, hint_step: int) -> int:
+        # 开局与 1/7 提示均为最高分，随后每多一条提示减 1 分，封面 7/7 为 1 分
+        return max(1, self.SONG_MAX_POINTS + 1 - max(hint_step, 1))
+
     def __init__(self) -> None:
         if guess_score_file.exists():
             with open(guess_score_file, 'r', encoding='utf-8') as f:
                 self.store = GuessScoreStore.model_validate(json.load(f))
         else:
             self.store = GuessScoreStore()
+        if guess_score_history_file.exists():
+            with open(guess_score_history_file, 'r', encoding='utf-8') as f:
+                self.history_store = GuessScoreHistoryStore.model_validate(json.load(f))
+        else:
+            self.history_store = GuessScoreHistoryStore()
 
     @staticmethod
     def _gid_key(gid: int) -> str:
@@ -110,6 +143,204 @@ class GuessScoreManager:
 
     async def _save(self) -> None:
         await writefile(guess_score_file, self.store.model_dump())
+
+    async def _save_history(self) -> None:
+        await writefile(guess_score_history_file, self.history_store.model_dump())
+
+    @classmethod
+    def previous_period_key(cls, period: str) -> str:
+        now = datetime.now()
+        if period == 'daily':
+            return (now - timedelta(days=1)).strftime('%Y-%m-%d')
+        if period == 'weekly':
+            prev = now - timedelta(days=7)
+            year, week, _ = prev.isocalendar()
+            return f'{year}-W{week:02d}'
+        if period == 'monthly':
+            first = now.replace(day=1)
+            prev = first - timedelta(days=1)
+            return prev.strftime('%Y-%m')
+        if period == 'yearly':
+            return str(now.year - 1)
+        if period == 'season':
+            month = now.month
+            year = now.year
+            season = (month - 1) // 3 + 1
+            if season == 1:
+                return f'{year - 1}-S4'
+            return f'{year}-S{season - 1}'
+        raise ValueError(f'unknown period: {period}')
+
+    def periods_to_archive_today(self) -> List[Tuple[str, str]]:
+        now = datetime.now()
+        tomorrow = now + timedelta(days=1)
+        result: List[Tuple[str, str]] = [('daily', self.current_day_key())]
+        if tomorrow.isocalendar()[:2] != now.isocalendar()[:2]:
+            result.append(('weekly', self.current_week_key()))
+        if tomorrow.month != now.month:
+            result.append(('monthly', self.current_month_key()))
+            if now.month in (3, 6, 9, 12):
+                result.append(('season', self.current_season_key()))
+        if now.month == 12 and now.day == 31:
+            result.append(('yearly', self.current_year_key()))
+        return result
+
+    def _is_period_archived(self, gid: int, period: str, period_key: str) -> bool:
+        group = self.store.groups.get(self._gid_key(gid))
+        if not group:
+            return False
+        return group.archived_periods.get(period) == period_key
+
+    def _mark_period_archived(self, gid: int, period: str, period_key: str) -> None:
+        group = self._get_group(gid)
+        group.archived_periods[period] = period_key
+
+    def _append_history(
+        self,
+        gid: int,
+        period: str,
+        period_key: str,
+        ranking: List[Tuple[int, str, int]],
+    ) -> None:
+        gk = self._gid_key(gid)
+        if gk not in self.history_store.groups:
+            self.history_store.groups[gk] = GuessHistoryGroup()
+        record = GuessHistoryRecord(
+            period=period,
+            period_key=period_key,
+            archived_at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            ranking=[
+                GuessHistoryEntry(uid=str(uid), name=name, score=score)
+                for uid, name, score in ranking
+            ],
+        )
+        group_hist = self.history_store.groups[gk]
+        group_hist.records.append(record)
+        same_period = [r for r in group_hist.records if r.period == period]
+        if len(same_period) > self.MAX_HISTORY_PER_PERIOD:
+            drop_keys = {
+                r.period_key
+                for r in sorted(same_period, key=lambda item: item.archived_at)[:-self.MAX_HISTORY_PER_PERIOD]
+            }
+            group_hist.records = [
+                r for r in group_hist.records
+                if not (r.period == period and r.period_key in drop_keys)
+            ]
+
+    def get_history_ranking(
+        self,
+        gid: int,
+        period: str,
+        period_key: str,
+        top_n: Optional[int] = None,
+    ) -> List[Tuple[int, str, int]]:
+        group = self.history_store.groups.get(self._gid_key(gid))
+        if not group:
+            return []
+        for record in reversed(group.records):
+            if record.period == period and record.period_key == period_key:
+                items = [
+                    (int(entry.uid), entry.name or entry.uid, entry.score)
+                    for entry in record.ranking
+                    if entry.score > 0
+                ]
+                items.sort(key=lambda item: (-item[2], item[0]))
+                if top_n is not None:
+                    return items[:top_n]
+                return items
+        return []
+
+    def list_history_keys(self, gid: int, period: str, limit: int = 8) -> List[str]:
+        group = self.history_store.groups.get(self._gid_key(gid))
+        if not group:
+            return []
+        keys = sorted(
+            {record.period_key for record in group.records if record.period == period},
+            reverse=True,
+        )
+        return keys[:limit]
+
+    def _build_forward_from_ranking(
+        self,
+        ranking: List[Tuple[int, str, int]],
+        self_id: int,
+        title: str,
+        top_n: int = 20,
+    ) -> Tuple[str, List[dict]]:
+        if not ranking:
+            return title, []
+        shown = ranking[:top_n]
+        nodes = [
+            build_forward_node(
+                str(self_id),
+                name,
+                f'{index}. {name} — {score} 分',
+            )
+            for index, (_, name, score) in enumerate(shown, start=1)
+        ]
+        return title, nodes
+
+    async def archive_and_broadcast_period(
+        self,
+        bot,
+        group_ids: List[int],
+        period: str,
+        period_key: str,
+        top_n: int = 20,
+    ) -> None:
+        spec = self.PERIODS[period]
+        self_id = int(bot.self_id)
+        score_changed = False
+        history_changed = False
+        for gid in group_ids:
+            if self._is_period_archived(gid, period, period_key):
+                continue
+            ranking = self.get_period_ranking(gid, period)
+            self._append_history(gid, period, period_key, ranking)
+            history_changed = True
+            self._mark_period_archived(gid, period, period_key)
+            score_changed = True
+            if ranking:
+                title = (
+                    f'猜歌积分{spec.board_title}结算'
+                    f'（{period_key}，前 {min(top_n, len(ranking))} 名）'
+                )
+                _, nodes = self._build_forward_from_ranking(
+                    ranking, self_id, title, top_n=top_n,
+                )
+                try:
+                    title_node = build_forward_node(str(self_id), '猜歌榜结算', title)
+                    messages = json.loads(
+                        json.dumps([title_node] + nodes, ensure_ascii=False),
+                    )
+                    await bot.call_api(
+                        'send_group_forward_msg',
+                        group_id=gid,
+                        messages=messages,
+                    )
+                except Exception as e:
+                    log.warning(
+                        f'[maimai] 猜歌{spec.board_title}结算推送失败 '
+                        f'({gid}, {period_key}): {type(e).__name__}: {e}'
+                    )
+            else:
+                try:
+                    await bot.send_group_msg(
+                        group_id=gid,
+                        message=(
+                            f'猜歌积分{spec.board_title}结算（{period_key}）\n'
+                            f'本群该周期无人上榜。'
+                        ),
+                    )
+                except Exception as e:
+                    log.warning(
+                        f'[maimai] 猜歌{spec.board_title}空榜推送失败 '
+                        f'({gid}, {period_key}): {type(e).__name__}: {e}'
+                    )
+        if score_changed:
+            await self._save()
+        if history_changed:
+            await self._save_history()
 
     def _ensure_period(self, member: GuessMemberScore, period: str) -> None:
         spec = self.PERIODS[period]
@@ -306,6 +537,7 @@ class GuessScoreManager:
         self_id: int,
         *,
         period: str = 'total',
+        period_key: Optional[str] = None,
         top_n: int = 20,
     ) -> Tuple[str, List[dict]]:
         if period == 'total':
@@ -313,6 +545,17 @@ class GuessScoreManager:
             if not ranking:
                 return '本群暂无猜歌积分记录。', []
             title = f'猜歌积分总榜（前 {min(top_n, len(ranking))} 名）'
+        elif period_key is not None:
+            spec = self.PERIODS[period]
+            ranking = self.get_history_ranking(gid, period, period_key, top_n=top_n)
+            if not ranking:
+                keys = self.list_history_keys(gid, period)
+                hint = f'可查询：{", ".join(keys)}' if keys else '暂无历史记录'
+                return f'未找到 {period_key} 的猜歌积分{spec.board_title}。{hint}', []
+            title = (
+                f'猜歌积分历史{spec.board_title}'
+                f'（{period_key}，前 {min(top_n, len(ranking))} 名）'
+            )
         else:
             spec = self.PERIODS[period]
             ranking = self.get_period_ranking(gid, period, top_n=top_n)
@@ -320,14 +563,7 @@ class GuessScoreManager:
                 return f'本群当前{spec.board_title}暂无积分记录。', []
             key = self.period_key(period)
             title = f'猜歌积分{spec.board_title}（{key}，前 {min(top_n, len(ranking))} 名）'
-        nodes = [
-            build_forward_node(
-                str(self_id),
-                name,
-                f'{index}. {name} — {score} 分',
-            )
-            for index, (_, name, score) in enumerate(ranking, start=1)
-        ]
+        _, nodes = self._build_forward_from_ranking(ranking, self_id, title, top_n=top_n)
         return title, nodes
 
 

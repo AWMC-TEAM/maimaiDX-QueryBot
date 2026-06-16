@@ -1,17 +1,19 @@
 import asyncio
 import json
+from typing import Optional
 
 from loguru import logger as log
 from nonebot import get_bot, on_command, on_message
-from nonebot.adapters.onebot.v11 import Bot, GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent
+from nonebot.adapters.onebot.v11 import Bot, GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent, Message
 from nonebot.matcher import Matcher
+from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 
 from ..libraries.maimaidx_guess_match import match_guess_answer
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_music import guess
-from ..libraries.maimaidx_model import GuessData, GuessPicData
+from ..libraries.maimaidx_model import GuessData, GuessDefaultData, GuessPicData
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_update_plate import *
 
@@ -31,6 +33,11 @@ guess_score_weekly  = on_command('猜歌积分周榜')
 guess_score_monthly = on_command('猜歌积分月榜')
 guess_score_yearly  = on_command('猜歌积分年榜')
 guess_score_season  = on_command('猜歌积分赛季榜')
+guess_score_hist_daily   = on_command('猜歌历史日榜')
+guess_score_hist_weekly  = on_command('猜歌历史周榜')
+guess_score_hist_monthly = on_command('猜歌历史月榜')
+guess_score_hist_yearly  = on_command('猜歌历史年榜')
+guess_score_hist_season  = on_command('猜歌历史赛季榜')
 
 
 def _sender_name(event: GroupMessageEvent) -> str:
@@ -44,7 +51,12 @@ async def _award_guess_points(
     first_stage: bool,
     first_guess: bool,
 ) -> str:
-    raw_base = guess_score.pic_points_for(data) if isinstance(data, GuessPicData) else guess_score.SONG_POINTS
+    if isinstance(data, GuessPicData):
+        raw_base = guess_score.pic_points_for(data)
+    elif isinstance(data, GuessDefaultData):
+        raw_base = guess_score.song_points_for(data.hint_step)
+    else:
+        raw_base = 1
     multiplier, multiplier_tags = guess_score.get_score_multiplier(
         first_stage=first_stage,
         first_guess=first_guess,
@@ -340,6 +352,70 @@ async def _(event: GroupMessageEvent):
     await _handle_guess_score_board(event, guess_score_season, period='season')
 
 
+async def _handle_guess_history_board(
+    event: GroupMessageEvent,
+    matcher: Matcher,
+    *,
+    period: str,
+    period_key: Optional[str] = None,
+) -> None:
+    if event.group_id not in guess.switch.enable:
+        await matcher.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
+    if not period_key:
+        period_key = guess_score.previous_period_key(period)
+    try:
+        bot = get_bot()
+    except Exception:
+        bot = get_bot(str(event.self_id))
+    title, nodes = guess_score.build_ranking_forward(
+        event.group_id,
+        int(event.self_id),
+        period=period,
+        period_key=period_key,
+    )
+    await _send_guess_score_forward(matcher, bot, event, title, nodes)
+
+
+@guess_score_hist_daily.handle()
+async def _(event: GroupMessageEvent, args: Message = CommandArg()):
+    key = args.extract_plaintext().strip()
+    await _handle_guess_history_board(
+        event, guess_score_hist_daily, period='daily', period_key=key or None,
+    )
+
+
+@guess_score_hist_weekly.handle()
+async def _(event: GroupMessageEvent, args: Message = CommandArg()):
+    key = args.extract_plaintext().strip()
+    await _handle_guess_history_board(
+        event, guess_score_hist_weekly, period='weekly', period_key=key or None,
+    )
+
+
+@guess_score_hist_monthly.handle()
+async def _(event: GroupMessageEvent, args: Message = CommandArg()):
+    key = args.extract_plaintext().strip()
+    await _handle_guess_history_board(
+        event, guess_score_hist_monthly, period='monthly', period_key=key or None,
+    )
+
+
+@guess_score_hist_yearly.handle()
+async def _(event: GroupMessageEvent, args: Message = CommandArg()):
+    key = args.extract_plaintext().strip()
+    await _handle_guess_history_board(
+        event, guess_score_hist_yearly, period='yearly', period_key=key or None,
+    )
+
+
+@guess_score_hist_season.handle()
+async def _(event: GroupMessageEvent, args: Message = CommandArg()):
+    key = args.extract_plaintext().strip()
+    await _handle_guess_history_board(
+        event, guess_score_hist_season, period='season', period_key=key or None,
+    )
+
+
 @guess_music_enable.handle()
 @guess_music_disable.handle()
 async def _(matcher: Matcher, event: GroupMessageEvent):
@@ -351,3 +427,6 @@ async def _(matcher: Matcher, event: GroupMessageEvent):
     else:
         raise ValueError('matcher type error')
     await guess_music_enable.finish(msg, reply_message=True)
+
+
+from ..libraries import maimaidx_guess_scheduler  # noqa: F401
