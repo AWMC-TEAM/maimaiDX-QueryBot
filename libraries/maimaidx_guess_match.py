@@ -12,7 +12,7 @@ def normalize_guess_text(text: str, strictness: int = 1) -> str:
         text = text.strip(_TAIL_PUNCT)
     if strictness >= 2:
         text = re.sub(
-            r'[\s!！?？.。~～…·,，、:：;；-—\'"“”‘’「」【】()（）\[\]]+',
+            r'[\s!！?？.。~～…·,，、:：;；—\'"“”‘’「」【】()（）\[\]-]+',
             '',
             text,
         )
