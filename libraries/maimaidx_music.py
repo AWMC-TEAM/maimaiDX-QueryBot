@@ -688,9 +688,34 @@ class Guess:
         im = im.crop((x, y, x + w2, y + h2))
         return im
 
+    UTAGE_GENRES = {'宴会場', '宴会场'}
+
+    @staticmethod
+    def _is_utage_music(music: Music) -> bool:
+        try:
+            if int(music.id) >= 100000:
+                return True
+        except (TypeError, ValueError):
+            pass
+        return music.basic_info.genre in Guess.UTAGE_GENRES
+
+    def _guess_music_pool(self) -> List[Music]:
+        pool = [m for m in mai.guess_data if not self._is_utage_music(m)]
+        if pool:
+            return pool
+        log.warning('[Guess] 热门曲目过滤宴会场后为空，扩大至全库非宴会场曲目')
+        return [m for m in mai.total_list if not self._is_utage_music(m)]
+
+    def _pick_guess_music(self) -> Music:
+        pool = self._guess_music_pool()
+        if not pool:
+            log.error('[Guess] 无可用非宴会场曲目，回退随机热门曲')
+            return random.choice(mai.guess_data)
+        return random.choice(pool)
+
     def guesspicdata(self) -> GuessPicData:
         """猜曲绘数据"""
-        music = random.choice(mai.guess_data)
+        music = self._pick_guess_music()
         im = Image.open(music_picture(music.id))
         w, h = im.size
         weights = self.calculate_frequency_weights(im)
@@ -727,18 +752,9 @@ class Guess:
             expansion_count=expansion_count,
         )
 
-    GUESS_SONG_EXCLUDED_GENRES = {'宴会場', '宴会场'}
-
-    def _pick_guess_song_music(self) -> Music:
-        pool = [
-            m for m in mai.guess_data
-            if m.basic_info.genre not in self.GUESS_SONG_EXCLUDED_GENRES
-        ]
-        return random.choice(pool or mai.guess_data)
-
     def guessData(self) -> GuessDefaultData:
         """猜歌数据"""
-        music = self._pick_guess_song_music()
+        music = self._pick_guess_music()
         guess_options = random.sample([
             f'的 Expert 难度是 {music.level[2]}',
             f'的 Master 难度是 {music.level[3]}',

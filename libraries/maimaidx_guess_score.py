@@ -46,7 +46,6 @@ class GuessScoreManager:
     PIC_POINTS = {3: 3, 2: 2, 1: 1}
     PIC_CLEAR_POINTS = 1
     SONG_POINTS = 1
-    STREAK_BONUS_MAX = 3
 
     PERIODS: Dict[str, PeriodSpec] = {
         'daily': PeriodSpec('daily_score', 'daily_key', '今日', '日榜', '日榜'),
@@ -188,7 +187,7 @@ class GuessScoreManager:
     def streak_bonus(self, streak: int) -> int:
         if streak < 2:
             return 0
-        return min(streak - 1, self.STREAK_BONUS_MAX)
+        return streak - 1
 
     def get_score_multiplier(
         self,
@@ -278,11 +277,11 @@ class GuessScoreManager:
         if multiplier_tags:
             detail_parts.extend(multiplier_tags)
         if combo > 0:
-            detail_parts.append(f'连击 +{combo}')
+            detail_parts.append(f'连击 +{combo}（{streak} 连击）')
         if multiplier > 1:
             detail_parts.append(f'({raw_base}+{combo})×{multiplier}')
         bonus_part = f'（{"，".join(detail_parts)}）' if detail_parts else ''
-        streak_part = f'\n{streak} 连击！' if streak >= 2 else ''
+        streak_part = ''
 
         period_lines: List[str] = []
         for period in ('daily', 'weekly', 'monthly', 'season', 'yearly'):

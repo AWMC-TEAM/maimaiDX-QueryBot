@@ -64,6 +64,45 @@ async def _award_guess_points(
     )
 
 
+async def _safe_matcher_send(
+    matcher: Matcher,
+    event: GroupMessageEvent,
+    message,
+    *,
+    reply: bool = False,
+) -> None:
+    try:
+        await matcher.send(message, reply_message=reply)
+    except Exception as e:
+        log.warning(f'[maimai] 猜歌消息发送失败: {type(e).__name__}: {e}')
+        if reply:
+            await matcher.send(message, reply_message=False)
+
+
+async def _send_guess_answer_bundle(
+    matcher: Matcher,
+    event: GroupMessageEvent,
+    data: GuessData,
+    *,
+    header: str,
+    settlement: str = '',
+    reply: bool = False,
+) -> None:
+    lines = [line for line in (header, settlement) if line]
+    if lines:
+        await _safe_matcher_send(
+            matcher, event,
+            MessageSegment.text('\n'.join(lines)),
+            reply=reply,
+        )
+    await _safe_matcher_send(matcher, event, await draw_music_info(data.music))
+    if isinstance(data, GuessPicData):
+        await _safe_matcher_send(
+            matcher, event,
+            MessageSegment.image(guess.render_pic_reveal(data)),
+        )
+
+
 async def _send_guess_score_forward(
     matcher: Matcher,
     bot: Bot,
@@ -195,14 +234,11 @@ async def _(event: GroupMessageEvent):
 
     data.end = True
     await guess_score.reset_all_streaks(gid)
-    answer = (
-        MessageSegment.text('答案是：\n') +
-        await draw_music_info(data.music) +
-        MessageSegment.text('\n') +
-        MessageSegment.image(guess.render_pic_reveal(data))
-    )
     guess.end(gid)
-    await guess_music_pic.finish(answer)
+    await _send_guess_answer_bundle(
+        guess_music_pic, event, data, header='答案是：',
+    )
+    await guess_music_pic.finish()
 
 
 @guess_music_solve.handle()
@@ -226,18 +262,14 @@ async def _(event: GroupMessageEvent):
             first_stage=data.hint_step == 0,
             first_guess=first_guess,
         )
-        answer = (
-            MessageSegment.text('猜对了，答案是：\n') +
-            await draw_music_info(data.music) +
-            MessageSegment.text(f'\n{settlement}')
-        )
-        if isinstance(data, GuessPicData):
-            answer += (
-                MessageSegment.text('\n') +
-                MessageSegment.image(guess.render_pic_reveal(data))
-            )
         guess.end(gid)
-        await guess_music_solve.finish(answer, reply_message=True)
+        await _send_guess_answer_bundle(
+            guess_music_solve, event, data,
+            header='猜对了！',
+            settlement=settlement,
+            reply=True,
+        )
+        await guess_music_solve.finish()
 
 
 @guess_music_reset.handle()
@@ -246,20 +278,16 @@ async def _(event: GroupMessageEvent):
     if gid in guess.Group:
         data = guess.Group[gid]
         data.end = True
-        msg = (
-            MessageSegment.text('已重置该群猜歌，答案是：\n') +
-            await draw_music_info(data.music)
-        )
-        if isinstance(data, GuessPicData):
-            msg += (
-                MessageSegment.text('\n') +
-                MessageSegment.image(guess.render_pic_reveal(data))
-            )
         await guess_score.reset_all_streaks(gid)
         guess.end(gid)
+        await _send_guess_answer_bundle(
+            guess_music_reset, event, data,
+            header='已重置该群猜歌，答案是：',
+            reply=True,
+        )
+        await guess_music_reset.finish()
     else:
-        msg = '该群未处在猜歌状态'
-    await guess_music_reset.finish(msg, reply_message=True)
+        await guess_music_reset.finish('该群未处在猜歌状态', reply_message=True)
 
 
 async def _handle_guess_score_board(
