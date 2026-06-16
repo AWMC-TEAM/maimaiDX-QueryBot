@@ -7,6 +7,7 @@ from nonebot.adapters.onebot.v11 import Bot, GROUP_ADMIN, GROUP_OWNER, GroupMess
 from nonebot.matcher import Matcher
 from nonebot.permission import SUPERUSER
 
+from ..libraries.maimaidx_guess_match import match_guess_answer
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_music import guess
@@ -25,7 +26,11 @@ guess_music_reset   = on_command('重置猜歌', permission=SUPERUSER | GROUP_OW
 guess_music_enable  = on_command('开启mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
 guess_music_disable = on_command('关闭mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
 guess_score_rank    = on_command('猜歌积分排行')
+guess_score_daily   = on_command('猜歌积分日榜')
 guess_score_weekly  = on_command('猜歌积分周榜')
+guess_score_monthly = on_command('猜歌积分月榜')
+guess_score_yearly  = on_command('猜歌积分年榜')
+guess_score_season  = on_command('猜歌积分赛季榜')
 
 
 def _sender_name(event: GroupMessageEvent) -> str:
@@ -39,25 +44,22 @@ async def _award_guess_points(
     first_stage: bool,
     first_guess: bool,
 ) -> str:
-    if isinstance(data, GuessPicData):
-        raw_base = guess_score.pic_points_for(data)
-    else:
-        raw_base = guess_score.SONG_POINTS
-    base_points, multiplier_tags = guess_score.apply_guess_multipliers(
-        raw_base,
+    raw_base = guess_score.pic_points_for(data) if isinstance(data, GuessPicData) else guess_score.SONG_POINTS
+    multiplier, multiplier_tags = guess_score.get_score_multiplier(
         first_stage=first_stage,
         first_guess=first_guess,
     )
     (
-        added, base, bonus, streak, total, rank, weekly_total, weekly_rank,
+        added, raw_base, combo, streak, total, rank, period_snapshot,
     ) = await guess_score.award_correct_guess(
         event.group_id,
         event.user_id,
         _sender_name(event),
-        base_points,
+        raw_base,
+        multiplier,
     )
     return guess_score.format_settlement_lines(
-        added, base, bonus, streak, total, rank, weekly_total, weekly_rank,
+        added, raw_base, combo, multiplier, streak, total, rank, period_snapshot,
         multiplier_tags,
     )
 
@@ -215,7 +217,8 @@ async def _(event: GroupMessageEvent):
     uid_key = str(event.user_id)
     data.user_attempts[uid_key] = data.user_attempts.get(uid_key, 0) + 1
     first_guess = data.user_attempts[uid_key] == 1
-    if ans.lower() in data.answer:
+    pic_difficulty = data.difficulty if isinstance(data, GuessPicData) else None
+    if match_guess_answer(ans, data.answer, pic_difficulty=pic_difficulty):
         data.end = True
         settlement = await _award_guess_points(
             event,
@@ -259,10 +262,14 @@ async def _(event: GroupMessageEvent):
     await guess_music_reset.finish(msg, reply_message=True)
 
 
-@guess_score_rank.handle()
-async def _(event: GroupMessageEvent):
+async def _handle_guess_score_board(
+    event: GroupMessageEvent,
+    matcher: Matcher,
+    *,
+    period: str,
+) -> None:
     if event.group_id not in guess.switch.enable:
-        await guess_score_rank.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
+        await matcher.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
     try:
         bot = get_bot()
     except Exception:
@@ -270,24 +277,39 @@ async def _(event: GroupMessageEvent):
     title, nodes = guess_score.build_ranking_forward(
         event.group_id,
         int(event.self_id),
+        period=period,
     )
-    await _send_guess_score_forward(guess_score_rank, bot, event, title, nodes)
+    await _send_guess_score_forward(matcher, bot, event, title, nodes)
+
+
+@guess_score_rank.handle()
+async def _(event: GroupMessageEvent):
+    await _handle_guess_score_board(event, guess_score_rank, period='total')
+
+
+@guess_score_daily.handle()
+async def _(event: GroupMessageEvent):
+    await _handle_guess_score_board(event, guess_score_daily, period='daily')
 
 
 @guess_score_weekly.handle()
 async def _(event: GroupMessageEvent):
-    if event.group_id not in guess.switch.enable:
-        await guess_score_weekly.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    try:
-        bot = get_bot()
-    except Exception:
-        bot = get_bot(str(event.self_id))
-    title, nodes = guess_score.build_ranking_forward(
-        event.group_id,
-        int(event.self_id),
-        weekly=True,
-    )
-    await _send_guess_score_forward(guess_score_weekly, bot, event, title, nodes)
+    await _handle_guess_score_board(event, guess_score_weekly, period='weekly')
+
+
+@guess_score_monthly.handle()
+async def _(event: GroupMessageEvent):
+    await _handle_guess_score_board(event, guess_score_monthly, period='monthly')
+
+
+@guess_score_yearly.handle()
+async def _(event: GroupMessageEvent):
+    await _handle_guess_score_board(event, guess_score_yearly, period='yearly')
+
+
+@guess_score_season.handle()
+async def _(event: GroupMessageEvent):
+    await _handle_guess_score_board(event, guess_score_season, period='season')
 
 
 @guess_music_enable.handle()

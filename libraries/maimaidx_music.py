@@ -6,6 +6,7 @@ from copy import deepcopy
 from typing import Tuple
 
 import numpy as np
+from loguru import logger as log
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 from ..config import *
@@ -415,13 +416,22 @@ class Guess:
                 json.load(open(guess_file, 'r', encoding='utf-8'))
             )
 
+    def _log_guess_start(self, mode: str, gid: int) -> None:
+        data = self.Group[gid]
+        music = data.music
+        log.info(
+            f'[Guess] 开始{mode}！本次答案： {music.title} 。ID: {music.id} 。'
+        )
+
     def start(self, gid: int):
         """开始猜歌"""
         self.Group[gid] = self.guessData()
+        self._log_guess_start('猜歌', gid)
 
     def startpic(self, gid: int):
         """开始猜曲绘"""
         self.Group[gid] = self.guesspicdata()
+        self._log_guess_start('猜曲绘', gid)
         
     def calculate_frequency_weights(self, image: Image.Image) -> np.ndarray:
         """
@@ -717,9 +727,18 @@ class Guess:
             expansion_count=expansion_count,
         )
 
+    GUESS_SONG_EXCLUDED_GENRES = {'宴会場', '宴会场'}
+
+    def _pick_guess_song_music(self) -> Music:
+        pool = [
+            m for m in mai.guess_data
+            if m.basic_info.genre not in self.GUESS_SONG_EXCLUDED_GENRES
+        ]
+        return random.choice(pool or mai.guess_data)
+
     def guessData(self) -> GuessDefaultData:
         """猜歌数据"""
-        music = random.choice(mai.guess_data)
+        music = self._pick_guess_song_music()
         guess_options = random.sample([
             f'的 Expert 难度是 {music.level[2]}',
             f'的 Master 难度是 {music.level[3]}',
