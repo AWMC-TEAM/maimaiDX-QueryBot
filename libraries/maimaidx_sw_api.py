@@ -42,6 +42,19 @@ class SwApiClient:
         return body
 
     @staticmethod
+    def _parse_msg_payload(msg: Any) -> Any:
+        if isinstance(msg, dict):
+            return msg
+        if isinstance(msg, str):
+            if not msg:
+                return {}
+            try:
+                return json.loads(msg)
+            except json.JSONDecodeError:
+                return {"raw": msg}
+        return msg
+
+    @staticmethod
     def _parse_envelope(data: dict) -> Any:
         if "error" in data:
             raise SwApiError(str(data["error"]))
@@ -50,16 +63,9 @@ class SwApiClient:
         if code == -1:
             raise SwApiError(str(data.get("msg", "未知错误")))
 
-        if code == 1:
-            msg = data.get("msg", "")
-            if isinstance(msg, str):
-                if not msg:
-                    return {}
-                try:
-                    return json.loads(msg)
-                except json.JSONDecodeError:
-                    return {"raw": msg}
-            return msg
+        # user/music 等接口：成功时 code=0，msg 为 JSON 字符串
+        if code in (0, 1) and "msg" in data:
+            return SwApiClient._parse_msg_payload(data.get("msg"))
 
         if "userId" in data and "count" in data:
             return data
