@@ -61,9 +61,9 @@ async def handle_update_pc(bot: Bot, event: GroupMessageEvent):
             MessageSegment.reply(event.message_id)
             + MessageSegment.text(
                 '\nPC数功能未配置。\n'
-                '请在 .env 中配置：\n'
-                '  SDGBTECHAPI=http://...\n'
-                '  SDGBT_CLIENT_ID=A63E01E1459\n'
+                '请在 .env 中配置 sw-api：\n'
+                '  SDGBTECHAPI=http://127.0.0.1:5001\n'
+                '  SDGBT_CLIENT_ID=your_keychip\n'
                 '  SDGBT_REGION_ID=1\n'
                 '  SDGBT_PLACE_ID=1403\n'
                 '配置后重启 Bot 即可使用。'
@@ -106,7 +106,7 @@ async def receive_qrcode(bot: Bot, event: GroupMessageEvent):
 
 
 async def _handle_sdgb_update(bot: Bot, event: GroupMessageEvent, qqid: int, qrcode_data: str):
-    """通过 SDGBTECHAPI 更新 PC 数据"""
+    """通过 sw-api 更新 PC 数据"""
     try:
         success = await playcount_fetcher.login_by_sdgb(qrcode_data, qqid)
         if not success:
@@ -126,7 +126,7 @@ async def _handle_sdgb_update(bot: Bot, event: GroupMessageEvent, qqid: int, qrc
         log.error(f'[SDGBPC] 用户 {qqid} 拉取PC数据异常: {e}')
         await update_pc.finish(
             MessageSegment.reply(event.message_id)
-            + MessageSegment.text(f'数据拉取失败: {e}。请检查 SDGBTECHAPI 服务或稍后重试。')
+            + MessageSegment.text(f'数据拉取失败: {e}。请检查 sw-api 服务或稍后重试。')
         )
 
     total_plays = pc_db.get_user_total_plays(qqid)

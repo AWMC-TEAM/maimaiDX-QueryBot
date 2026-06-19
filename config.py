@@ -30,9 +30,9 @@ class Config(BaseModel):
     dxrating_tags_json_path: Optional[str] = None
     # 谱面印象 API（舞萌 DX 谱面印象），默认 http://103.45.162.66:37913
     pmyx_api_base_url: Optional[str] = "http://103.45.162.66:37913"
-    # SDGBT API 地址（SDGB 定数表），可通过环境变量 SDGBTECHAPI 设置
+    # sw-api 地址（PC 数 / 上传 / 倍率票），可通过环境变量 SDGBTECHAPI 设置
     sdgbtechapi: Optional[str] = None
-    # SDGBT 机台参数（用于 PC 数拉取），可通过环境变量 SDGBT_CLIENT_ID / SDGBT_REGION_ID / SDGBT_PLACE_ID 设置
+    # 机台 keychip（sw-api 必填），可通过环境变量 SDGBT_CLIENT_ID 设置
     sdgbt_client_id: Optional[str] = None
     sdgbt_region_id: int = 1
     sdgbt_place_id: int = 1403

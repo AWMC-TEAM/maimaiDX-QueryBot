@@ -2,11 +2,11 @@ import json
 import time
 from typing import List, Optional
 
-import httpx
 from loguru import logger as log
 
 from ..config import achievementList, maiconfig
 from .maimaidx_playcount_db import ArcadeCredential, PlayCountRecord, pc_db
+from .maimaidx_sw_api import SwApiError, sw_api
 
 _maimai_available = False
 try:
@@ -58,7 +58,7 @@ class PlayCountFetcher:
 
     @property
     def sdgb_available(self) -> bool:
-        return bool(maiconfig.sdgbtechapi) and bool(maiconfig.sdgbt_client_id)
+        return sw_api.available
 
     def _ensure_client(self):
         if not _maimai_available:
@@ -182,16 +182,16 @@ class PlayCountFetcher:
 
     async def login_by_sdgb(self, qrcode_data: str, qqid: int) -> bool:
         """
-        通过 SDGBTECHAPI 保存二维码凭据。
+        保存机台二维码凭据（供 sw-api 拉取成绩使用）。
 
         qrcode_data: 机台上的二维码数据
         qqid: 用户 QQ 号，用于关联本地数据库
         """
-        if not maiconfig.sdgbtechapi:
-            raise RuntimeError("SDGBTECHAPI 未配置")
+        if not sw_api.available:
+            raise RuntimeError("sw-api 未配置")
 
         if not qrcode_data.startswith("SGWCMAID"):
-            log.warning(f"[SDGBFetcher] 二维码数据不以 SGWCMAID 开头，仍尝试保存")
+            log.warning(f"[SwApi] 二维码数据不以 SGWCMAID 开头，仍尝试保存")
 
         cred = ArcadeCredential(
             qqid=qqid,
@@ -201,50 +201,29 @@ class PlayCountFetcher:
             expires_at=time.time() + 90 * 24 * 3600,
         )
         pc_db.save_credential(cred)
-        log.info(f"[SDGBFetcher] 用户 {qqid} 二维码凭据已保存")
+        log.info(f"[SwApi] 用户 {qqid} 二维码凭据已保存")
         return True
 
     async def fetch_via_sdgb(self, qqid: int) -> int:
         """
-        通过 SDGBTECHAPI 拉取全量 PC 数据并存储到本地数据库。
+        通过 sw-api 拉取全量 PC 数据并存储到本地数据库。
 
         返回: 拉取到的记录数
         """
-        if not maiconfig.sdgbtechapi:
-            raise RuntimeError("SDGBTECHAPI 未配置")
-        if not maiconfig.sdgbt_client_id:
-            raise RuntimeError("机台参数未配置：SDGBTECHAPI 需要 sdgbt_client_id（在 .env 中设置 SDGBT_CLIENT_ID）")
-
         cred = pc_db.get_credential(qqid)
         if cred is None:
             raise RuntimeError(f"用户 {qqid} 尚未登录，请先使用「更新pc数」命令")
 
         qr_text = cred.credential_data
 
-        base_url = maiconfig.sdgbtechapi.rstrip('/')
-        params = {
-            'client_id': maiconfig.sdgbt_client_id,
-            'region_id': maiconfig.sdgbt_region_id,
-            'place_id': maiconfig.sdgbt_place_id,
-            'qr_text': qr_text,
-        }
+        log.info(f"[SwApi] 用户 {qqid} 正在拉取全量成绩...")
+        try:
+            detail_list = await sw_api.get_user_music(qr_text)
+        except SwApiError as e:
+            raise RuntimeError(str(e)) from e
 
-        log.info(f"[SDGBFetcher] 用户 {qqid} 正在通过 SDGBTECHAPI 拉取全量成绩...")
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120)) as client:
-            res = await client.post(
-                f'{base_url}/api/private/get_all_music',
-                params=params,
-            )
-            if res.status_code != 200:
-                raise RuntimeError(f"SDGBTECHAPI 返回 HTTP {res.status_code}: {res.text[:200]}")
-            data = res.json()
-
-        if not data.get('Status'):
-            raise RuntimeError(f"SDGBTECHAPI 获取全量数据失败: {data.get('msg', '未知错误')}")
-
-        detail_list = data.get('userMusicDetailList', [])
         if not detail_list:
-            log.warning(f"[SDGBFetcher] 用户 {qqid} 没有成绩数据")
+            log.warning(f"[SwApi] 用户 {qqid} 没有成绩数据")
             return 0
 
         now = time.time()
@@ -292,7 +271,7 @@ class PlayCountFetcher:
             pc_db.save_play_count_records(qqid, records)
             self._fill_titles(qqid)
 
-        log.info(f"[SDGBFetcher] 用户 {qqid} 拉取完成，共 {len(records)} 条记录")
+        log.info(f"[SwApi] 用户 {qqid} 拉取完成，共 {len(records)} 条记录")
         return len(records)
 
     def _fill_titles(self, qqid: int):
@@ -312,7 +291,7 @@ class PlayCountFetcher:
             if updated:
                 pc_db.save_play_count_records(qqid, updated)
         except Exception as e:
-            log.warning(f"[SDGBFetcher] 曲目标题填充失败: {e}")
+            log.warning(f"[SwApi] 曲目标题填充失败: {e}")
 
 
 playcount_fetcher = PlayCountFetcher()

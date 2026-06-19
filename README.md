@@ -70,16 +70,16 @@ MAIMAIDXTOKEN=your_token_here
 MAIMAIDXTOKEN=token_a,token_b,token_c
 ```
 
-### SDGBTECHAPI（PC 数 / 上传 / 倍率票）
+### sw-api（PC 数 / 上传 / 倍率票）
 
 ```env
-SDGBTECHAPI=http://127.0.0.1:12346
-SDGBT_CLIENT_ID=your_client_id
+SDGBTECHAPI=http://127.0.0.1:5001
+SDGBT_CLIENT_ID=your_keychip
 SDGBT_REGION_ID=1
 SDGBT_PLACE_ID=1403
-SDGBT_REGION_NAME=北京
-SDGBT_PLACE_NAME=默认机台
 ```
+
+PC 数拉取接口：`POST /awmc/api/v1/user/music`（JSON body，含 `qrcode` + `keychip`）。
 
 ### 落雪查分器（可选）
 
@@ -238,7 +238,8 @@ nonebot_plugin_maimaidx/
 │   ├── maimaidx_api_data.py      # 查分器 API（含 token 池）
 │   ├── maimaidx_best_50.py       # b50 绘图
 │   ├── maimaidx_friend_battle.py # 友人对战
-│   ├── maimaidx_sdgb_prober.py   # SDGBTECHAPI 客户端
+│   ├── maimaidx_sw_api.py        # sw-api 客户端
+│   ├── maimaidx_sdgb_prober.py   # sw-api 上传/拿票封装
 │   └── ...
 ├── data/                 # 运行时数据（快照、段位 CP 等）
 └── config.py             # 配置定义
