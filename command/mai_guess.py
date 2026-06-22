@@ -17,6 +17,7 @@ from ..libraries.maimaidx_guess_audio import (
     STAGE_INTERVAL,
     STAGE_LABELS,
     build_hot_audio_cache,
+    get_audio_manifest_entry,
     request_hot_batch_cancel,
 )
 from ..libraries.maimaidx_music import guess
@@ -288,9 +289,10 @@ async def _(event: GroupMessageEvent):
 
     guess.startaudio(gid, data)
     stage_count = data.stage_count
+    audio_meta = get_audio_manifest_entry(data.music.id)
     log.info(
         f'[GuessAudio] 猜曲子开始 gid={gid} music_id={data.music.id} '
-        f'title={data.music.title} stages={stage_count}'
+        f'title={data.music.title} stages={stage_count} mode={audio_meta.get("mode", "?")}'
     )
     await guess_music_audio.send(
         dedent(f'''\

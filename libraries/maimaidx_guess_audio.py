@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 import subprocess
@@ -24,6 +25,13 @@ SEPARATION_CLIP_DURATION = STAGE_DURATION + 15
 # htdemucs 有效 segment 上限约 7.8s，CLI 只接受整数故用 7
 DEMUCS_SEGMENT = 7
 STAGE_LABELS = ('仅鼓点', '鼓点 + 贝斯', '加入伴奏', '完整混音')
+# demucs 四阶段分别混入的轨（第 4 阶段为全轨含人声，不再用原曲片段）
+DEMUCS_STAGE_STEMS: Tuple[Tuple[str, ...], ...] = (
+    ('drums',),
+    ('drums', 'bass'),
+    ('drums', 'bass', 'other'),
+    ('drums', 'bass', 'other', 'vocals'),
+)
 
 AUDIO_GUESS_DIR = _PKG_ROOT / 'data' / 'audio_guess'
 AUDIO_GUESS_CACHE_DIR = AUDIO_GUESS_DIR / 'cache'
@@ -210,6 +218,58 @@ def _pick_clip_offset(duration: float) -> float:
     return min(start, max(0.0, duration - STAGE_DURATION - 3))
 
 
+def get_audio_manifest_entry(music_id: str) -> dict:
+    return _load_manifest().get(str(music_id), {})
+
+
+def _file_digest(path: Path) -> str:
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def _verify_stage_audio(music_id: str) -> None:
+    paths = [_stage_path(music_id, i) for i in range(1, STAGE_COUNT + 1)]
+    digests = [_file_digest(p) for p in paths]
+    sizes = [p.stat().st_size for p in paths]
+    log.info(
+        f'[GuessAudio] 阶段校验 music_id={music_id} '
+        f'sizes={sizes} digests={[d[:8] for d in digests]}'
+    )
+    if digests[0] == digests[-1]:
+        raise RuntimeError('阶段 1 与阶段 4 音频相同，分轨无效')
+    if len(set(digests)) < 2:
+        raise RuntimeError('各阶段音频完全相同，分轨无效')
+
+
+def _export_stem_mix(
+    inputs: List[Path],
+    output: Path,
+    *,
+    duration: int = STAGE_DURATION,
+) -> None:
+    """将 demucs 分轨按阶段混音并裁切为固定时长。"""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    n = len(inputs)
+    chains = [
+        f'[{i}:a]atrim=start=0:end={duration},asetpts=PTS-STARTPTS[a{i}]'
+        for i in range(n)
+    ]
+    mix_inputs = ''.join(f'[a{i}]' for i in range(n))
+    filt = (
+        ';'.join(chains)
+        + f';{mix_inputs}amix=inputs={n}:duration=longest:dropout_transition=0[out]'
+    )
+    cmd = ['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error']
+    for p in inputs:
+        cmd += ['-i', str(p)]
+    cmd += [
+        '-filter_complex', filt,
+        '-map', '[out]',
+        '-ac', '2', '-ar', '44100', '-b:a', '128k',
+        str(output),
+    ]
+    _run(cmd)
+
+
 def _export_clip(
     inputs: List[Path],
     output: Path,
@@ -218,6 +278,17 @@ def _export_clip(
     filters: Optional[str] = None,
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
+    if len(inputs) == 1 and filters:
+        _run([
+            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+            '-ss', f'{offset:.3f}', '-t', str(STAGE_DURATION),
+            '-i', str(inputs[0]),
+            '-filter_complex', filters,
+            '-map', '[out]',
+            '-ac', '2', '-ar', '44100', '-b:a', '128k',
+            str(output),
+        ])
+        return
     if len(inputs) == 1 and not filters:
         _run([
             'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
@@ -357,20 +428,12 @@ def _build_stages_demucs(source: Path, music_id: str, offset: float) -> None:
     clip = work_dir / 'separation_clip.wav'
     _extract_separation_clip(source, clip, offset)
     stems = _separate_demucs(clip, work_dir)
-    # 片段已对齐副歌，stage 从 0 秒起裁 30s
-    stage_offset = 0.0
-    _export_clip([stems['drums']], _stage_path(music_id, 1), offset=stage_offset)
-    _export_clip(
-        [stems['drums'], stems['bass']],
-        _stage_path(music_id, 2),
-        offset=stage_offset,
-    )
-    _export_clip(
-        [stems['drums'], stems['bass'], stems['other']],
-        _stage_path(music_id, 3),
-        offset=stage_offset,
-    )
-    _export_clip([clip], _stage_path(music_id, 4), offset=stage_offset)
+    for stage_idx, names in enumerate(DEMUCS_STAGE_STEMS, 1):
+        _export_stem_mix(
+            [stems[name] for name in names],
+            _stage_path(music_id, stage_idx),
+        )
+    _verify_stage_audio(music_id)
     shutil.rmtree(work_dir, ignore_errors=True)
     log.info(
         f'[GuessAudio] demucs 分轨流程完成 music_id={music_id} '
@@ -386,8 +449,8 @@ def _build_stages_ffmpeg(source: Path, music_id: str, offset: float) -> None:
     _export_clip(
         [source], s1, offset=offset,
         filters=(
-            f'[0:a]highpass=f=180,lowpass=f=3500,'
-            f'volume=2.0,alimiter=limit=0.95[out]'
+            '[0:a]highpass=f=250,lowpass=f=2200,'
+            'volume=2.5,alimiter=limit=0.95[out]'
         ),
     )
     s2 = _stage_path(music_id, 2)
@@ -409,6 +472,7 @@ def _build_stages_ffmpeg(source: Path, music_id: str, offset: float) -> None:
         ),
     )
     _export_clip([source], _stage_path(music_id, 4), offset=offset)
+    _verify_stage_audio(music_id)
     log.info(
         f'[GuessAudio] ffmpeg 近似分轨完成 music_id={music_id} '
         f'elapsed={time.perf_counter() - t0:.1f}s'
