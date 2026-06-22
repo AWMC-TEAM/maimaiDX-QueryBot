@@ -273,7 +273,26 @@ def _download_source_sync(music_id: str, dest: Path) -> str:
 
 
 def _demucs_available() -> bool:
-    return shutil.which('demucs') is not None
+    if not shutil.which('demucs'):
+        return False
+    try:
+        import lameenc  # noqa: F401
+    except ImportError:
+        log.warning('[GuessAudio] demucs 已安装但缺少 lameenc，无法输出 mp3 分轨')
+        return False
+    return True
+
+
+def _demucs_stem_paths(base: Path) -> Dict[str, Path]:
+    """demucs 使用 --mp3 输出，避免 torchaudio 保存 wav 依赖 torchcodec。"""
+    stems: Dict[str, Path] = {}
+    for name in ('drums', 'bass', 'other', 'vocals'):
+        for ext in ('.mp3', '.wav'):
+            path = base / f'{name}{ext}'
+            if path.is_file():
+                stems[name] = path
+                break
+    return stems
 
 
 def _extract_separation_clip(source: Path, clip: Path, offset: float) -> None:
@@ -305,7 +324,7 @@ def _separate_demucs(clip: Path, work_dir: Path) -> Dict[str, Path]:
     device = _demucs_device()
     log.info(
         f'[GuessAudio] demucs 开始 model=htdemucs device={device} '
-        f'segment={DEMUCS_SEGMENT} input={clip.name}'
+        f'segment={DEMUCS_SEGMENT} output=mp3 input={clip.name}'
     )
     t0 = time.perf_counter()
     cmd = [
@@ -313,18 +332,14 @@ def _separate_demucs(clip: Path, work_dir: Path) -> Dict[str, Path]:
         '-n', 'htdemucs',
         '-d', device,
         '--segment', str(DEMUCS_SEGMENT),
+        '--mp3',
         '-o', str(work_dir),
         str(clip),
     ]
     _run(cmd, timeout=900)
     base = work_dir / 'htdemucs' / clip.stem
-    stems = {
-        'drums': base / 'drums.wav',
-        'bass': base / 'bass.wav',
-        'other': base / 'other.wav',
-        'vocals': base / 'vocals.wav',
-    }
-    missing = [k for k, p in stems.items() if not p.is_file()]
+    stems = _demucs_stem_paths(base)
+    missing = [k for k in ('drums', 'bass', 'other', 'vocals') if k not in stems]
     if missing:
         raise RuntimeError(f'Demucs 分轨不完整: {missing} (目录 {base})')
     elapsed = time.perf_counter() - t0
@@ -445,6 +460,12 @@ def build_audio_cache_sync(
                 _build_stages_demucs(source, mid, offset)
                 mode = 'demucs'
             except Exception as demucs_err:
+                err_text = str(demucs_err)
+                if 'torchcodec' in err_text.lower():
+                    log.warning(
+                        '[GuessAudio] demucs 保存分轨需要 torchcodec 或 lameenc；'
+                        '请 pip install lameenc 后重试，当前将回退 ffmpeg'
+                    )
                 log.warning(
                     f'[GuessAudio] demucs 分轨失败 music_id={mid}，回退 ffmpeg: {demucs_err}'
                 )
