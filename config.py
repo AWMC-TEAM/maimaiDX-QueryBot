@@ -291,8 +291,36 @@ def expand_version_aliases(versions: List[str]) -> List[str]:
 
 
 def get_b15_version_names() -> List[str]:
-    """B15 区曲目版本名（含水鱼长名与 dxdata 短名）。"""
-    return expand_version_aliases(get_latest_plate_versions())
+    """配置中的最新 B15 版本名（不检查曲库是否已收录）。"""
+    return get_b15_version_names_at_generation(0)
+
+
+def get_b15_version_names_at_generation(generation: int = 0) -> List[str]:
+    """按世代取 B15 版本名；0=最新一代，1=上一代…"""
+    values = list(plate_to_dx_version.values())
+    idx = len(values) - 2 - generation * 2
+    if idx < 0:
+        idx = 0
+    return expand_version_aliases(values[idx:idx + 2])
+
+
+def get_b35_version_names_for_generation(generation: int = 0) -> List[str]:
+    """与 B15 同世代对应的 B35 版本名（排除当前 B15 两代）。"""
+    values = list(plate_to_dx_version.values())
+    cutoff = len(values) - 2 - generation * 2
+    if cutoff < 0:
+        cutoff = 0
+    return values[:cutoff]
+
+
+def resolve_b15_generation(library_versions: set[str]) -> int:
+    """曲库中实际存在的 B15 世代；若无匹配则回退到 0（配置最新代）。"""
+    values = list(plate_to_dx_version.values())
+    max_gen = max((len(values) - 2) // 2, 0)
+    for gen in range(max_gen + 1):
+        if library_versions.intersection(get_b15_version_names_at_generation(gen)):
+            return gen
+    return 0
 version_map = {
     '真': ([plate_to_dx_version['真'], plate_to_dx_version['初']], '真'),
     '超': ([plate_to_sd_version['超']], '超'),

@@ -502,7 +502,14 @@ def get_rise_score_list(
         ss_ds = round((ra + int(score)) / 20.8, 1)
     sssp_ds = round(ra / 22.4, 1)
     ds = (round(sssp_ds + 0.1, 1), round(ss_ds + 0.1, 1))
-    version = get_b15_version_names() if chart_type == 'DX' else list(plate_to_dx_version.values())[:-2]
+    lib_versions = {
+        m.basic_info.version for m in mai.total_list if m.basic_info.version
+    }
+    b15_gen = resolve_b15_generation(lib_versions)
+    if chart_type == 'DX':
+        version = get_b15_version_names_at_generation(b15_gen)
+    else:
+        version = get_b35_version_names_for_generation(b15_gen)
     musiclist = mai.total_list.filter(level=level, ds=ds, version=version)
     for _m in musiclist:
         if (song_id := int(_m.id)) in ignore:

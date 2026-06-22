@@ -896,12 +896,29 @@ def _yueji_b50_records(records: List[PlayInfoDev], threshold: float) -> List[Pla
     return [r for r in records if r.achievements < threshold]
 
 
+_cached_b15_versions: Optional[set[str]] = None
+
+
+def _get_b15_version_set() -> set[str]:
+    """曲库中实际生效的 B15 版本名（CiRCLE 未收录时回退镜彩代）。"""
+    global _cached_b15_versions
+    if _cached_b15_versions is None:
+        lib = {
+            m.basic_info.version
+            for m in mai.total_list
+            if getattr(m, 'basic_info', None) and m.basic_info.version
+        }
+        gen = resolve_b15_generation(lib)
+        _cached_b15_versions = set(get_b15_version_names_at_generation(gen))
+    return _cached_b15_versions
+
+
 def _is_latest_version(r: PlayInfoDev) -> bool:
     """
     成绩所属曲目是否为 config 中的最新版本（用于常规 b50 归入 B15 区）；否则归入 B35 区。
     与谱面类型 SD/DX 无关；查分器 B15=dx、B35=sd。
     """
-    latest_versions = set(get_b15_version_names())
+    latest_versions = _get_b15_version_set()
     try:
         music = mai.total_list.by_id(str(r.song_id))
         if music and getattr(music, 'basic_info', None):
