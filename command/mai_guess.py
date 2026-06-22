@@ -271,8 +271,10 @@ async def _(event: GroupMessageEvent):
         await guess_music_audio.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     await guess_music_audio.send('正在准备猜曲音频，请稍候…')
+    log.info(f'[GuessAudio] 猜曲子开局 gid={gid}')
     data = await guess.prepare_audio_round()
     if data is None:
+        log.warning(f'[GuessAudio] 猜曲子无可用音频 gid={gid}')
         await guess_music_audio.finish(
             '暂无可用猜曲音频（CDN 无资源或分轨失败）。'
             '管理员可运行 scripts/build_guess_audio_cache.py 预烘焙，或安装 demucs 后重试。',
@@ -281,6 +283,10 @@ async def _(event: GroupMessageEvent):
 
     guess.startaudio(gid, data)
     stage_count = data.stage_count
+    log.info(
+        f'[GuessAudio] 猜曲子开始 gid={gid} music_id={data.music.id} '
+        f'title={data.music.title} stages={stage_count}'
+    )
     await guess_music_audio.send(
         dedent(f'''\
             猜曲子开始！共 {stage_count} 个阶段，每段约 30 秒，
@@ -333,10 +339,12 @@ async def _(event: GroupMessageEvent):
 
 @update_guess_audio.handle()
 async def _(event: PrivateMessageEvent):
+    log.info(f'[GuessAudio] 收到「更新猜曲音频」qq={event.user_id}')
     await update_guess_audio.send(
         '开始烘焙猜曲音频（热门池），耗时取决于曲目数量与是否安装 demucs，请稍候…'
     )
     report = await asyncio.to_thread(build_hot_audio_cache_sync)
+    log.info(f'[GuessAudio] 「更新猜曲音频」完成 qq={event.user_id}')
     await update_guess_audio.finish(report)
 
 
