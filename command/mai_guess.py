@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Optional
 
 from loguru import logger as log
-from nonebot import get_bot, on_command, on_fullmatch, on_message
+from nonebot import get_bot, on_command, on_message, on_regex
 from nonebot.adapters.onebot.v11 import Bot, GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent, Message, MessageSegment, PrivateMessageEvent
 from nonebot.matcher import Matcher
-from nonebot.params import CommandArg
+from nonebot.params import CommandArg, RegexMatched
 from nonebot.permission import SUPERUSER
 
 from ..libraries.maimaidx_guess_match import match_guess_answer
@@ -26,7 +26,7 @@ def is_now_playing_guess_music(event: GroupMessageEvent) -> bool:
 guess_music_start   = on_command('猜歌')
 guess_music_pic     = on_command('猜曲绘')
 guess_music_audio   = on_command('猜曲子')
-update_guess_audio  = on_fullmatch('更新猜曲音频', permission=SUPERUSER)
+update_guess_audio  = on_regex(r'^更新猜曲音频(?:\s+(-full))?\s*$', permission=SUPERUSER)
 guess_music_solve   = on_message(rule=is_now_playing_guess_music)
 guess_music_reset   = on_command('重置猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
 guess_music_enable  = on_command('开启mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
@@ -338,13 +338,15 @@ async def _(event: GroupMessageEvent):
 
 
 @update_guess_audio.handle()
-async def _(event: PrivateMessageEvent):
-    log.info(f'[GuessAudio] 收到「更新猜曲音频」qq={event.user_id}')
+async def _(event: PrivateMessageEvent, match=RegexMatched()):
+    force = match.group(1) is not None
+    log.info(f'[GuessAudio] 收到「更新猜曲音频」qq={event.user_id} force={force}')
+    hint = '强制重建' if force else '增量烘焙'
     await update_guess_audio.send(
-        '开始烘焙猜曲音频（热门池），耗时取决于曲目数量与是否安装 demucs，请稍候…'
+        f'开始{hint}猜曲音频（热门池），耗时取决于曲目数量与是否安装 demucs，请稍候…'
     )
-    report = await asyncio.to_thread(build_hot_audio_cache_sync)
-    log.info(f'[GuessAudio] 「更新猜曲音频」完成 qq={event.user_id}')
+    report = await asyncio.to_thread(build_hot_audio_cache_sync, force=force)
+    log.info(f'[GuessAudio] 「更新猜曲音频」完成 qq={event.user_id} force={force}')
     await update_guess_audio.finish(report)
 
 

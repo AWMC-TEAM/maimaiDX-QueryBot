@@ -20,6 +20,8 @@ STAGE_DURATION = 30
 STAGE_INTERVAL = 30
 # 分轨前先从原曲裁一段，降低 CPU/内存压力（整首 demucs 易 OOM）
 SEPARATION_CLIP_DURATION = STAGE_DURATION + 15
+# htdemucs 训练 segment 上限 7.8s，不可超过
+DEMUCS_SEGMENT = 7.8
 STAGE_LABELS = ('仅鼓点', '鼓点 + 贝斯', '加入伴奏', '完整混音')
 
 AUDIO_GUESS_DIR = _PKG_ROOT / 'data' / 'audio_guess'
@@ -241,14 +243,14 @@ def _separate_demucs(clip: Path, work_dir: Path) -> Dict[str, Path]:
     device = _demucs_device()
     log.info(
         f'[GuessAudio] demucs 开始 model=htdemucs device={device} '
-        f'segment=8 input={clip.name}'
+        f'segment={DEMUCS_SEGMENT} input={clip.name}'
     )
     t0 = time.perf_counter()
     cmd = [
         'demucs',
         '-n', 'htdemucs',
         '-d', device,
-        '--segment', '8',
+        '--segment', str(DEMUCS_SEGMENT),
         '-o', str(work_dir),
         str(clip),
     ]
