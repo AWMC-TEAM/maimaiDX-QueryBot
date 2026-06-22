@@ -473,6 +473,76 @@ class DrawScore(ScoreBaseImage):
         return self._im
 
 
+def _resolve_rise_b15_generation(dx_list: List[ChartInfo]) -> int:
+    """上分推荐：仅依据曲库与玩家 B15 实际曲目推断版本世代。"""
+    lib_versions = {
+        m.basic_info.version for m in mai.total_list if m.basic_info.version
+    }
+    chart_versions: set[str] = set()
+    for chart in dx_list:
+        chart_music = mai.total_list.by_id(str(chart.song_id))
+        if chart_music and chart_music.basic_info.version:
+            chart_versions.add(chart_music.basic_info.version)
+    return resolve_b15_generation(lib_versions, chart_versions=chart_versions or None)
+
+
+def _pick_rise_scores(
+    old_records: DefaultDict[int, Dict[int, float]],
+    candidate,
+    *,
+    ignore: set[tuple[int, int]],
+    ra: int,
+    score: Optional[int],
+    allowed_versions: Optional[set[str]] = None,
+) -> List[RiseScore]:
+    music: List[RiseScore] = []
+    for _m in candidate:
+        if allowed_versions is not None and _m.basic_info.version not in allowed_versions:
+            continue
+        if (song_id := int(_m.id)) >= 100000:
+            continue
+        for index in _m.diff:
+            if (song_id, index) in ignore:
+                continue
+            for r in achievementList[-4:]:
+                basera, rate = computeRa(_m.ds[index], r, israte=True)
+                if basera <= ra:
+                    continue
+                if score and basera - int(score) < ra:
+                    continue
+                if song_id in old_records and index in old_records[song_id]:
+                    oldra, oldrate = computeRa(_m.ds[index], old_records[song_id][index], israte=True)
+                    if oldra >= basera:
+                        continue
+                    ss = RiseScore(
+                        song_id=song_id,
+                        title=_m.title,
+                        type=_m.type,
+                        level_index=index,
+                        ds=_m.ds[index],
+                        ra=basera,
+                        rate=rate,
+                        achievements=r,
+                        oldra=oldra,
+                        oldrate=oldrate,
+                        oldachievements=old_records[song_id][index],
+                    )
+                else:
+                    ss = RiseScore(
+                        song_id=song_id,
+                        title=_m.title,
+                        type=_m.type,
+                        level_index=index,
+                        ds=_m.ds[index],
+                        ra=basera,
+                        rate=rate,
+                        achievements=r,
+                    )
+                music.append(ss)
+                break
+    return music
+
+
 def get_rise_score_list(
     old_records: DefaultDict[int, Dict[int, float]],
     chart_type: str,
@@ -481,6 +551,7 @@ def get_rise_score_list(
     score: Optional[int] = None,
     *,
     fallback_ra: Optional[int] = None,
+    b15_gen: Optional[int] = None,
 ) -> Tuple[List[RiseScore], int]:
     """
     随机获取加分曲目。B35/B15 与谱面类型 SD/DX 无关联；此处用谱面类型筛选曲目。
@@ -491,36 +562,37 @@ def get_rise_score_list(
         level: 等级
         score: 分数
         fallback_ra: B15 为空时用于估算定数区间的 B35 底分
+        b15_gen: 已解析的 B15 版本世代（与 B35/B15 列共用）
     Returns:
         `Tuple[List[RiseScore], int]`
     """
-    ignore = [m.song_id for m in b50_list if m.achievements >= 100.5]
+    ignore = {
+        (m.song_id, m.level_index)
+        for m in b50_list
+        if m.achievements >= 100.5
+    }
     if not b50_list:
         if not fallback_ra:
             return [], 0
         ra = int(fallback_ra)
     else:
-        ra = b50_list[-1].ra
-    music: List[RiseScore] = []
+        ra = min(int(c.ra) for c in b50_list)
+
     if score is None:
         ss_ds = round(ra / 20.8, 1)
     else:
         ss_ds = round((ra + int(score)) / 20.8, 1)
     sssp_ds = round(ra / 22.4, 1)
     ds = (round(sssp_ds + 0.1, 1), round(ss_ds + 0.1, 1))
-    lib_versions = {
-        m.basic_info.version for m in mai.total_list if m.basic_info.version
-    }
-    chart_versions: set[str] = set()
-    for chart in b50_list:
-        chart_music = mai.total_list.by_id(str(chart.song_id))
-        if chart_music and chart_music.basic_info.version:
-            chart_versions.add(chart_music.basic_info.version)
-    base_gen = resolve_b15_generation(lib_versions, chart_versions=chart_versions or None)
+
+    if b15_gen is None:
+        b15_gen = _resolve_rise_b15_generation(b50_list if chart_type == 'DX' else [])
     values = list(plate_to_dx_version.values())
     max_gen = max((len(values) - 2) // 2, 0)
+    gen_order = list(range(b15_gen, max_gen + 1)) + list(range(0, b15_gen))
 
-    for gen in range(base_gen, max_gen + 1):
+    music: List[RiseScore] = []
+    for gen in gen_order:
         if chart_type == 'DX':
             version = get_b15_version_names_at_generation(gen)
         else:
@@ -528,51 +600,20 @@ def get_rise_score_list(
         candidate = mai.total_list.filter(level=level, ds=ds, version=version)
         if not candidate:
             continue
-        music = []
-        for _m in candidate:
-            if (song_id := int(_m.id)) in ignore:
-                continue
-            if song_id >= 100000:
-                continue
-            for index in _m.diff:
-                for r in achievementList[-4:]:
-                    basera, rate = computeRa(_m.ds[index], r, israte=True)
-                    if basera <= ra:
-                        continue
-                    if score and basera - int(score) < ra:
-                        continue
-                    if song_id in old_records and index in old_records[song_id]:
-                        oldra, oldrate = computeRa(_m.ds[index], old_records[song_id][index], israte=True)
-                        if oldra >= basera:
-                            continue
-                        ss = RiseScore(
-                            song_id=song_id,
-                            title=_m.title,
-                            type=_m.type,  # 谱面类型 SD/DX
-                            level_index=index,
-                            ds=_m.ds[index],
-                            ra=basera,
-                            rate=rate,
-                            achievements=r,
-                            oldra=oldra,
-                            oldrate=oldrate,
-                            oldachievements=old_records[song_id][index]
-                        )
-                    else:
-                        ss = RiseScore(
-                            song_id=song_id,
-                            title=_m.title,
-                            type=_m.type,  # 谱面类型 SD/DX
-                            level_index=index,
-                            ds=_m.ds[index],
-                            ra=basera,
-                            rate=rate,
-                            achievements=r
-                        )
-                    music.append(ss)
-                    break
+        music = _pick_rise_scores(
+            old_records, candidate, ignore=ignore, ra=ra, score=score,
+        )
         if music:
             break
+
+    if not music and chart_type == 'DX':
+        allowed = set(get_b15_version_names_at_generation(b15_gen))
+        candidate = mai.total_list.filter(level=level, ds=ds)
+        music = _pick_rise_scores(
+            old_records, candidate, ignore=ignore, ra=ra, score=score,
+            allowed_versions=allowed,
+        )
+
     if not music:
         return music, ra if (b50_list or fallback_ra) else 0
     new = random.sample(music, min(len(music), 5))
@@ -607,9 +648,13 @@ async def rise_score_data(
         # chart_type 谱面类型；charts.sd/dx 对应 B35/B15（旧版本/新版本成绩）
         sd_list = (user.charts and user.charts.sd) or []
         dx_list = (user.charts and user.charts.dx) or []
-        b35_scores, b35_low = get_rise_score_list(old_records, 'SD', sd_list, level, score)
+        b15_gen = _resolve_rise_b15_generation(dx_list)
+        b35_scores, b35_low = get_rise_score_list(
+            old_records, 'SD', sd_list, level, score, b15_gen=b15_gen,
+        )
         b15_scores, b15_low = get_rise_score_list(
-            old_records, 'DX', dx_list, level, score, fallback_ra=b35_low or None,
+            old_records, 'DX', dx_list, level, score,
+            fallback_ra=b35_low or None, b15_gen=b15_gen,
         )
         if not b35_scores and not b15_scores:
             return '没有推荐的铺面'

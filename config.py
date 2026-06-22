@@ -310,7 +310,7 @@ def get_b35_version_names_for_generation(generation: int = 0) -> List[str]:
     cutoff = len(values) - 2 - generation * 2
     if cutoff < 0:
         cutoff = 0
-    return values[:cutoff]
+    return expand_version_aliases(values[:cutoff])
 
 
 def resolve_b15_generation(
