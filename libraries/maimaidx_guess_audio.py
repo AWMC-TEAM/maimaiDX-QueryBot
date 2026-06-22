@@ -6,9 +6,10 @@ import asyncio
 import json
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import httpx
 from loguru import logger as log
@@ -20,8 +21,8 @@ STAGE_DURATION = 30
 STAGE_INTERVAL = 30
 # 分轨前先从原曲裁一段，降低 CPU/内存压力（整首 demucs 易 OOM）
 SEPARATION_CLIP_DURATION = STAGE_DURATION + 15
-# htdemucs 训练 segment 上限 7.8s，不可超过
-DEMUCS_SEGMENT = 7.8
+# htdemucs 有效 segment 上限约 7.8s，CLI 只接受整数故用 7
+DEMUCS_SEGMENT = 7
 STAGE_LABELS = ('仅鼓点', '鼓点 + 贝斯', '加入伴奏', '完整混音')
 
 AUDIO_GUESS_DIR = _PKG_ROOT / 'data' / 'audio_guess'
@@ -29,6 +30,53 @@ AUDIO_GUESS_CACHE_DIR = AUDIO_GUESS_DIR / 'cache'
 AUDIO_GUESS_MANIFEST = AUDIO_GUESS_DIR / 'manifest.json'
 
 _BUILD_LOCKS: Dict[str, asyncio.Lock] = {}
+_active_subprocess: Optional[subprocess.Popen] = None
+_batch_cancel = threading.Event()
+_shutdown_hook_registered = False
+
+
+class GuessAudioCancelled(RuntimeError):
+    """猜曲音频烘焙被用户或 bot 关闭中断。"""
+
+
+def request_hot_batch_cancel() -> None:
+    _batch_cancel.set()
+    cancel_active_subprocess()
+
+
+def _reset_hot_batch_cancel() -> None:
+    _batch_cancel.clear()
+
+
+def cancel_active_subprocess() -> None:
+    global _active_subprocess
+    proc = _active_subprocess
+    if proc is None or proc.poll() is not None:
+        return
+    log.warning('[GuessAudio] 终止进行中的子进程…')
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+def _ensure_shutdown_hook() -> None:
+    global _shutdown_hook_registered
+    if _shutdown_hook_registered:
+        return
+    try:
+        from nonebot import get_driver
+
+        @get_driver().on_shutdown
+        async def _on_guess_audio_shutdown() -> None:
+            if _batch_cancel.is_set() or _active_subprocess is not None:
+                log.info('[GuessAudio] bot 关闭，停止猜曲烘焙子进程')
+            request_hot_batch_cancel()
+
+        _shutdown_hook_registered = True
+    except Exception:
+        pass
 
 
 def _cdn_base() -> str:
@@ -115,19 +163,33 @@ def list_stage_files(music_id: str) -> List[Path]:
 
 
 def _run(cmd: List[str], *, timeout: int = 600) -> None:
+    global _active_subprocess
+    if _batch_cancel.is_set():
+        raise GuessAudioCancelled('烘焙任务已取消')
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _active_subprocess = proc
     try:
-        subprocess.run(
-            cmd, check=True, timeout=timeout,
-            capture_output=True, text=True,
-        )
-    except subprocess.CalledProcessError as e:
-        detail = (e.stderr or e.stdout or '').strip()
-        tail = detail[-2000:] if detail else '(无 stderr/stdout)'
-        log.error(f'[GuessAudio] 命令失败: {" ".join(cmd)}\n{tail}')
-        raise RuntimeError(f'exit {e.returncode}: {tail}') from e
+        stdout, stderr = proc.communicate(timeout=timeout)
+        if _batch_cancel.is_set():
+            raise GuessAudioCancelled('烘焙任务已取消')
+        if proc.returncode != 0:
+            detail = (stderr or stdout or '').strip()
+            tail = detail[-2000:] if detail else '(无 stderr/stdout)'
+            log.error(f'[GuessAudio] 命令失败: {" ".join(cmd)}\n{tail}')
+            raise RuntimeError(f'exit {proc.returncode}: {tail}')
     except subprocess.TimeoutExpired as e:
+        proc.kill()
+        proc.communicate()
         log.error(f'[GuessAudio] 命令超时 ({timeout}s): {" ".join(cmd)}')
         raise RuntimeError(f'超时 ({timeout}s)') from e
+    finally:
+        if _active_subprocess is proc:
+            _active_subprocess = None
 
 
 def _probe_duration(path: Path) -> float:
@@ -349,6 +411,9 @@ def build_audio_cache_sync(
         return False, '服务器未安装 ffmpeg，无法处理音频'
 
     mid = str(music_id)
+    if _batch_cancel.is_set():
+        return False, '烘焙任务已取消'
+
     if not force and is_audio_ready(mid):
         log.debug(f'[GuessAudio] 跳过已缓存 music_id={mid}')
         return True, '已缓存'
@@ -410,6 +475,13 @@ def build_audio_cache_sync(
             f'elapsed={elapsed:.1f}s'
         )
         return True, f'已生成 {STAGE_COUNT} 段 × {STAGE_DURATION}s（{mode}）'
+    except GuessAudioCancelled as e:
+        log.warning(f'[GuessAudio] 构建取消 music_id={mid}{label}: {e}')
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        manifest = _load_manifest()
+        manifest.pop(mid, None)
+        _save_manifest(manifest)
+        return False, '烘焙任务已取消'
     except Exception as e:
         log.exception(
             f'[GuessAudio] 构建失败 music_id={mid}{label} '
@@ -439,9 +511,78 @@ async def ensure_audio_ready(music_id: str, *, title: str = '') -> Tuple[bool, s
         return ok, msg
 
 
-def build_hot_audio_cache_sync(*, force: bool = False) -> str:
-    """烘焙猜歌热门池内曲目的阶段音频，供「更新猜曲音频」指令调用。"""
+def _format_hot_batch_report(
+    pool_size: int,
+    ok_ids: List[str],
+    skip_ids: List[str],
+    fail_lines: List[str],
+    *,
+    cancelled: bool = False,
+) -> str:
+    lines = []
+    if cancelled:
+        lines.append('猜曲音频烘焙已取消（已完成部分如下）。')
+    lines.extend([
+        f'猜曲音频烘焙完成（热门池共 {pool_size} 首）。',
+        f'新建/重建：{len(ok_ids)}',
+        f'已跳过（有缓存）：{len(skip_ids)}',
+        f'失败：{len(fail_lines)}',
+    ])
+    if fail_lines:
+        preview = fail_lines[:8]
+        lines.append('失败示例：')
+        lines.extend(f'· {line}' for line in preview)
+        if len(fail_lines) > 8:
+            lines.append(f'… 另有 {len(fail_lines) - 8} 条')
+    return '\n'.join(lines)
+
+
+def _run_hot_batch_loop(
+    pool,
+    *,
+    force: bool,
+    build_one: Callable[[str, str], Tuple[bool, str]],
+) -> Tuple[List[str], List[str], List[str], bool]:
+    ok_ids: List[str] = []
+    skip_ids: List[str] = []
+    fail_lines: List[str] = []
+    cancelled = False
+
+    for idx, music in enumerate(pool, 1):
+        if _batch_cancel.is_set():
+            cancelled = True
+            log.warning(f'[GuessAudio] 热门池烘焙取消于 {idx}/{len(pool)}')
+            break
+        mid = str(music.id)
+        if not force and is_audio_ready(mid):
+            skip_ids.append(mid)
+            if idx % 50 == 0 or idx == len(pool):
+                log.info(
+                    f'[GuessAudio] 热门池进度 {idx}/{len(pool)} '
+                    f'ok={len(ok_ids)} skip={len(skip_ids)} fail={len(fail_lines)}'
+                )
+            continue
+        log.info(f'[GuessAudio] 热门池 [{idx}/{len(pool)}] 处理 {mid} {music.title}')
+        ok, msg = build_one(mid, music.title)
+        if ok:
+            ok_ids.append(mid)
+            log.info(f'[GuessAudio] 热门池 [{idx}/{len(pool)}] 成功 {mid}: {msg}')
+        elif msg == '烘焙任务已取消':
+            cancelled = True
+            break
+        else:
+            fail_lines.append(f'{mid} {music.title}: {msg}')
+            log.warning(f'[GuessAudio] 热门池 [{idx}/{len(pool)}] 失败 {mid}: {msg}')
+
+    return ok_ids, skip_ids, fail_lines, cancelled
+
+
+async def build_hot_audio_cache(*, force: bool = False) -> str:
+    """异步烘焙热门池（逐首执行，支持 Ctrl+C / bot 关闭中断）。"""
     from .maimaidx_music import guess, mai
+
+    _ensure_shutdown_hook()
+    _reset_hot_batch_cancel()
 
     if not mai.total_list:
         return '曲库未加载，请等待 bot 初始化完成后再试。'
@@ -456,11 +597,22 @@ def build_hot_audio_cache_sync(*, force: bool = False) -> str:
     )
     batch_t0 = time.perf_counter()
 
+    async def _build_one(mid: str, title: str) -> Tuple[bool, str]:
+        return await asyncio.to_thread(
+            build_audio_cache_sync, mid, title=title, force=force,
+        )
+
     ok_ids: List[str] = []
     skip_ids: List[str] = []
     fail_lines: List[str] = []
+    cancelled = False
 
     for idx, music in enumerate(pool, 1):
+        if _batch_cancel.is_set():
+            cancelled = True
+            log.warning(f'[GuessAudio] 热门池烘焙取消于 {idx}/{len(pool)}')
+            break
+        await asyncio.sleep(0)
         mid = str(music.id)
         if not force and is_audio_ready(mid):
             skip_ids.append(mid)
@@ -471,10 +623,19 @@ def build_hot_audio_cache_sync(*, force: bool = False) -> str:
                 )
             continue
         log.info(f'[GuessAudio] 热门池 [{idx}/{len(pool)}] 处理 {mid} {music.title}')
-        ok, msg = build_audio_cache_sync(mid, title=music.title, force=force)
+        try:
+            ok, msg = await _build_one(mid, music.title)
+        except asyncio.CancelledError:
+            request_hot_batch_cancel()
+            cancelled = True
+            log.warning(f'[GuessAudio] 热门池烘焙收到取消信号于 {idx}/{len(pool)}')
+            break
         if ok:
             ok_ids.append(mid)
             log.info(f'[GuessAudio] 热门池 [{idx}/{len(pool)}] 成功 {mid}: {msg}')
+        elif msg == '烘焙任务已取消':
+            cancelled = True
+            break
         else:
             fail_lines.append(f'{mid} {music.title}: {msg}')
             log.warning(f'[GuessAudio] 热门池 [{idx}/{len(pool)}] 失败 {mid}: {msg}')
@@ -483,19 +644,46 @@ def build_hot_audio_cache_sync(*, force: bool = False) -> str:
     log.info(
         f'[GuessAudio] 热门池烘焙结束 total={len(pool)} '
         f'ok={len(ok_ids)} skip={len(skip_ids)} fail={len(fail_lines)} '
-        f'elapsed={elapsed:.1f}s'
+        f'cancelled={cancelled} elapsed={elapsed:.1f}s'
+    )
+    return _format_hot_batch_report(
+        len(pool), ok_ids, skip_ids, fail_lines, cancelled=cancelled,
     )
 
-    lines = [
-        f'猜曲音频烘焙完成（热门池共 {len(pool)} 首）。',
-        f'新建/重建：{len(ok_ids)}',
-        f'已跳过（有缓存）：{len(skip_ids)}',
-        f'失败：{len(fail_lines)}',
-    ]
-    if fail_lines:
-        preview = fail_lines[:8]
-        lines.append('失败示例：')
-        lines.extend(f'· {line}' for line in preview)
-        if len(fail_lines) > 8:
-            lines.append(f'… 另有 {len(fail_lines) - 8} 条')
-    return '\n'.join(lines)
+
+def build_hot_audio_cache_sync(*, force: bool = False) -> str:
+    """同步烘焙热门池（供脚本调用）。"""
+    from .maimaidx_music import guess, mai
+
+    _reset_hot_batch_cancel()
+
+    if not mai.total_list:
+        return '曲库未加载，请等待 bot 初始化完成后再试。'
+    pool = guess._guess_music_pool()
+    if not pool:
+        return '热门池为空，无法烘焙。'
+
+    demucs_on = _demucs_available()
+    log.info(
+        f'[GuessAudio] 热门池烘焙开始 total={len(pool)} force={force} '
+        f'demucs={"yes" if demucs_on else "no"} device={_demucs_device() if demucs_on else "-"}'
+    )
+    batch_t0 = time.perf_counter()
+
+    ok_ids, skip_ids, fail_lines, cancelled = _run_hot_batch_loop(
+        pool,
+        force=force,
+        build_one=lambda mid, title: build_audio_cache_sync(
+            mid, title=title, force=force,
+        ),
+    )
+
+    elapsed = time.perf_counter() - batch_t0
+    log.info(
+        f'[GuessAudio] 热门池烘焙结束 total={len(pool)} '
+        f'ok={len(ok_ids)} skip={len(skip_ids)} fail={len(fail_lines)} '
+        f'cancelled={cancelled} elapsed={elapsed:.1f}s'
+    )
+    return _format_hot_batch_report(
+        len(pool), ok_ids, skip_ids, fail_lines, cancelled=cancelled,
+    )

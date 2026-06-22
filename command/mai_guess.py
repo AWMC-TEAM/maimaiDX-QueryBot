@@ -13,7 +13,12 @@ from nonebot.permission import SUPERUSER
 from ..libraries.maimaidx_guess_match import match_guess_answer
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_guess_score import guess_score
-from ..libraries.maimaidx_guess_audio import STAGE_INTERVAL, STAGE_LABELS, build_hot_audio_cache_sync
+from ..libraries.maimaidx_guess_audio import (
+    STAGE_INTERVAL,
+    STAGE_LABELS,
+    build_hot_audio_cache,
+    request_hot_batch_cancel,
+)
 from ..libraries.maimaidx_music import guess
 from ..libraries.maimaidx_model import GuessAudioData, GuessData, GuessDefaultData, GuessPicData
 from ..libraries.maimaidx_music_info import *
@@ -345,7 +350,12 @@ async def _(event: PrivateMessageEvent, match=RegexMatched()):
     await update_guess_audio.send(
         f'开始{hint}猜曲音频（热门池），耗时取决于曲目数量与是否安装 demucs，请稍候…'
     )
-    report = await asyncio.to_thread(build_hot_audio_cache_sync, force=force)
+    try:
+        report = await build_hot_audio_cache(force=force)
+    except asyncio.CancelledError:
+        request_hot_batch_cancel()
+        log.warning(f'[GuessAudio] 「更新猜曲音频」被取消 qq={event.user_id}')
+        raise
     log.info(f'[GuessAudio] 「更新猜曲音频」完成 qq={event.user_id} force={force}')
     await update_guess_audio.finish(report)
 
