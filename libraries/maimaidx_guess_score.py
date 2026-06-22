@@ -69,6 +69,9 @@ class GuessScoreManager:
     PIC_POINTS = {3: 3, 2: 2, 1: 1}
     PIC_CLEAR_POINTS = 1
     SONG_MAX_POINTS = 7
+    AUDIO_MIN_POINTS = 5
+    AUDIO_MAX_POINTS = 10
+    AUDIO_STAGE_POINTS = (10, 9, 7, 5)
     MAX_HISTORY_PER_PERIOD = 30
 
     PERIODS: Dict[str, PeriodSpec] = {
@@ -87,6 +90,12 @@ class GuessScoreManager:
     def song_points_for(self, hint_step: int) -> int:
         # 开局与 1/7 提示均为最高分，随后每多一条提示减 1 分，封面 7/7 为 1 分
         return max(1, self.SONG_MAX_POINTS + 1 - max(hint_step, 1))
+
+    def audio_points_for(self, hint_step: int) -> int:
+        if hint_step <= 0:
+            return self.AUDIO_MAX_POINTS
+        idx = min(int(hint_step), len(self.AUDIO_STAGE_POINTS)) - 1
+        return self.AUDIO_STAGE_POINTS[idx]
 
     def __init__(self) -> None:
         if guess_score_file.exists():

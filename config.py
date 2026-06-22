@@ -51,7 +51,9 @@ class Config(BaseModel):
     # redirect_uri 留空 = 无回调模式（用户在落雪页面直接看到授权码）
     lx_redirect_uri: Optional[str] = None
 
-    # ---------- 自定义背景（可选，便于多人协作时统一风格） ----------
+    # ---------- 猜曲子音频 CDN（Lxns） ----------
+    maimaidx_audio_cdn_base: str = 'https://assets2.lxns.net/maimai/music'
+
     # 我有多菜：自定义背景图路径（相对 static 或绝对路径），未配置则使用常规 B50 背景 b50_bg.png
     maimaidx_how_weak_bg: Optional[str] = None
     # 底力分析：自定义背景图路径（相对 static 或绝对路径），未配置则使用常规 B50 背景 b50_bg.png

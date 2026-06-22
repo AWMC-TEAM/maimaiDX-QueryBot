@@ -1,0 +1,366 @@
+"""猜曲子：从 Lxns CDN 拉取试听、分轨混音并缓存阶段音频。"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import httpx
+from loguru import logger as log
+
+_PKG_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CDN_BASE = 'https://assets2.lxns.net/maimai/music'
+STAGE_COUNT = 4
+STAGE_DURATION = 30
+STAGE_INTERVAL = 30
+STAGE_LABELS = ('仅鼓点', '鼓点 + 贝斯', '加入伴奏', '完整混音')
+
+AUDIO_GUESS_DIR = _PKG_ROOT / 'data' / 'audio_guess'
+AUDIO_GUESS_CACHE_DIR = AUDIO_GUESS_DIR / 'cache'
+AUDIO_GUESS_MANIFEST = AUDIO_GUESS_DIR / 'manifest.json'
+
+_BUILD_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
+def _cdn_base() -> str:
+    try:
+        from ..config import maiconfig
+        return getattr(maiconfig, 'maimaidx_audio_cdn_base', None) or DEFAULT_CDN_BASE
+    except Exception:
+        return DEFAULT_CDN_BASE
+
+
+def _lock_for(music_id: str) -> asyncio.Lock:
+    if music_id not in _BUILD_LOCKS:
+        _BUILD_LOCKS[music_id] = asyncio.Lock()
+    return _BUILD_LOCKS[music_id]
+
+
+def cdn_url_candidates(music_id: str) -> List[str]:
+    """优先使用曲库新 ID，再尝试常见 CDN 回落 ID。"""
+    ordered: List[str] = []
+    seen = set()
+
+    def add(sid: str) -> None:
+        if sid and sid not in seen:
+            seen.add(sid)
+            ordered.append(sid)
+
+    add(str(music_id).strip())
+    try:
+        n = int(music_id)
+    except (TypeError, ValueError):
+        return [f'{_cdn_base()}/{ordered[0]}.mp3'] if ordered else []
+
+    if n >= 10000:
+        add(str(n - 10000))
+    if n >= 11000:
+        add(str(n - 11000))
+    sid = str(music_id)
+    if sid.startswith('1') and len(sid) > 1:
+        add(sid[1:])
+    return [f'{_cdn_base()}/{sid}.mp3' for sid in ordered]
+
+
+def _song_cache_dir(music_id: str) -> Path:
+    return AUDIO_GUESS_CACHE_DIR / str(music_id)
+
+
+def _stage_path(music_id: str, stage: int) -> Path:
+    return _song_cache_dir(music_id) / f'stage_{stage:02d}.mp3'
+
+
+def _load_manifest() -> Dict[str, dict]:
+    if not AUDIO_GUESS_MANIFEST.exists():
+        return {}
+    try:
+        return json.loads(AUDIO_GUESS_MANIFEST.read_text(encoding='utf-8'))
+    except Exception as e:
+        log.warning(f'[GuessAudio] manifest 读取失败: {e}')
+        return {}
+
+
+def _save_manifest(data: Dict[str, dict]) -> None:
+    AUDIO_GUESS_DIR.mkdir(parents=True, exist_ok=True)
+    AUDIO_GUESS_MANIFEST.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding='utf-8',
+    )
+
+
+def is_audio_ready(music_id: str) -> bool:
+    mid = str(music_id)
+    manifest = _load_manifest()
+    entry = manifest.get(mid)
+    if not entry or not entry.get('ready'):
+        return False
+    stages = int(entry.get('stages', STAGE_COUNT))
+    return all(_stage_path(mid, i).is_file() for i in range(1, stages + 1))
+
+
+def list_stage_files(music_id: str) -> List[Path]:
+    mid = str(music_id)
+    manifest = _load_manifest()
+    stages = int((manifest.get(mid) or {}).get('stages', STAGE_COUNT))
+    return [_stage_path(mid, i) for i in range(1, stages + 1)]
+
+
+def _run(cmd: List[str], *, timeout: int = 600) -> None:
+    subprocess.run(cmd, check=True, timeout=timeout, capture_output=True)
+
+
+def _probe_duration(path: Path) -> float:
+    out = subprocess.check_output(
+        [
+            'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1', str(path),
+        ],
+        timeout=30,
+    )
+    return float(out.decode().strip())
+
+
+def _pick_clip_offset(duration: float) -> float:
+    if duration <= STAGE_DURATION + 2:
+        return max(0.0, (duration - STAGE_DURATION) / 2)
+    start = max(20.0, duration * 0.28)
+    return min(start, max(0.0, duration - STAGE_DURATION - 3))
+
+
+def _export_clip(
+    inputs: List[Path],
+    output: Path,
+    *,
+    offset: float,
+    filters: Optional[str] = None,
+) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if len(inputs) == 1 and not filters:
+        _run([
+            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+            '-ss', f'{offset:.3f}', '-t', str(STAGE_DURATION),
+            '-i', str(inputs[0]),
+            '-ac', '2', '-ar', '44100', '-b:a', '128k',
+            str(output),
+        ])
+        return
+
+    cmd = ['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error']
+    for p in inputs:
+        cmd += ['-i', str(p)]
+    if filters:
+        cmd += ['-filter_complex', filters, '-map', '[out]']
+    else:
+        ins = ''.join(f'[{i}:a]' for i in range(len(inputs)))
+        cmd += [
+            '-filter_complex',
+            f'{ins}amix=inputs={len(inputs)}:duration=longest:dropout_transition=0[out]',
+            '-map', '[out]',
+        ]
+    cmd += [
+        '-ss', f'{offset:.3f}', '-t', str(STAGE_DURATION),
+        '-ac', '2', '-ar', '44100', '-b:a', '128k',
+        str(output),
+    ]
+    _run(cmd)
+
+
+def _download_source_sync(music_id: str, dest: Path) -> str:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    last_err: Optional[Exception] = None
+    with httpx.Client(timeout=120, follow_redirects=True) as client:
+        for url in cdn_url_candidates(music_id):
+            try:
+                resp = client.get(url)
+                if resp.status_code == 404:
+                    continue
+                resp.raise_for_status()
+                dest.write_bytes(resp.content)
+                cdn_id = url.rsplit('/', 1)[-1].removesuffix('.mp3')
+                return cdn_id
+            except Exception as e:
+                last_err = e
+                log.debug(f'[GuessAudio] 下载失败 {url}: {e}')
+    raise RuntimeError(f'CDN 无可用音频 (music_id={music_id}): {last_err}')
+
+
+def _demucs_available() -> bool:
+    return shutil.which('demucs') is not None
+
+
+def _separate_demucs(source: Path, work_dir: Path) -> Dict[str, Path]:
+    work_dir.mkdir(parents=True, exist_ok=True)
+    _run(['demucs', '-n', 'htdemucs', '-o', str(work_dir), str(source)], timeout=900)
+    stem_name = source.stem
+    base = work_dir / 'htdemucs' / stem_name
+    stems = {
+        'drums': base / 'drums.wav',
+        'bass': base / 'bass.wav',
+        'other': base / 'other.wav',
+        'vocals': base / 'vocals.wav',
+    }
+    missing = [k for k, p in stems.items() if not p.is_file()]
+    if missing:
+        raise RuntimeError(f'Demucs 分轨不完整: {missing}')
+    return stems
+
+
+def _build_stages_demucs(source: Path, music_id: str, offset: float) -> None:
+    work_dir = _song_cache_dir(music_id) / '_work'
+    if work_dir.exists():
+        shutil.rmtree(work_dir, ignore_errors=True)
+    stems = _separate_demucs(source, work_dir)
+    _export_clip([stems['drums']], _stage_path(music_id, 1), offset=offset)
+    _export_clip(
+        [stems['drums'], stems['bass']],
+        _stage_path(music_id, 2),
+        offset=offset,
+    )
+    _export_clip(
+        [stems['drums'], stems['bass'], stems['other']],
+        _stage_path(music_id, 3),
+        offset=offset,
+    )
+    _export_clip([source], _stage_path(music_id, 4), offset=offset)
+    shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _build_stages_ffmpeg(source: Path, music_id: str, offset: float) -> None:
+    """无 Demucs 时用 EQ / 伴奏提取近似分轨（效果弱于 AI 分轨）。"""
+    s1 = _stage_path(music_id, 1)
+    _export_clip(
+        [source], s1, offset=offset,
+        filters=(
+            f'[0:a]highpass=f=180,lowpass=f=3500,'
+            f'volume=2.0,alimiter=limit=0.95[out]'
+        ),
+    )
+    s2 = _stage_path(music_id, 2)
+    _export_clip(
+        [source], s2, offset=offset,
+        filters=(
+            f'[0:a]lowpass=f=280,highpass=f=40,volume=1.6[dr];'
+            f'[0:a]highpass=f=180,lowpass=f=3500,volume=1.4[hh];'
+            f'[dr][hh]amix=inputs=2:duration=longest:dropout_transition=0,'
+            f'alimiter=limit=0.95[out]'
+        ),
+    )
+    s3 = _stage_path(music_id, 3)
+    _export_clip(
+        [source], s3, offset=offset,
+        filters=(
+            f'[0:a]pan=stereo|c0=c0-0.35*c1|c1=c1-0.35*c0,'
+            f'highpass=f=80,alimiter=limit=0.95[out]'
+        ),
+    )
+    _export_clip([source], _stage_path(music_id, 4), offset=offset)
+
+
+def build_audio_cache_sync(
+    music_id: str,
+    *,
+    title: str = '',
+    force: bool = False,
+) -> Tuple[bool, str]:
+    """同步构建单首曲目的阶段音频缓存。供脚本或线程池调用。"""
+    if shutil.which('ffmpeg') is None:
+        return False, '服务器未安装 ffmpeg，无法处理音频'
+
+    mid = str(music_id)
+    if not force and is_audio_ready(mid):
+        return True, '已缓存'
+
+    cache_dir = _song_cache_dir(mid)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    source = cache_dir / 'source.mp3'
+
+    try:
+        cdn_id = _download_source_sync(mid, source)
+    except RuntimeError as e:
+        return False, str(e)
+
+    try:
+        duration = _probe_duration(source)
+        offset = _pick_clip_offset(duration)
+        if _demucs_available():
+            mode = 'demucs'
+            _build_stages_demucs(source, mid, offset)
+        else:
+            mode = 'ffmpeg'
+            log.warning('[GuessAudio] 未检测到 demucs，使用 ffmpeg 近似分轨')
+            _build_stages_ffmpeg(source, mid, offset)
+
+        manifest = _load_manifest()
+        manifest[mid] = {
+            'ready': True,
+            'stages': STAGE_COUNT,
+            'title': title,
+            'cdn_id': cdn_id,
+            'mode': mode,
+            'clip_offset': round(offset, 2),
+        }
+        _save_manifest(manifest)
+        return True, f'已生成 {STAGE_COUNT} 段 × {STAGE_DURATION}s（{mode}）'
+    except Exception as e:
+        log.exception(f'[GuessAudio] 构建失败 music_id={mid}: {e}')
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        manifest = _load_manifest()
+        manifest.pop(mid, None)
+        _save_manifest(manifest)
+        return False, f'分轨失败: {e}'
+
+
+async def ensure_audio_ready(music_id: str, *, title: str = '') -> Tuple[bool, str]:
+    if is_audio_ready(music_id):
+        return True, 'ready'
+    async with _lock_for(str(music_id)):
+        if is_audio_ready(music_id):
+            return True, 'ready'
+        ok, msg = await asyncio.to_thread(
+            build_audio_cache_sync, str(music_id), title=title,
+        )
+        return ok, msg
+
+
+def build_hot_audio_cache_sync(*, force: bool = False) -> str:
+    """烘焙猜歌热门池内曲目的阶段音频，供「更新猜曲音频」指令调用。"""
+    from .maimaidx_music import guess, mai
+
+    if not mai.total_list:
+        return '曲库未加载，请等待 bot 初始化完成后再试。'
+    pool = guess._guess_music_pool()
+    if not pool:
+        return '热门池为空，无法烘焙。'
+
+    ok_ids: List[str] = []
+    skip_ids: List[str] = []
+    fail_lines: List[str] = []
+
+    for music in pool:
+        mid = str(music.id)
+        if not force and is_audio_ready(mid):
+            skip_ids.append(mid)
+            continue
+        ok, msg = build_audio_cache_sync(mid, title=music.title, force=force)
+        if ok:
+            ok_ids.append(mid)
+        else:
+            fail_lines.append(f'{mid} {music.title}: {msg}')
+
+    lines = [
+        f'猜曲音频烘焙完成（热门池共 {len(pool)} 首）。',
+        f'新建/重建：{len(ok_ids)}',
+        f'已跳过（有缓存）：{len(skip_ids)}',
+        f'失败：{len(fail_lines)}',
+    ]
+    if fail_lines:
+        preview = fail_lines[:8]
+        lines.append('失败示例：')
+        lines.extend(f'· {line}' for line in preview)
+        if len(fail_lines) > 8:
+            lines.append(f'… 另有 {len(fail_lines) - 8} 条')
+    return '\n'.join(lines)

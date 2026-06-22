@@ -1,10 +1,11 @@
 import asyncio
 import json
+from pathlib import Path
 from typing import Optional
 
 from loguru import logger as log
-from nonebot import get_bot, on_command, on_message
-from nonebot.adapters.onebot.v11 import Bot, GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent, Message
+from nonebot import get_bot, on_command, on_fullmatch, on_message
+from nonebot.adapters.onebot.v11 import Bot, GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent, Message, MessageSegment, PrivateMessageEvent
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
@@ -12,8 +13,9 @@ from nonebot.permission import SUPERUSER
 from ..libraries.maimaidx_guess_match import match_guess_answer
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_guess_score import guess_score
+from ..libraries.maimaidx_guess_audio import STAGE_INTERVAL, STAGE_LABELS, build_hot_audio_cache_sync
 from ..libraries.maimaidx_music import guess
-from ..libraries.maimaidx_model import GuessData, GuessDefaultData, GuessPicData
+from ..libraries.maimaidx_model import GuessAudioData, GuessData, GuessDefaultData, GuessPicData
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_update_plate import *
 
@@ -23,6 +25,8 @@ def is_now_playing_guess_music(event: GroupMessageEvent) -> bool:
 
 guess_music_start   = on_command('猜歌')
 guess_music_pic     = on_command('猜曲绘')
+guess_music_audio   = on_command('猜曲子')
+update_guess_audio  = on_fullmatch('更新猜曲音频', permission=SUPERUSER)
 guess_music_solve   = on_message(rule=is_now_playing_guess_music)
 guess_music_reset   = on_command('重置猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
 guess_music_enable  = on_command('开启mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
@@ -53,6 +57,8 @@ async def _award_guess_points(
 ) -> str:
     if isinstance(data, GuessPicData):
         raw_base = guess_score.pic_points_for(data)
+    elif isinstance(data, GuessAudioData):
+        raw_base = guess_score.audio_points_for(data.hint_step)
     elif isinstance(data, GuessDefaultData):
         raw_base = guess_score.song_points_for(data.hint_step)
     else:
@@ -143,13 +149,16 @@ async def _send_guess_score_forward(
     await matcher.finish(reply_message=True)
 
 
+_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘或猜曲子'
+
+
 @guess_music_start.handle()
 async def _(event: GroupMessageEvent):
     gid = event.group_id
     if gid not in guess.switch.enable:
         await guess_music_start.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌')
     if gid in guess.Group:
-        await guess_music_start.finish('该群已有正在进行的猜歌或猜曲绘')
+        await guess_music_start.finish(_GUESS_BUSY_HINT)
     guess.start(gid)
     await guess_music_start.send(
         dedent('''\
@@ -193,7 +202,7 @@ async def _(event: GroupMessageEvent):
     if gid not in guess.switch.enable:
         await guess_music_pic.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
     if gid in guess.Group:
-        await guess_music_pic.finish('该群已有正在进行的猜歌或猜曲绘', reply_message=True)
+        await guess_music_pic.finish(_GUESS_BUSY_HINT, reply_message=True)
     guess.startpic(gid)
     data = guess.Group[gid]
     await guess_music_pic.send(
@@ -251,6 +260,84 @@ async def _(event: GroupMessageEvent):
         guess_music_pic, event, data, header='答案是：',
     )
     await guess_music_pic.finish()
+
+
+@guess_music_audio.handle()
+async def _(event: GroupMessageEvent):
+    gid = event.group_id
+    if gid not in guess.switch.enable:
+        await guess_music_audio.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
+    if gid in guess.Group:
+        await guess_music_audio.finish(_GUESS_BUSY_HINT, reply_message=True)
+
+    await guess_music_audio.send('正在准备猜曲音频，请稍候…')
+    data = await guess.prepare_audio_round()
+    if data is None:
+        await guess_music_audio.finish(
+            '暂无可用猜曲音频（CDN 无资源或分轨失败）。'
+            '管理员可运行 scripts/build_guess_audio_cache.py 预烘焙，或安装 demucs 后重试。',
+            reply_message=True,
+        )
+
+    guess.startaudio(gid, data)
+    stage_count = data.stage_count
+    await guess_music_audio.send(
+        dedent(f'''\
+            猜曲子开始！共 {stage_count} 个阶段，每段约 30 秒，
+            每隔 {STAGE_INTERVAL} 秒会放出更完整的混音。
+            请输入歌曲 id、标题或别名猜歌（DX 与标准视为不同曲目）。
+            发送 重置猜歌 可结束本局。
+        ''')
+    )
+
+    for stage_idx in range(stage_count):
+        if gid not in guess.Group:
+            await guess_music_audio.finish()
+        cur = guess.Group[gid]
+        if gid not in guess.switch.enable or cur.end:
+            await guess_music_audio.finish()
+
+        label = STAGE_LABELS[stage_idx] if stage_idx < len(STAGE_LABELS) else '更多乐器'
+        path = Path(cur.stage_paths[stage_idx]).resolve().as_uri()
+        await guess_music_audio.send(
+            MessageSegment.text(f'{stage_idx + 1}/{stage_count} [{label}]\n')
+            + MessageSegment.record(path)
+        )
+        cur.hint_step = stage_idx + 1
+
+        if stage_idx < stage_count - 1:
+            for _ in range(STAGE_INTERVAL):
+                await asyncio.sleep(1)
+                if gid not in guess.Group:
+                    await guess_music_audio.finish()
+                cur = guess.Group[gid]
+                if gid not in guess.switch.enable or cur.end:
+                    await guess_music_audio.finish()
+
+    for _ in range(STAGE_INTERVAL):
+        await asyncio.sleep(1)
+        if gid not in guess.Group:
+            await guess_music_audio.finish()
+        cur = guess.Group[gid]
+        if gid not in guess.switch.enable or cur.end:
+            await guess_music_audio.finish()
+
+    cur.end = True
+    await guess_score.reset_all_streaks(gid)
+    guess.end(gid)
+    await _send_guess_answer_bundle(
+        guess_music_audio, event, data, header='答案是：',
+    )
+    await guess_music_audio.finish()
+
+
+@update_guess_audio.handle()
+async def _(event: PrivateMessageEvent):
+    await update_guess_audio.send(
+        '开始烘焙猜曲音频（热门池），耗时取决于曲目数量与是否安装 demucs，请稍候…'
+    )
+    report = await asyncio.to_thread(build_hot_audio_cache_sync)
+    await update_guess_audio.finish(report)
 
 
 @guess_music_solve.handle()

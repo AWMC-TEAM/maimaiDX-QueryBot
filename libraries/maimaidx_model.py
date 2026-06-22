@@ -144,6 +144,12 @@ class GuessPicData(GuessData):
     interference_cleared: bool = False
 
 
+class GuessAudioData(GuessData):
+
+    stage_paths: List[str]
+    stage_count: int = 4
+
+
 class Switch(BaseModel):
 
     enable: List[int] = []

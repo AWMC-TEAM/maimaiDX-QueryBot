@@ -14,6 +14,12 @@ from .image import image_to_base64, music_picture
 from .maimaidx_api_data import maiApi
 from .maimaidx_error import *
 from .maimaidx_model import *
+from .maimaidx_guess_audio import (
+    STAGE_COUNT,
+    ensure_audio_ready,
+    is_audio_ready,
+    list_stage_files,
+)
 from .tool import openfile, writefile
 
 
@@ -404,7 +410,7 @@ mai = MaiMusic()
 
 class Guess:
     
-    Group: Dict[int, Union[GuessDefaultData, GuessPicData]] = {}
+    Group: Dict[int, Union[GuessDefaultData, GuessPicData, GuessAudioData]] = {}
     switch: GuessSwitch
 
     def __init__(self) -> None:
@@ -712,6 +718,41 @@ class Guess:
             log.error('[Guess] 无可用非宴会场曲目，回退随机热门曲')
             return random.choice(mai.guess_data)
         return random.choice(pool)
+
+    def _guess_audio_pool(self) -> List[Music]:
+        ready = [m for m in self._guess_music_pool() if is_audio_ready(m.id)]
+        return ready
+
+    def guessaudiodata(self, music: Music) -> GuessAudioData:
+        answer = mai.total_alias_list.by_id(music.id)[0].Alias
+        answer.append(music.id)
+        paths = [str(p.resolve()) for p in list_stage_files(music.id)]
+        return GuessAudioData(
+            music=music,
+            img='',
+            answer=answer,
+            end=False,
+            stage_paths=paths,
+            stage_count=len(paths) or STAGE_COUNT,
+        )
+
+    async def prepare_audio_round(self) -> Optional[GuessAudioData]:
+        """随机选曲并确保音频缓存可用。"""
+        ready_pool = self._guess_audio_pool()
+        if ready_pool:
+            return self.guessaudiodata(random.choice(ready_pool))
+
+        candidates = self._guess_music_pool()[:]
+        random.shuffle(candidates)
+        for music in candidates[:12]:
+            ok, _msg = await ensure_audio_ready(music.id, title=music.title)
+            if ok:
+                return self.guessaudiodata(music)
+        return None
+
+    def startaudio(self, gid: int, data: GuessAudioData) -> None:
+        self.Group[gid] = data
+        self._log_guess_start('猜曲子', gid)
 
     def guesspicdata(self) -> GuessPicData:
         """猜曲绘数据"""
