@@ -32,6 +32,8 @@ DEMUCS_STAGE_STEMS: Tuple[Tuple[str, ...], ...] = (
     ('drums', 'bass', 'other'),
     ('drums', 'bass', 'other', 'vocals'),
 )
+# 混音逻辑变更时递增，使旧缓存自动失效
+STAGE_MIX_REV = 2
 
 AUDIO_GUESS_DIR = _PKG_ROOT / 'data' / 'audio_guess'
 AUDIO_GUESS_CACHE_DIR = AUDIO_GUESS_DIR / 'cache'
@@ -158,6 +160,8 @@ def is_audio_ready(music_id: str) -> bool:
     manifest = _load_manifest()
     entry = manifest.get(mid)
     if not entry or not entry.get('ready'):
+        return False
+    if entry.get('mix_rev') != STAGE_MIX_REV:
         return False
     stages = int(entry.get('stages', STAGE_COUNT))
     return all(_stage_path(mid, i).is_file() for i in range(1, stages + 1))
@@ -548,6 +552,7 @@ def build_audio_cache_sync(
         manifest[mid] = {
             'ready': True,
             'stages': STAGE_COUNT,
+            'mix_rev': STAGE_MIX_REV,
             'title': title,
             'cdn_id': cdn_id,
             'mode': mode,

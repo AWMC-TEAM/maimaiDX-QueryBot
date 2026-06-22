@@ -311,10 +311,14 @@ async def _(event: GroupMessageEvent):
             await guess_music_audio.finish()
 
         label = STAGE_LABELS[stage_idx] if stage_idx < len(STAGE_LABELS) else '更多乐器'
-        path = Path(cur.stage_paths[stage_idx]).resolve().as_uri()
+        stage_path = Path(cur.stage_paths[stage_idx]).resolve()
+        log.info(
+            f'[GuessAudio] 发送阶段 {stage_idx + 1}/{stage_count} gid={gid} '
+            f'file={stage_path.name} size={stage_path.stat().st_size}'
+        )
         await guess_music_audio.send(
             MessageSegment.text(f'{stage_idx + 1}/{stage_count} [{label}]\n')
-            + MessageSegment.record(path)
+            + MessageSegment.record(str(stage_path))
         )
         cur.hint_step = stage_idx + 1
 
