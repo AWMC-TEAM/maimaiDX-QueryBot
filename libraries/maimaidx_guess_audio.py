@@ -17,6 +17,8 @@ DEFAULT_CDN_BASE = 'https://assets2.lxns.net/maimai/music'
 STAGE_COUNT = 4
 STAGE_DURATION = 30
 STAGE_INTERVAL = 30
+# 分轨前先从原曲裁一段，降低 CPU/内存压力（整首 demucs 易 OOM）
+SEPARATION_CLIP_DURATION = STAGE_DURATION + 15
 STAGE_LABELS = ('仅鼓点', '鼓点 + 贝斯', '加入伴奏', '完整混音')
 
 AUDIO_GUESS_DIR = _PKG_ROOT / 'data' / 'audio_guess'
@@ -110,7 +112,19 @@ def list_stage_files(music_id: str) -> List[Path]:
 
 
 def _run(cmd: List[str], *, timeout: int = 600) -> None:
-    subprocess.run(cmd, check=True, timeout=timeout, capture_output=True)
+    try:
+        subprocess.run(
+            cmd, check=True, timeout=timeout,
+            capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or e.stdout or '').strip()
+        tail = detail[-2000:] if detail else '(无 stderr/stdout)'
+        log.error(f'[GuessAudio] 命令失败: {" ".join(cmd)}\n{tail}')
+        raise RuntimeError(f'exit {e.returncode}: {tail}') from e
+    except subprocess.TimeoutExpired as e:
+        log.error(f'[GuessAudio] 命令超时 ({timeout}s): {" ".join(cmd)}')
+        raise RuntimeError(f'超时 ({timeout}s)') from e
 
 
 def _probe_duration(path: Path) -> float:
@@ -192,11 +206,38 @@ def _demucs_available() -> bool:
     return shutil.which('demucs') is not None
 
 
-def _separate_demucs(source: Path, work_dir: Path) -> Dict[str, Path]:
+def _extract_separation_clip(source: Path, clip: Path, offset: float) -> None:
+    """从原曲截取短片段供 demucs 分轨，避免整首处理导致内存不足。"""
+    clip.parent.mkdir(parents=True, exist_ok=True)
+    _run([
+        'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+        '-ss', f'{offset:.3f}', '-t', str(SEPARATION_CLIP_DURATION),
+        '-i', str(source),
+        '-ac', '2', '-ar', '44100',
+        str(clip),
+    ])
+
+
+def _demucs_device() -> str:
+    try:
+        from ..config import maiconfig
+        return getattr(maiconfig, 'maimaidx_demucs_device', None) or 'cpu'
+    except Exception:
+        return 'cpu'
+
+
+def _separate_demucs(clip: Path, work_dir: Path) -> Dict[str, Path]:
     work_dir.mkdir(parents=True, exist_ok=True)
-    _run(['demucs', '-n', 'htdemucs', '-o', str(work_dir), str(source)], timeout=900)
-    stem_name = source.stem
-    base = work_dir / 'htdemucs' / stem_name
+    cmd = [
+        'demucs',
+        '-n', 'htdemucs',
+        '-d', _demucs_device(),
+        '--segment', '8',
+        '-o', str(work_dir),
+        str(clip),
+    ]
+    _run(cmd, timeout=900)
+    base = work_dir / 'htdemucs' / clip.stem
     stems = {
         'drums': base / 'drums.wav',
         'bass': base / 'bass.wav',
@@ -205,7 +246,7 @@ def _separate_demucs(source: Path, work_dir: Path) -> Dict[str, Path]:
     }
     missing = [k for k, p in stems.items() if not p.is_file()]
     if missing:
-        raise RuntimeError(f'Demucs 分轨不完整: {missing}')
+        raise RuntimeError(f'Demucs 分轨不完整: {missing} (目录 {base})')
     return stems
 
 
@@ -213,19 +254,24 @@ def _build_stages_demucs(source: Path, music_id: str, offset: float) -> None:
     work_dir = _song_cache_dir(music_id) / '_work'
     if work_dir.exists():
         shutil.rmtree(work_dir, ignore_errors=True)
-    stems = _separate_demucs(source, work_dir)
-    _export_clip([stems['drums']], _stage_path(music_id, 1), offset=offset)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    clip = work_dir / 'separation_clip.wav'
+    _extract_separation_clip(source, clip, offset)
+    stems = _separate_demucs(clip, work_dir)
+    # 片段已对齐副歌，stage 从 0 秒起裁 30s
+    stage_offset = 0.0
+    _export_clip([stems['drums']], _stage_path(music_id, 1), offset=stage_offset)
     _export_clip(
         [stems['drums'], stems['bass']],
         _stage_path(music_id, 2),
-        offset=offset,
+        offset=stage_offset,
     )
     _export_clip(
         [stems['drums'], stems['bass'], stems['other']],
         _stage_path(music_id, 3),
-        offset=offset,
+        offset=stage_offset,
     )
-    _export_clip([source], _stage_path(music_id, 4), offset=offset)
+    _export_clip([clip], _stage_path(music_id, 4), offset=stage_offset)
     shutil.rmtree(work_dir, ignore_errors=True)
 
 
@@ -286,11 +332,23 @@ def build_audio_cache_sync(
     try:
         duration = _probe_duration(source)
         offset = _pick_clip_offset(duration)
+        mode = 'ffmpeg'
         if _demucs_available():
-            mode = 'demucs'
-            _build_stages_demucs(source, mid, offset)
+            try:
+                _build_stages_demucs(source, mid, offset)
+                mode = 'demucs'
+            except Exception as demucs_err:
+                log.warning(
+                    f'[GuessAudio] demucs 分轨失败 music_id={mid}，回退 ffmpeg: {demucs_err}'
+                )
+                shutil.rmtree(cache_dir / '_work', ignore_errors=True)
+                for i in range(1, STAGE_COUNT + 1):
+                    p = _stage_path(mid, i)
+                    if p.exists():
+                        p.unlink()
+                _build_stages_ffmpeg(source, mid, offset)
+                mode = 'ffmpeg_fallback'
         else:
-            mode = 'ffmpeg'
             log.warning('[GuessAudio] 未检测到 demucs，使用 ffmpeg 近似分轨')
             _build_stages_ffmpeg(source, mid, offset)
 

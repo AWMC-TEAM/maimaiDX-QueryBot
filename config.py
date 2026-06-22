@@ -53,6 +53,7 @@ class Config(BaseModel):
 
     # ---------- 猜曲子音频 CDN（Lxns） ----------
     maimaidx_audio_cdn_base: str = 'https://assets2.lxns.net/maimai/music'
+    maimaidx_demucs_device: str = 'cpu'
 
     # 我有多菜：自定义背景图路径（相对 static 或绝对路径），未配置则使用常规 B50 背景 b50_bg.png
     maimaidx_how_weak_bg: Optional[str] = None
