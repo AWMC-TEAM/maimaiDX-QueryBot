@@ -313,14 +313,25 @@ def get_b35_version_names_for_generation(generation: int = 0) -> List[str]:
     return values[:cutoff]
 
 
-def resolve_b15_generation(library_versions: set[str]) -> int:
-    """曲库中实际存在的 B15 世代；若无匹配则回退到 0（配置最新代）。"""
+def resolve_b15_generation(
+    library_versions: set[str],
+    *,
+    chart_versions: Optional[set[str]] = None,
+) -> int:
+    """曲库 / 玩家 B15 实际曲目版本推断 B15 世代；无匹配时回退镜彩代。"""
     values = list(plate_to_dx_version.values())
     max_gen = max((len(values) - 2) // 2, 0)
+
+    if chart_versions:
+        for gen in range(max_gen + 1):
+            if chart_versions.intersection(get_b15_version_names_at_generation(gen)):
+                return gen
+
     for gen in range(max_gen + 1):
         if library_versions.intersection(get_b15_version_names_at_generation(gen)):
             return gen
-    return 0
+
+    return min(1, max_gen)
 version_map = {
     '真': ([plate_to_dx_version['真'], plate_to_dx_version['初']], '真'),
     '超': ([plate_to_sd_version['超']], '超'),
