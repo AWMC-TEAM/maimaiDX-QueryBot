@@ -40,7 +40,9 @@ VERSION_ALIAS: Dict[str, str] = {
     "镜代": "PRiSM",
     "彩代": "PRiSM PLUS",
     "镜plus": "PRiSM PLUS",
+    "dx2026": "CiRCLE",
     "丸代": "CiRCLE",
+    "圆代": "CiRCLE PLUS",
     "丸plus": "CiRCLE PLUS",
 }
 

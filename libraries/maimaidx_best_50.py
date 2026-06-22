@@ -901,7 +901,7 @@ def _is_latest_version(r: PlayInfoDev) -> bool:
     成绩所属曲目是否为 config 中的最新版本（用于常规 b50 归入 B15 区）；否则归入 B35 区。
     与谱面类型 SD/DX 无关；查分器 B15=dx、B35=sd。
     """
-    latest_versions = set(list(plate_to_dx_version.values())[-2:])
+    latest_versions = set(get_b15_version_names())
     try:
         music = mai.total_list.by_id(str(r.song_id))
         if music and getattr(music, 'basic_info', None):

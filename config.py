@@ -262,8 +262,37 @@ plate_to_dx_version: Dict[str, str] = {
     '双': 'maimai でらっくす BUDDiES',
     '宴': 'maimai でらっくす BUDDiES PLUS',
     '镜': 'maimai でらっくす PRiSM',
-    '彩': 'maimai でらっくす PRiSM PLUS'
+    '彩': 'maimai でらっくす PRiSM PLUS',
+    '丸': 'maimai でらっくす CiRCLE',
+    '圆': 'maimai でらっくす CiRCLE PLUS'
 }
+
+_DX_VERSION_PREFIX = 'maimai でらっくす '
+
+
+def get_latest_plate_versions() -> List[str]:
+    """最新两作完整版本名（B15 区）。"""
+    return list(plate_to_dx_version.values())[-2:]
+
+
+def expand_version_aliases(versions: List[str]) -> List[str]:
+    """补充 dxdata 短版本名，供曲库 filter / B15 判定使用。"""
+    out: List[str] = []
+    seen: set[str] = set()
+    for v in versions:
+        candidates = [v]
+        if _DX_VERSION_PREFIX in v:
+            candidates.append(v.replace(_DX_VERSION_PREFIX, ''))
+        for name in candidates:
+            if name and name not in seen:
+                out.append(name)
+                seen.add(name)
+    return out
+
+
+def get_b15_version_names() -> List[str]:
+    """B15 区曲目版本名（含水鱼长名与 dxdata 短名）。"""
+    return expand_version_aliases(get_latest_plate_versions())
 version_map = {
     '真': ([plate_to_dx_version['真'], plate_to_dx_version['初']], '真'),
     '超': ([plate_to_sd_version['超']], '超'),
@@ -291,7 +320,9 @@ version_map = {
     '双': ([plate_to_dx_version['双']], '双&宴'),
     '宴': ([plate_to_dx_version['双']], '双&宴'),
     '镜': ([plate_to_dx_version['镜']], '镜'),
-    '彩': ([plate_to_dx_version['彩']], '彩')
+    '彩': ([plate_to_dx_version['彩']], '彩'),
+    '丸': ([plate_to_dx_version['丸']], '丸'),
+    '圆': ([plate_to_dx_version['圆']], '圆')
 }
 
 

@@ -502,7 +502,7 @@ def get_rise_score_list(
         ss_ds = round((ra + int(score)) / 20.8, 1)
     sssp_ds = round(ra / 22.4, 1)
     ds = (round(sssp_ds + 0.1, 1), round(ss_ds + 0.1, 1))
-    version = list(plate_to_dx_version.values())[-2:] if chart_type == 'DX' else list(plate_to_dx_version.values())[:-2]
+    version = get_b15_version_names() if chart_type == 'DX' else list(plate_to_dx_version.values())[:-2]
     musiclist = mai.total_list.filter(level=level, ds=ds, version=version)
     for _m in musiclist:
         if (song_id := int(_m.id)) in ignore:
