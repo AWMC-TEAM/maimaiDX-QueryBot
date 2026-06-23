@@ -3,7 +3,7 @@ import json
 import random
 from collections import defaultdict
 from copy import deepcopy
-from typing import Tuple
+from typing import Dict, Set, Tuple, Union
 
 import numpy as np
 from loguru import logger as log
@@ -411,6 +411,8 @@ mai = MaiMusic()
 class Guess:
     
     Group: Dict[int, Union[GuessDefaultData, GuessPicData, GuessAudioData]] = {}
+    Preparing: Set[int] = set()
+    _gid_locks: Dict[int, asyncio.Lock] = {}
     switch: GuessSwitch
 
     def __init__(self) -> None:
@@ -421,6 +423,25 @@ class Guess:
             self.switch = GuessSwitch.model_validate(
                 json.load(open(guess_file, 'r', encoding='utf-8'))
             )
+
+    @classmethod
+    def _lock(cls, gid: int) -> asyncio.Lock:
+        if gid not in cls._gid_locks:
+            cls._gid_locks[gid] = asyncio.Lock()
+        return cls._gid_locks[gid]
+
+    def is_busy(self, gid: int) -> bool:
+        return gid in self.Group or gid in self.Preparing
+
+    async def try_begin_prepare(self, gid: int) -> bool:
+        async with self._lock(gid):
+            if self.is_busy(gid):
+                return False
+            self.Preparing.add(gid)
+            return True
+
+    def end_prepare(self, gid: int) -> None:
+        self.Preparing.discard(gid)
 
     def _log_guess_start(self, mode: str, gid: int) -> None:
         data = self.Group[gid]
@@ -838,6 +859,7 @@ class Guess:
             self.switch.enable.remove(gid)
         if gid in self.Group:
             self.end(gid)
+        self.Preparing.discard(gid)
         await writefile(guess_file, self.switch.model_dump())
         return '群猜歌功能已关闭'
 

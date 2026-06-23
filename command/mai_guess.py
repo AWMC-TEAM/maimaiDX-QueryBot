@@ -5,7 +5,7 @@ from typing import Optional
 
 from loguru import logger as log
 from nonebot import get_bot, on_command, on_message, on_regex
-from nonebot.adapters.onebot.v11 import Bot, GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent, Message, MessageSegment, PrivateMessageEvent
+from nonebot.adapters.onebot.v11 import Bot, GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent, Message, MessageEvent, MessageSegment, PrivateMessageEvent
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg, Depends, RegexMatched
 from nonebot.permission import SUPERUSER
@@ -287,7 +287,7 @@ async def _(event: GroupMessageEvent):
     gid = event.group_id
     if gid not in guess.switch.enable:
         await guess_music_start.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌')
-    if gid in guess.Group:
+    if guess.is_busy(gid):
         await guess_music_start.finish(_GUESS_BUSY_HINT)
     guess.start(gid)
     await guess_music_start.send(
@@ -332,7 +332,7 @@ async def _(event: GroupMessageEvent):
     gid = event.group_id
     if gid not in guess.switch.enable:
         await guess_music_pic.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    if gid in guess.Group:
+    if guess.is_busy(gid):
         await guess_music_pic.finish(_GUESS_BUSY_HINT, reply_message=True)
     guess.startpic(gid)
     data = guess.Group[gid]
@@ -399,21 +399,24 @@ async def _(event: GroupMessageEvent):
     gid = event.group_id
     if gid not in guess.switch.enable:
         await guess_music_audio.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    if gid in guess.Group:
+    if not await guess.try_begin_prepare(gid):
         await guess_music_audio.finish(_GUESS_BUSY_HINT, reply_message=True)
 
-    await guess_music_audio.send('正在准备猜曲音频，请稍候…')
-    log.info(f'[GuessAudio] 猜曲子开局 gid={gid}')
-    data = await guess.prepare_audio_round()
-    if data is None:
-        log.warning(f'[GuessAudio] 猜曲子无可用音频 gid={gid}')
-        await guess_music_audio.finish(
-            '暂无可用猜曲音频（CDN 无资源或分轨失败）。'
-            '管理员可运行 scripts/build_guess_audio_cache.py 预烘焙，或安装 demucs 后重试。',
-            reply_message=True,
-        )
+    try:
+        await guess_music_audio.send('正在准备猜曲音频，请稍候…')
+        log.info(f'[GuessAudio] 猜曲子开局 gid={gid}')
+        data = await guess.prepare_audio_round()
+        if data is None:
+            log.warning(f'[GuessAudio] 猜曲子无可用音频 gid={gid}')
+            await guess_music_audio.finish(
+                '暂无可用猜曲音频（CDN 无资源或分轨失败）。'
+                '管理员可运行 scripts/build_guess_audio_cache.py 预烘焙，或安装 demucs 后重试。',
+                reply_message=True,
+            )
 
-    guess.startaudio(gid, data)
+        guess.startaudio(gid, data)
+    finally:
+        guess.end_prepare(gid)
     stage_count = data.stage_count
     audio_meta = get_audio_manifest_entry(data.music.id)
     log.info(
