@@ -7,9 +7,13 @@ from loguru import logger as log
 from nonebot import get_bot, on_command, on_message, on_regex
 from nonebot.adapters.onebot.v11 import Bot, GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent, Message, MessageSegment, PrivateMessageEvent
 from nonebot.matcher import Matcher
-from nonebot.params import CommandArg, RegexMatched
+from nonebot.params import CommandArg, Depends, RegexMatched
 from nonebot.permission import SUPERUSER
 
+from ..libraries.maimaidx_guess_boost_card import (
+    DEFAULT_CARD_HOURS,
+    guess_boost_card,
+)
 from ..libraries.maimaidx_guess_match import match_guess_answer
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_guess_score import guess_score
@@ -34,6 +38,8 @@ guess_music_start   = on_command('猜歌')
 guess_music_pic     = on_command('猜曲绘')
 guess_music_audio   = on_command('猜曲子')
 update_guess_audio  = on_regex(r'^更新猜曲音频(?:\s+(-full))?\s*$', permission=SUPERUSER)
+guess_boost_grant   = on_command('发加倍卡', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
+guess_boost_query   = on_command('查加倍卡')
 guess_music_solve   = on_message(rule=is_now_playing_guess_music)
 guess_music_reset   = on_command('重置猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
 guess_music_enable  = on_command('开启mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
@@ -84,6 +90,9 @@ async def _award_guess_points(
     if isinstance(data, GuessAudioData) and guess_score.audio_season_double_active():
         multiplier *= 2
         multiplier_tags.append('赛季限时双倍得分')
+    if await guess_boost_card.consume_one(event.group_id, event.user_id):
+        multiplier *= 2
+        multiplier_tags.append('限时加倍卡×2')
     (
         added, raw_base, combo, streak, total, rank, period_snapshot,
     ) = await guess_score.award_correct_guess(
@@ -186,6 +195,93 @@ async def _send_guess_score_forward(
 _GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘或猜曲子'
 
 
+def _get_at_qq(event: GroupMessageEvent) -> Optional[int]:
+    for item in event.message:
+        if isinstance(item, MessageSegment) and item.type == 'at' and item.data['qq'] != 'all':
+            return int(item.data['qq'])
+    return None
+
+
+def _parse_grant_args(text: str) -> tuple[int, float]:
+    """解析 数量 [有效小时]，默认 1 张 / 24 小时。"""
+    parts = text.strip().split()
+    count = 1
+    hours = float(DEFAULT_CARD_HOURS)
+    if parts:
+        try:
+            count = int(parts[0])
+        except ValueError:
+            return count, hours
+    if len(parts) >= 2:
+        try:
+            hours = float(parts[1])
+        except ValueError:
+            pass
+    return count, hours
+
+
+@guess_boost_grant.handle()
+async def _(event: GroupMessageEvent, args: Message = CommandArg()):
+    if event.group_id not in guess.switch.enable:
+        await guess_boost_grant.finish(
+            '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
+        )
+    target = _get_at_qq(event)
+    if target is None:
+        await guess_boost_grant.finish(
+            '用法：发加倍卡 @用户 [数量] [有效小时]\n'
+            f'示例：发加倍卡 @某人 1 {DEFAULT_CARD_HOURS}（默认 1 张、{DEFAULT_CARD_HOURS} 小时内有效）',
+            reply_message=True,
+        )
+    extra = args.extract_plaintext().strip()
+    count, hours = _parse_grant_args(extra)
+    granted, hours = await guess_boost_card.grant(
+        event.group_id,
+        target,
+        count=count,
+        hours=hours,
+        issuer_uid=event.user_id,
+    )
+    remain = guess_boost_card.active_count(event.group_id, target)
+    await guess_boost_grant.finish(
+        MessageSegment.at(target)
+        + MessageSegment.text(
+            f'\n已发放 {granted} 张限时加倍卡（{hours:g} 小时内有效，猜对消耗 1 张积分 ×2）。'
+            f'当前剩余 {remain} 张。'
+        ),
+        reply_message=True,
+    )
+
+
+@guess_boost_query.handle()
+async def _(event: MessageEvent, args: Message = CommandArg()):
+    if not isinstance(event, GroupMessageEvent):
+        await guess_boost_query.finish('请在群内使用。', reply_message=True)
+    target = _get_at_qq(event) or event.user_id
+    count = guess_boost_card.active_count(event.group_id, target)
+    if count <= 0:
+        if target == event.user_id:
+            await guess_boost_query.finish('你当前没有可用的限时加倍卡。', reply_message=True)
+        else:
+            await guess_boost_query.finish(
+                MessageSegment.at(target) + MessageSegment.text(' 当前没有可用的限时加倍卡。'),
+                reply_message=True,
+            )
+    nearest = guess_boost_card.nearest_expiry_hours(event.group_id, target)
+    hint = f'最近一张约 {nearest:.1f} 小时后过期' if nearest is not None else ''
+    prefix = '你' if target == event.user_id else ''
+    msg = f'{prefix}当前有 {count} 张限时加倍卡（猜对消耗，积分 ×2）'
+    if hint:
+        msg += f'，{hint}'
+    msg += '。'
+    if target != event.user_id:
+        await guess_boost_query.finish(
+            MessageSegment.at(target) + MessageSegment.text(f'\n{msg}'),
+            reply_message=True,
+        )
+    await guess_boost_query.finish(msg, reply_message=True)
+
+
 @guess_music_start.handle()
 async def _(event: GroupMessageEvent):
     gid = event.group_id
@@ -245,6 +341,7 @@ async def _(event: GroupMessageEvent):
             开始猜曲绘！可以直接发送答案！
             每隔10秒会给出进一步提示。发送 重置猜歌 可结束游戏。
             当前难度：{data.difficulty}，当前干扰类型：{'、'.join(data.interference_labels)}
+            积分：难度越高基础分越高（1～3分）；首次扩增前猜中可叠加首阶段×2、首答×2，理论最高4倍。
         ''')
     )
     await guess_music_pic.send(MessageSegment.image(guess.render_pic_crop(data)))

@@ -1,0 +1,115 @@
+"""猜歌限时加倍卡：群管理发放，下次猜对消耗一张并 ×2 积分。"""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Dict, List, Optional, Tuple
+
+from pydantic import BaseModel, Field
+
+from ..config import guess_boost_card_file
+from .tool import writefile
+
+DEFAULT_CARD_HOURS = 24
+MAX_CARDS_PER_GRANT = 10
+
+
+class BoostCard(BaseModel):
+    expires_at: float
+    issued_at: float = 0
+    issued_by: str = ''
+
+
+class UserBoostCards(BaseModel):
+    cards: List[BoostCard] = Field(default_factory=list)
+
+
+class GroupBoostCards(BaseModel):
+    members: Dict[str, UserBoostCards] = Field(default_factory=dict)
+
+
+class BoostCardStore(BaseModel):
+    groups: Dict[str, GroupBoostCards] = Field(default_factory=dict)
+
+
+class GuessBoostCardManager:
+
+    def __init__(self) -> None:
+        if guess_boost_card_file.exists():
+            with open(guess_boost_card_file, 'r', encoding='utf-8') as f:
+                self.store = BoostCardStore.model_validate(json.load(f))
+        else:
+            self.store = BoostCardStore()
+
+    @staticmethod
+    def _gid_key(gid: int) -> str:
+        return str(gid)
+
+    @staticmethod
+    def _uid_key(uid: int) -> str:
+        return str(uid)
+
+    def _purge_expired(self, user: UserBoostCards, *, now: Optional[float] = None) -> None:
+        ts = now if now is not None else time.time()
+        user.cards = [c for c in user.cards if c.expires_at > ts]
+
+    def _get_user(self, gid: int, uid: int) -> UserBoostCards:
+        gk = self._gid_key(gid)
+        uk = self._uid_key(uid)
+        if gk not in self.store.groups:
+            self.store.groups[gk] = GroupBoostCards()
+        group = self.store.groups[gk]
+        if uk not in group.members:
+            group.members[uk] = UserBoostCards()
+        user = group.members[uk]
+        self._purge_expired(user)
+        return user
+
+    async def _save(self) -> None:
+        await writefile(guess_boost_card_file, self.store.model_dump())
+
+    def active_count(self, gid: int, uid: int) -> int:
+        return len(self._get_user(gid, uid).cards)
+
+    def nearest_expiry_hours(self, gid: int, uid: int) -> Optional[float]:
+        user = self._get_user(gid, uid)
+        if not user.cards:
+            return None
+        remain = min(c.expires_at for c in user.cards) - time.time()
+        return max(0.0, remain / 3600)
+
+    async def grant(
+        self,
+        gid: int,
+        uid: int,
+        *,
+        count: int = 1,
+        hours: float = DEFAULT_CARD_HOURS,
+        issuer_uid: int,
+    ) -> Tuple[int, float]:
+        count = max(1, min(int(count), MAX_CARDS_PER_GRANT))
+        hours = max(1.0, float(hours))
+        now = time.time()
+        ttl = hours * 3600
+        user = self._get_user(gid, uid)
+        for _ in range(count):
+            user.cards.append(BoostCard(
+                expires_at=now + ttl,
+                issued_at=now,
+                issued_by=self._uid_key(issuer_uid),
+            ))
+        await self._save()
+        return count, hours
+
+    async def consume_one(self, gid: int, uid: int) -> bool:
+        user = self._get_user(gid, uid)
+        if not user.cards:
+            return False
+        user.cards.sort(key=lambda c: c.expires_at)
+        user.cards.pop(0)
+        await self._save()
+        return True
+
+
+guess_boost_card = GuessBoostCardManager()
