@@ -55,6 +55,13 @@ def _sender_name(event: GroupMessageEvent) -> str:
     return event.sender.card or event.sender.nickname or str(event.user_id)
 
 
+def _guess_first_stage(data: GuessData) -> bool:
+    """猜曲子：第二段发出前（仅听过第一段）仍算首阶段。"""
+    if isinstance(data, GuessAudioData):
+        return data.hint_step < 2
+    return data.hint_step == 0
+
+
 async def _award_guess_points(
     event: GroupMessageEvent,
     data: GuessData,
