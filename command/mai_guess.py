@@ -217,7 +217,7 @@ def _parse_grant_target(
     target = _get_at_qq(event)
     if target is not None:
         return target
-    text = args.extract_plaintext().strip()
+    text = args.extract_plain_text().strip()
     if text == '全体' or text.startswith('全体 '):
         return 'all'
     return None
@@ -258,7 +258,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
             f'示例：发加倍卡 @某人 1 {DEFAULT_CARD_HOURS}；发加倍卡 全体 1 {DEFAULT_CARD_HOURS}',
             reply_message=True,
         )
-    extra = args.extract_plaintext().strip()
+    extra = args.extract_plain_text().strip()
     count, hours = _parse_grant_args(extra, for_all=(target == 'all'))
 
     if target == 'all':
@@ -687,7 +687,7 @@ async def _handle_guess_history_board(
 
 @guess_score_hist_daily.handle()
 async def _(event: GroupMessageEvent, args: Message = CommandArg()):
-    key = args.extract_plaintext().strip()
+    key = args.extract_plain_text().strip()
     await _handle_guess_history_board(
         event, guess_score_hist_daily, period='daily', period_key=key or None,
     )
@@ -695,7 +695,7 @@ async def _(event: GroupMessageEvent, args: Message = CommandArg()):
 
 @guess_score_hist_weekly.handle()
 async def _(event: GroupMessageEvent, args: Message = CommandArg()):
-    key = args.extract_plaintext().strip()
+    key = args.extract_plain_text().strip()
     await _handle_guess_history_board(
         event, guess_score_hist_weekly, period='weekly', period_key=key or None,
     )
@@ -703,7 +703,7 @@ async def _(event: GroupMessageEvent, args: Message = CommandArg()):
 
 @guess_score_hist_monthly.handle()
 async def _(event: GroupMessageEvent, args: Message = CommandArg()):
-    key = args.extract_plaintext().strip()
+    key = args.extract_plain_text().strip()
     await _handle_guess_history_board(
         event, guess_score_hist_monthly, period='monthly', period_key=key or None,
     )
@@ -711,7 +711,7 @@ async def _(event: GroupMessageEvent, args: Message = CommandArg()):
 
 @guess_score_hist_yearly.handle()
 async def _(event: GroupMessageEvent, args: Message = CommandArg()):
-    key = args.extract_plaintext().strip()
+    key = args.extract_plain_text().strip()
     await _handle_guess_history_board(
         event, guess_score_hist_yearly, period='yearly', period_key=key or None,
     )
@@ -719,7 +719,7 @@ async def _(event: GroupMessageEvent, args: Message = CommandArg()):
 
 @guess_score_hist_season.handle()
 async def _(event: GroupMessageEvent, args: Message = CommandArg()):
-    key = args.extract_plaintext().strip()
+    key = args.extract_plain_text().strip()
     await _handle_guess_history_board(
         event, guess_score_hist_season, period='season', period_key=key or None,
     )
