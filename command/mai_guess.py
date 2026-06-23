@@ -14,6 +14,7 @@ from ..libraries.maimaidx_guess_match import match_guess_answer
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_guess_audio import (
+    STAGE_FINAL_GRACE,
     STAGE_INTERVAL,
     STAGE_LABELS,
     build_hot_audio_cache,
@@ -73,6 +74,9 @@ async def _award_guess_points(
         first_stage=first_stage,
         first_guess=first_guess,
     )
+    if isinstance(data, GuessAudioData) and guess_score.audio_season_double_active():
+        multiplier *= 2
+        multiplier_tags.append('赛季限时双倍得分')
     (
         added, raw_base, combo, streak, total, rank, period_snapshot,
     ) = await guess_score.award_correct_guess(
@@ -124,6 +128,23 @@ async def _send_guess_answer_bundle(
         await _safe_matcher_send(
             matcher, event,
             MessageSegment.image(guess.render_pic_reveal(data)),
+        )
+    if (
+        isinstance(data, GuessAudioData)
+        and data.hint_step < data.stage_count
+        and data.stage_paths
+    ):
+        final_idx = data.stage_count - 1
+        stage_path = Path(data.stage_paths[final_idx]).resolve()
+        label = (
+            STAGE_LABELS[final_idx]
+            if final_idx < len(STAGE_LABELS)
+            else '完整混音'
+        )
+        await _safe_matcher_send(
+            matcher, event,
+            MessageSegment.text(f'[{label}]\n')
+            + MessageSegment.record(str(stage_path)),
         )
 
 
@@ -294,10 +315,16 @@ async def _(event: GroupMessageEvent):
         f'[GuessAudio] 猜曲子开始 gid={gid} music_id={data.music.id} '
         f'title={data.music.title} stages={stage_count} mode={audio_meta.get("mode", "?")}'
     )
+    season_line = (
+        '\n【赛季限时双倍得分】猜曲子积分 ×2（截至 6/30）'
+        if guess_score.audio_season_double_active()
+        else ''
+    )
     await guess_music_audio.send(
         dedent(f'''\
             猜曲子开始！共 {stage_count} 个阶段，每段约 30 秒，
             每隔 {STAGE_INTERVAL} 秒会放出更完整的混音。
+            第四阶段结束后仍有 {STAGE_FINAL_GRACE} 秒作答时间。{season_line}
             请输入歌曲 id、标题或别名猜歌（DX 与标准视为不同曲目）。
             发送 重置猜歌 可结束本局。
         ''')
@@ -322,6 +349,11 @@ async def _(event: GroupMessageEvent):
         )
         cur.hint_step = stage_idx + 1
 
+        if stage_idx == stage_count - 1:
+            await guess_music_audio.send(
+                f'第四阶段已放出，最后 {STAGE_FINAL_GRACE} 秒作答时间！'
+            )
+
         if stage_idx < stage_count - 1:
             for _ in range(STAGE_INTERVAL):
                 await asyncio.sleep(1)
@@ -331,7 +363,7 @@ async def _(event: GroupMessageEvent):
                 if gid not in guess.switch.enable or cur.end:
                     await guess_music_audio.finish()
 
-    for _ in range(STAGE_INTERVAL):
+    for _ in range(STAGE_FINAL_GRACE):
         await asyncio.sleep(1)
         if gid not in guess.Group:
             await guess_music_audio.finish()

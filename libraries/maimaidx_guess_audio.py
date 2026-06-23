@@ -19,7 +19,8 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CDN_BASE = 'https://assets2.lxns.net/maimai/music'
 STAGE_COUNT = 4
 STAGE_DURATION = 30
-STAGE_INTERVAL = 30
+STAGE_INTERVAL = 20
+STAGE_FINAL_GRACE = 60
 # 分轨前先从原曲裁一段，降低 CPU/内存压力（整首 demucs 易 OOM）
 SEPARATION_CLIP_DURATION = STAGE_DURATION + 15
 # htdemucs 有效 segment 上限约 7.8s，CLI 只接受整数故用 7
@@ -155,16 +156,65 @@ def _save_manifest(data: Dict[str, dict]) -> None:
     )
 
 
+def _stage_files_complete(music_id: str) -> bool:
+    mid = str(music_id)
+    return all(_stage_path(mid, i).is_file() for i in range(1, STAGE_COUNT + 1))
+
+
+def _try_adopt_stale_cache(music_id: str) -> bool:
+    """旧 mix_rev 或 manifest 缺失，但四段文件完整且校验通过时仅更新 manifest。"""
+    mid = str(music_id)
+    if not _stage_files_complete(mid):
+        return False
+    try:
+        _verify_stage_audio(mid)
+    except RuntimeError as e:
+        log.debug(f'[GuessAudio] 无法复用旧缓存 music_id={mid}: {e}')
+        return False
+    manifest = _load_manifest()
+    entry = manifest.get(mid, {})
+    manifest[mid] = {
+        **entry,
+        'ready': True,
+        'stages': STAGE_COUNT,
+        'mix_rev': STAGE_MIX_REV,
+    }
+    _save_manifest(manifest)
+    log.info(f'[GuessAudio] 复用已有阶段文件 music_id={mid} mix_rev->{STAGE_MIX_REV}')
+    return True
+
+
 def is_audio_ready(music_id: str) -> bool:
     mid = str(music_id)
     manifest = _load_manifest()
     entry = manifest.get(mid)
-    if not entry or not entry.get('ready'):
-        return False
-    if entry.get('mix_rev') != STAGE_MIX_REV:
-        return False
-    stages = int(entry.get('stages', STAGE_COUNT))
-    return all(_stage_path(mid, i).is_file() for i in range(1, stages + 1))
+    if entry and entry.get('ready') and entry.get('mix_rev') == STAGE_MIX_REV:
+        stages = int(entry.get('stages', STAGE_COUNT))
+        if all(_stage_path(mid, i).is_file() for i in range(1, stages + 1)):
+            return True
+    if _try_adopt_stale_cache(mid):
+        return True
+    return False
+
+
+def summarize_pool_cache(pool) -> Dict[str, int]:
+    """统计热门池缓存状态（烘焙开始前打日志用）。"""
+    stats = {'ready': 0, 'stale': 0, 'partial': 0, 'empty': 0}
+    manifest = _load_manifest()
+    for music in pool:
+        mid = str(music.id)
+        entry = manifest.get(mid)
+        files = [_stage_path(mid, i).is_file() for i in range(1, STAGE_COUNT + 1)]
+        complete = all(files)
+        if entry and entry.get('ready') and entry.get('mix_rev') == STAGE_MIX_REV and complete:
+            stats['ready'] += 1
+        elif complete:
+            stats['stale'] += 1
+        elif any(files):
+            stats['partial'] += 1
+        else:
+            stats['empty'] += 1
+    return stats
 
 
 def list_stage_files(music_id: str) -> List[Path]:
@@ -617,6 +667,8 @@ def _format_hot_batch_report(
         f'新建/重建：{len(ok_ids)}',
         f'已跳过（有缓存）：{len(skip_ids)}',
         f'失败：{len(fail_lines)}',
+        '说明：增量模式会跳过 mix_rev 匹配或校验通过的旧文件；'
+        '不是按上次中断序号续跑，而是扫描全池。',
     ])
     if fail_lines:
         preview = fail_lines[:8]
@@ -681,9 +733,12 @@ async def build_hot_audio_cache(*, force: bool = False) -> str:
         return '热门池为空，无法烘焙。'
 
     demucs_on = _demucs_available()
+    cache_stats = summarize_pool_cache(pool)
     log.info(
         f'[GuessAudio] 热门池烘焙开始 total={len(pool)} force={force} '
-        f'demucs={"yes" if demucs_on else "no"} device={_demucs_device() if demucs_on else "-"}'
+        f'demucs={"yes" if demucs_on else "no"} device={_demucs_device() if demucs_on else "-"} '
+        f'cache_ready={cache_stats["ready"]} stale_files={cache_stats["stale"]} '
+        f'partial={cache_stats["partial"]} empty={cache_stats["empty"]} mix_rev={STAGE_MIX_REV}'
     )
     batch_t0 = time.perf_counter()
 
@@ -754,9 +809,12 @@ def build_hot_audio_cache_sync(*, force: bool = False) -> str:
         return '热门池为空，无法烘焙。'
 
     demucs_on = _demucs_available()
+    cache_stats = summarize_pool_cache(pool)
     log.info(
         f'[GuessAudio] 热门池烘焙开始 total={len(pool)} force={force} '
-        f'demucs={"yes" if demucs_on else "no"} device={_demucs_device() if demucs_on else "-"}'
+        f'demucs={"yes" if demucs_on else "no"} device={_demucs_device() if demucs_on else "-"} '
+        f'cache_ready={cache_stats["ready"]} stale_files={cache_stats["stale"]} '
+        f'partial={cache_stats["partial"]} empty={cache_stats["empty"]} mix_rev={STAGE_MIX_REV}'
     )
     batch_t0 = time.perf_counter()
 

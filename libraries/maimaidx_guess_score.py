@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from loguru import logger as log
@@ -72,6 +72,8 @@ class GuessScoreManager:
     AUDIO_MIN_POINTS = 5
     AUDIO_MAX_POINTS = 10
     AUDIO_STAGE_POINTS = (10, 9, 7, 5)
+    # 猜曲子赛季限时双倍（含 2026-06-30 当天）
+    AUDIO_SEASON_DOUBLE_END = date(2026, 6, 30)
     MAX_HISTORY_PER_PERIOD = 30
 
     PERIODS: Dict[str, PeriodSpec] = {
@@ -96,6 +98,10 @@ class GuessScoreManager:
             return self.AUDIO_MAX_POINTS
         idx = min(int(hint_step), len(self.AUDIO_STAGE_POINTS)) - 1
         return self.AUDIO_STAGE_POINTS[idx]
+
+    @classmethod
+    def audio_season_double_active(cls) -> bool:
+        return date.today() <= cls.AUDIO_SEASON_DOUBLE_END
 
     def __init__(self) -> None:
         if guess_score_file.exists():
