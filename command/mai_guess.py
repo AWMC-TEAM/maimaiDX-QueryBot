@@ -199,6 +199,7 @@ async def _(event: GroupMessageEvent):
             我将从热门乐曲中选择一首歌，每隔8秒描述它的特征，
             请输入歌曲的 id 标题 或 别名（需bot支持，无需大小写）进行猜歌（DX乐谱和标准乐谱视为两首歌）。
             猜歌时查歌等其他命令依然可用。
+            积分：越早猜中越高（基础最高7分）；首条提示前猜中可叠加首阶段×2、首答×2，理论最高4倍。
         ''')
     )
     await asyncio.sleep(4)
@@ -323,7 +324,8 @@ async def _(event: GroupMessageEvent):
         f'title={data.music.title} stages={stage_count} mode={audio_meta.get("mode", "?")}'
     )
     season_line = (
-        '\n【赛季限时双倍得分】猜曲子积分 ×2（截至 6/30）'
+        '\n【赛季限时双倍得分】猜曲子积分 ×2（截至 6/30；'
+        '第二段前猜中可叠加首阶段×2、首答×2，理论最高 8 倍）'
         if guess_score.audio_season_double_active()
         else ''
     )
@@ -423,7 +425,7 @@ async def _(event: GroupMessageEvent):
         settlement = await _award_guess_points(
             event,
             data,
-            first_stage=data.hint_step == 0,
+            first_stage=_guess_first_stage(data),
             first_guess=first_guess,
         )
         guess.end(gid)
