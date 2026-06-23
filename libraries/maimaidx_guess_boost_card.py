@@ -102,6 +102,32 @@ class GuessBoostCardManager:
         await self._save()
         return count, hours
 
+    async def grant_many(
+        self,
+        gid: int,
+        uids: list[int],
+        *,
+        count: int = 1,
+        hours: float = DEFAULT_CARD_HOURS,
+        issuer_uid: int,
+    ) -> tuple[int, float]:
+        """向多人各发放若干张卡，仅持久化一次。"""
+        count = max(1, min(int(count), MAX_CARDS_PER_GRANT))
+        hours = max(1.0, float(hours))
+        now = time.time()
+        ttl = hours * 3600
+        issuer = self._uid_key(issuer_uid)
+        for uid in uids:
+            user = self._get_user(gid, uid)
+            for _ in range(count):
+                user.cards.append(BoostCard(
+                    expires_at=now + ttl,
+                    issued_at=now,
+                    issued_by=issuer,
+                ))
+        await self._save()
+        return len(uids), hours
+
     async def consume_one(self, gid: int, uid: int) -> bool:
         user = self._get_user(gid, uid)
         if not user.cards:

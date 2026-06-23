@@ -1,7 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional, Union
 
 from loguru import logger as log
 from nonebot import get_bot, on_command, on_message, on_regex
@@ -202,9 +202,32 @@ def _get_at_qq(event: GroupMessageEvent) -> Optional[int]:
     return None
 
 
-def _parse_grant_args(text: str) -> tuple[int, float]:
+def _is_at_all(event: GroupMessageEvent) -> bool:
+    for item in event.message:
+        if isinstance(item, MessageSegment) and item.type == 'at' and item.data.get('qq') == 'all':
+            return True
+    return False
+
+
+def _parse_grant_target(
+    event: GroupMessageEvent, args: Message,
+) -> Optional[Union[int, Literal['all']]]:
+    if _is_at_all(event):
+        return 'all'
+    target = _get_at_qq(event)
+    if target is not None:
+        return target
+    text = args.extract_plaintext().strip()
+    if text == '全体' or text.startswith('全体 '):
+        return 'all'
+    return None
+
+
+def _parse_grant_args(text: str, *, for_all: bool = False) -> tuple[int, float]:
     """解析 数量 [有效小时]，默认 1 张 / 24 小时。"""
     parts = text.strip().split()
+    if for_all and parts and parts[0] == '全体':
+        parts = parts[1:]
     count = 1
     hours = float(DEFAULT_CARD_HOURS)
     if parts:
@@ -221,20 +244,52 @@ def _parse_grant_args(text: str) -> tuple[int, float]:
 
 
 @guess_boost_grant.handle()
-async def _(event: GroupMessageEvent, args: Message = CommandArg()):
+async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     if event.group_id not in guess.switch.enable:
         await guess_boost_grant.finish(
             '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
         )
-    target = _get_at_qq(event)
+    target = _parse_grant_target(event, args)
     if target is None:
         await guess_boost_grant.finish(
             '用法：发加倍卡 @用户 [数量] [有效小时]\n'
-            f'示例：发加倍卡 @某人 1 {DEFAULT_CARD_HOURS}（默认 1 张、{DEFAULT_CARD_HOURS} 小时内有效）',
+            '      发加倍卡 @全体成员 [数量] [有效小时]\n'
+            '      发加倍卡 全体 [数量] [有效小时]\n'
+            f'示例：发加倍卡 @某人 1 {DEFAULT_CARD_HOURS}；发加倍卡 全体 1 {DEFAULT_CARD_HOURS}',
             reply_message=True,
         )
     extra = args.extract_plaintext().strip()
-    count, hours = _parse_grant_args(extra)
+    count, hours = _parse_grant_args(extra, for_all=(target == 'all'))
+
+    if target == 'all':
+        try:
+            raw = await bot.call_api('get_group_member_list', group_id=event.group_id)
+        except Exception as e:
+            log.warning(f'[GuessBoost] 获取群成员失败 gid={event.group_id}: {e}')
+            await guess_boost_grant.finish(f'获取群成员失败：{e}', reply_message=True)
+        if not raw or not isinstance(raw, list):
+            await guess_boost_grant.finish('群成员列表为空。', reply_message=True)
+        self_id = int(bot.self_id)
+        uids = [
+            int(m['user_id']) for m in raw
+            if m.get('user_id') is not None and int(m['user_id']) != self_id
+        ]
+        if not uids:
+            await guess_boost_grant.finish('群成员列表为空。', reply_message=True)
+        member_count, hours = await guess_boost_card.grant_many(
+            event.group_id,
+            uids,
+            count=count,
+            hours=hours,
+            issuer_uid=event.user_id,
+        )
+        await guess_boost_grant.finish(
+            f'已向本群 {member_count} 人各发放 {count} 张限时加倍卡'
+            f'（{hours:g} 小时内有效，猜对消耗 1 张积分 ×2）。',
+            reply_message=True,
+        )
+        return
+
     granted, hours = await guess_boost_card.grant(
         event.group_id,
         target,
