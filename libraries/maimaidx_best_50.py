@@ -897,12 +897,14 @@ def _yueji_b50_records(records: List[PlayInfoDev], threshold: float) -> List[Pla
 
 
 _cached_b15_versions: Optional[set[str]] = None
+_cached_lib_has_new_flag: Optional[bool] = None
 
 
 def invalidate_b15_version_cache() -> None:
-    """曲库更新后清除 B15 版本缓存，使 _get_b15_version_set 重新推断世代。"""
-    global _cached_b15_versions
+    """曲库更新后清除 B15 相关缓存，使版本/新曲判定重新推断。"""
+    global _cached_b15_versions, _cached_lib_has_new_flag
     _cached_b15_versions = None
+    _cached_lib_has_new_flag = None
 
 
 def _get_b15_version_set() -> set[str]:
@@ -919,27 +921,49 @@ def _get_b15_version_set() -> set[str]:
     return _cached_b15_versions
 
 
-def _song_version_in_b15(song_id: Union[str, int]) -> bool:
-    latest_versions = _get_b15_version_set()
+def _library_has_new_flag() -> bool:
+    """曲库是否带有可用的 is_new 新曲标记（水鱼源有；个别精简源可能全为 False）。"""
+    global _cached_lib_has_new_flag
+    if _cached_lib_has_new_flag is None:
+        _cached_lib_has_new_flag = any(
+            getattr(getattr(m, 'basic_info', None), 'is_new', False)
+            for m in mai.total_list
+        )
+    return _cached_lib_has_new_flag
+
+
+def _music_is_new(music) -> bool:
+    """
+    曲目是否为「新版本」(B15) 曲目（统一判定入口）。
+
+    优先用曲库 is_new（新曲标记），与水鱼查分器 charts.dx(B15) 完全一致——
+    避免变体 b50 / 上分把旧曲(B35)误判进 B15 区；
+    仅当曲库无任何 is_new 标记时，回退到「当前版本名集合」判定。
+    """
+    if not (music and getattr(music, 'basic_info', None)):
+        return False
+    if _library_has_new_flag():
+        return bool(getattr(music.basic_info, 'is_new', False))
+    return getattr(music.basic_info, 'version', None) in _get_b15_version_set()
+
+
+def _song_is_new(song_id: Union[str, int]) -> bool:
     try:
-        music = mai.total_list.by_id(str(song_id))
-        if music and getattr(music, 'basic_info', None):
-            return getattr(music.basic_info, 'version', None) in latest_versions
+        return _music_is_new(mai.total_list.by_id(str(song_id)))
     except Exception:
-        pass
-    return False
+        return False
 
 
 def _is_latest_version(r: PlayInfoDev) -> bool:
     """
-    成绩所属曲目是否为 config 中的最新版本（用于常规 b50 归入 B15 区）；否则归入 B35 区。
+    成绩所属曲目是否为新版本(B15 区)曲目；否则归入旧版本(B35 区)。
     与谱面类型 SD/DX 无关；查分器 B15=dx、B35=sd。
     """
-    return _song_version_in_b15(r.song_id)
+    return _song_is_new(r.song_id)
 
 
 def _is_latest_version_chart(chart: ChartInfo) -> bool:
-    return _song_version_in_b15(chart.song_id)
+    return _song_is_new(chart.song_id)
 
 
 def _chart_keys(charts: List[ChartInfo]) -> set[tuple[int, int]]:

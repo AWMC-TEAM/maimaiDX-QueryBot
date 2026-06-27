@@ -403,8 +403,8 @@ async def draw_music_info(
             else:
                 player = user
             # bestlist: 查分器 B15(dx) 或 B35(sd) 成绩列表
-            from .maimaidx_best_50 import _get_b15_version_set
-            if music.basic_info.version in _get_b15_version_set():
+            # 新曲(is_new)归 B15，否则归 B35，与水鱼 charts.dx/sd 口径一致
+            if music.basic_info.is_new:
                 bestlist = player.charts.dx   # B15
                 isfull = bool(len(bestlist) == 15)
             else:

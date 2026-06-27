@@ -12,7 +12,7 @@ from ..config import *
 from .maimaidx_theme import pic
 from .image import *
 from .maimaidx_api_data import *
-from .maimaidx_best_50 import ScoreBaseImage, changeColumnWidth, coloumWidth, computeRa
+from .maimaidx_best_50 import ScoreBaseImage, changeColumnWidth, coloumWidth, computeRa, _music_is_new
 from .maimaidx_model import PlanInfo, PlayInfoDefault, PlayInfoDev, RaMusic
 from .maimaidx_music import Music, mai
 from .tool import run_chrome_to_base64
@@ -480,12 +480,9 @@ def _pick_rise_scores(
     ignore: set[tuple[int, int]],
     ra: int,
     score: Optional[int],
-    allowed_versions: Optional[set[str]] = None,
 ) -> List[RiseScore]:
     music: List[RiseScore] = []
     for _m in candidate:
-        if allowed_versions is not None and _m.basic_info.version not in allowed_versions:
-            continue
         if (song_id := int(_m.id)) >= 100000:
             continue
         for index in _m.diff:
@@ -538,18 +535,16 @@ def get_rise_score_list(
     score: Optional[int] = None,
     *,
     fallback_ra: Optional[int] = None,
-    b15_gen: Optional[int] = None,
 ) -> Tuple[List[RiseScore], int]:
     """
-    随机获取加分曲目。B35/B15 与谱面类型 SD/DX 无关联；此处用谱面类型筛选曲目。
+    随机获取加分曲目。
 
     Params:
-        chart_type: 谱面类型 'SD' 标准谱面 / 'DX' DX谱面
-        b50_list: B35 或 B15 成绩列表（旧版本/新版本）
+        chart_type: 'SD'=旧版本列(B35) / 'DX'=新版本列(B15)
+        b50_list: 对应区已上分的成绩列表（用于取底分、去重）
         level: 等级
-        score: 分数
+        score: 目标提升分
         fallback_ra: B15 为空时用于估算定数区间的 B35 底分
-        b15_gen: 兼容旧签名，已弃用（新版本列固定为当前 B15 版本，不再回退旧世代）
     Returns:
         `Tuple[List[RiseScore], int]`
     """
@@ -572,14 +567,13 @@ def get_rise_score_list(
     sssp_ds = round(ra / 22.4, 1)
     ds = (round(sssp_ds + 0.1, 1), round(ss_ds + 0.1, 1))
 
-    if chart_type == 'SD':
-        # 旧版本列(B35)：排除当前 B15 两代（国服 PRiSM PLUS = 镜彩）
-        version = get_b35_version_names_for_generation(0)
-    else:
-        # 新版本列(B15)：仅当前 B15 版本（国服 PRiSM PLUS = 镜彩），绝不回退旧版本
-        version = get_b15_version_names_at_generation(0)
-
-    candidate = mai.total_list.filter(level=level, ds=ds, version=version)
+    # 新旧版本判定与 b50 完全一致：按曲库 is_new(新曲) 标记（_music_is_new 带版本名兜底）。
+    # chart_type=='DX' 对应「新版本列」(B15)，=='SD' 对应「旧版本列」(B35)。
+    want_new = chart_type == 'DX'
+    candidate = [
+        m for m in mai.total_list.filter(level=level, ds=ds)
+        if _music_is_new(m) == want_new
+    ]
     music = _pick_rise_scores(
         old_records, candidate, ignore=ignore, ra=ra, score=score,
     )
