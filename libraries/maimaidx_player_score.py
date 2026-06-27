@@ -473,14 +473,6 @@ class DrawScore(ScoreBaseImage):
         return self._im
 
 
-def _resolve_rise_b15_generation() -> int:
-    """上分 B15 曲目搜索起始世代：按曲库实际收录，不读玩家 B15（避免旧 B15 拖低 B35 边界）。"""
-    lib_versions = {
-        m.basic_info.version for m in mai.total_list if m.basic_info.version
-    }
-    return resolve_b15_generation(lib_versions)
-
-
 def _pick_rise_scores(
     old_records: DefaultDict[int, Dict[int, float]],
     candidate,
@@ -557,7 +549,7 @@ def get_rise_score_list(
         level: 等级
         score: 分数
         fallback_ra: B15 为空时用于估算定数区间的 B35 底分
-        b15_gen: B15 曲目搜索起始世代（仅新版本列；B35 边界为当前 B15 上一代）
+        b15_gen: 兼容旧签名，已弃用（新版本列固定为当前 B15 版本，不再回退旧世代）
     Returns:
         `Tuple[List[RiseScore], int]`
     """
@@ -580,38 +572,17 @@ def get_rise_score_list(
     sssp_ds = round(ra / 22.4, 1)
     ds = (round(sssp_ds + 0.1, 1), round(ss_ds + 0.1, 1))
 
-    values = list(plate_to_dx_version.values())
-    max_gen = max((len(values) - 2) // 2, 0)
-
-    music: List[RiseScore] = []
     if chart_type == 'SD':
-        # B35：排除当前 B15 两代（镜彩），更早版本均属旧版
+        # 旧版本列(B35)：排除当前 B15 两代（国服 PRiSM PLUS = 镜彩）
         version = get_b35_version_names_for_generation(0)
-        candidate = mai.total_list.filter(level=level, ds=ds, version=version)
-        music = _pick_rise_scores(
-            old_records, candidate, ignore=ignore, ra=ra, score=score,
-        )
     else:
-        if b15_gen is None:
-            b15_gen = _resolve_rise_b15_generation()
-        for gen in range(0, max_gen + 1):
-            version = get_b15_version_names_at_generation(gen)
-            candidate = mai.total_list.filter(level=level, ds=ds, version=version)
-            if not candidate:
-                continue
-            music = _pick_rise_scores(
-                old_records, candidate, ignore=ignore, ra=ra, score=score,
-            )
-            if music:
-                break
+        # 新版本列(B15)：仅当前 B15 版本（国服 PRiSM PLUS = 镜彩），绝不回退旧版本
+        version = get_b15_version_names_at_generation(0)
 
-    if not music and chart_type == 'DX':
-        allowed = set(get_b15_version_names_at_generation(b15_gen or 0))
-        candidate = mai.total_list.filter(level=level, ds=ds)
-        music = _pick_rise_scores(
-            old_records, candidate, ignore=ignore, ra=ra, score=score,
-            allowed_versions=allowed,
-        )
+    candidate = mai.total_list.filter(level=level, ds=ds, version=version)
+    music = _pick_rise_scores(
+        old_records, candidate, ignore=ignore, ra=ra, score=score,
+    )
 
     if not music:
         return music, ra if (b50_list or fallback_ra) else 0
@@ -647,13 +618,12 @@ async def rise_score_data(
         # chart_type 谱面类型；charts.sd/dx 对应 B35/B15（旧版本/新版本成绩）
         sd_list = (user.charts and user.charts.sd) or []
         dx_list = (user.charts and user.charts.dx) or []
-        b15_gen = _resolve_rise_b15_generation()
         b35_scores, b35_low = get_rise_score_list(
-            old_records, 'SD', sd_list, level, score, b15_gen=b15_gen,
+            old_records, 'SD', sd_list, level, score,
         )
         b15_scores, b15_low = get_rise_score_list(
             old_records, 'DX', dx_list, level, score,
-            fallback_ra=b35_low or None, b15_gen=b15_gen,
+            fallback_ra=b35_low or None,
         )
         if not b35_scores and not b15_scores:
             return '没有推荐的铺面'
