@@ -98,7 +98,7 @@ lock_ab50    = on_command('锁血ab50', aliases={'锁血a50'})
 yueji_b50    = on_command('越级b50', aliases={'越级50'})
 yueji_ab50   = on_command('越级ab50', aliases={'越级a50'})
 # 允许首尾及中间空格/换行，避免 QQ 换行导致「双\n代b50」无法匹配
-version_b50  = on_regex(r'^\s*([初真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉霸舞熊华華爽煌宙星祭祝双宴镜彩])\s*代\s*b50\s*$')
+version_b50  = on_regex(r'^\s*([初真超檄橙暁晓桃櫻樱紫菫堇白雪輝辉霸舞熊华華爽煌宙星祭祝双宴镜彩丸圆])\s*代\s*b50\s*$')
 legacy_b50   = on_regex(r'^\s*l\s*(.+代)\s*b50\s*$')
 legacy_b35   = on_regex(r'^\s*l\s*(.+代)\s*b35\s*$')
 dx2025_b50   = on_command('dx2025b50', aliases={'DX2025b50'})

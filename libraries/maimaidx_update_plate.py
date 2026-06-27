@@ -104,12 +104,11 @@ class UpdateTable:
             lvlist = mai.total_level_data[lv]
             grid_step = 85
             start_x = 140
-            current_y = 450
+            from .maimaidx_table_image import RatingGridConfig
+
+            current_y = RatingGridConfig.start_y
             for songs in lvlist.values():
-                if not songs:
-                    continue
-                rows = (len(songs) - 1) // 14 + 1
-                current_y += rows * grid_step + 30
+                current_y = RatingGridConfig.advance_group_y(current_y, len(songs))
             height = current_y + 230
 
             _im = assets.generate_bg(height, 360)
@@ -126,16 +125,14 @@ class UpdateTable:
                 bottom_gap=24,
             )
 
-            start_y = 450
+            start_y = RatingGridConfig.start_y
             for ds, songs in lvlist.items():
                 if not songs:
                     continue
                 sub_ds = ds.split('.')[-1]
                 fot.draw(70, start_y + 35, 40, f'.{sub_ds}', assets.font_color, 'lm', 4, (255, 255, 255, 255))
-                max_row = 0
                 for num, music in enumerate(songs):
-                    row, col = divmod(num, 14)
-                    max_row = max(max_row, row)
+                    row, col = divmod(num, RatingGridConfig.row_count)
                     x = start_x + col * grid_step
                     y = start_y + row * grid_step
                     cover = Image.open(music_picture(music.id)).resize((75, 75))
@@ -146,7 +143,7 @@ class UpdateTable:
                         x + 56, y + 4, 13, music.id,
                         assets.diff_text_color[lv_idx], 'mm',
                     )
-                start_y += (max_row + 1) * grid_step + 30
+                start_y = RatingGridConfig.advance_group_y(start_y, len(songs))
 
             await self._save_image(im, rating_table_dir / f'{lv}.png')
             elapsed = round(time.time() - single_time, 3)

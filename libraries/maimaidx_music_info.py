@@ -403,7 +403,8 @@ async def draw_music_info(
             else:
                 player = user
             # bestlist: 查分器 B15(dx) 或 B35(sd) 成绩列表
-            if music.basic_info.version == list(plate_to_dx_version.values())[-1]:
+            from .maimaidx_best_50 import _get_b15_version_set
+            if music.basic_info.version in _get_b15_version_set():
                 bestlist = player.charts.dx   # B15
                 isfull = bool(len(bestlist) == 15)
             else:
@@ -722,7 +723,10 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
         from .maimaidx_theme import Theme
         theme = Theme.get_default().value
         for ra, songs in lv_data.items():
-            for num, music in enumerate(lv_data[ra]):
+            # 与底图生成 (update_rating_table) 一致：跳过空定数分组，避免覆盖层逐段下移错位
+            if not songs:
+                continue
+            for num, music in enumerate(songs):
                 row, col = divmod(num, RatingGridConfig.row_count)
                 x = RatingGridConfig.start_x + col * RatingGridConfig.gap
                 y = current_y + row * RatingGridConfig.gap
@@ -747,8 +751,7 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
                     fc_icon = assets.get_fc_icon(record['fc'])
                     if fc_icon:
                         im.alpha_composite(fc_icon, (x + 15, y + 13))
-            group_rows = (len(songs) - 1) // RatingGridConfig.row_count + 1
-            current_y += group_rows * RatingGridConfig.gap + 30
+            current_y = RatingGridConfig.advance_group_y(current_y, len(songs))
 
         if len(achievements_or_fc_list) == total_songs_count:
             r = calc_achievements_fc(achievements_or_fc_list, total_songs_count, isfc)

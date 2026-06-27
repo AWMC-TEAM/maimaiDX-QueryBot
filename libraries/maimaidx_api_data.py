@@ -218,7 +218,9 @@ class MaimaiAPI:
         if username:
             json['username'] = username
         json['b50'] = True
-        return UserInfo.model_validate(await self._requestmai('POST', '/query/player', json=json))
+        userinfo = UserInfo.model_validate(await self._requestmai('POST', '/query/player', json=json))
+        from .maimaidx_best_50 import regroup_b50_userinfo
+        return regroup_b50_userinfo(userinfo)
 
     async def query_user_plate(
         self,

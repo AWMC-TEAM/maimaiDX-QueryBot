@@ -203,13 +203,15 @@ def lxns_bests_to_userinfo(bests: dict, nickname: str = '', rating: int = 0) -> 
     sd_list.sort(key=lambda x: -x.ra)
     dx_list.sort(key=lambda x: -x.ra)
 
-    return UserInfo(
+    from .maimaidx_best_50 import regroup_b50_userinfo
+
+    return regroup_b50_userinfo(UserInfo(
         nickname=nickname or '落雪用户',
         rating=rating,
         additional_rating=0,
         username=nickname or '',
         charts=Data(sd=sd_list, dx=dx_list),
-    )
+    ))
 
 
 def lxns_scores_to_records(scores: list) -> List[PlayInfoDev]:

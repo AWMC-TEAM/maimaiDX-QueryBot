@@ -463,10 +463,12 @@ async def resolve_player_b50(
     force_refresh: bool = False,
 ) -> UserInfo:
     """获取 B50：缓存中已有 charts 则直接返回，否则请求 API 并写回缓存。"""
+    from .maimaidx_best_50 import regroup_b50_userinfo
+
     cached = get_cached_player(qqid, username, source, force_refresh=force_refresh)
     if cached is not None and cached.userinfo.charts is not None:
-        return cached.userinfo
-    userinfo = await fetch_b50_fn()
+        return regroup_b50_userinfo(cached.userinfo)
+    userinfo = regroup_b50_userinfo(await fetch_b50_fn())
     records = cached.records if cached is not None else []
     save_cached_player(qqid, username, source, userinfo, records)
     _set_fetch_meta(time.time(), "api", force_refresh=force_refresh)

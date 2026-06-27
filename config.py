@@ -267,15 +267,19 @@ plate_to_dx_version: Dict[str, str] = {
     '宴': 'maimai でらっくす BUDDiES PLUS',
     '镜': 'maimai でらっくす PRiSM',
     '彩': 'maimai でらっくす PRiSM PLUS',
+}
+
+# 未进曲库 / 未上线的 DX 版本（不参与 B15 判定链；仅命令 alias 预留）
+_future_dx_versions: Dict[str, str] = {
     '丸': 'maimai でらっくす CiRCLE',
-    '圆': 'maimai でらっくす CiRCLE PLUS'
+    '圆': 'maimai でらっくす CiRCLE PLUS',
 }
 
 _DX_VERSION_PREFIX = 'maimai でらっくす '
 
 
 def get_latest_plate_versions() -> List[str]:
-    """最新两作完整版本名（B15 区）。"""
+    """当前 B15 两作完整版本名（plate_to_dx_version 末两作，国服现为镜彩）。"""
     return list(plate_to_dx_version.values())[-2:]
 
 
@@ -295,7 +299,7 @@ def expand_version_aliases(versions: List[str]) -> List[str]:
 
 
 def get_b15_version_names() -> List[str]:
-    """配置中的最新 B15 版本名（不检查曲库是否已收录）。"""
+    """当前 B15 版本名（plate_to_dx_version 最新一代）。"""
     return get_b15_version_names_at_generation(0)
 
 
@@ -322,7 +326,7 @@ def resolve_b15_generation(
     *,
     chart_versions: Optional[set[str]] = None,
 ) -> int:
-    """曲库 / 玩家 B15 实际曲目版本推断 B15 世代；无匹配时回退镜彩代。"""
+    """曲库 / 玩家 B15 曲目版本推断 B15 世代；无匹配时回退 gen=0（镜彩）。"""
     values = list(plate_to_dx_version.values())
     max_gen = max((len(values) - 2) // 2, 0)
 
@@ -335,7 +339,7 @@ def resolve_b15_generation(
         if library_versions.intersection(get_b15_version_names_at_generation(gen)):
             return gen
 
-    return min(1, max_gen)
+    return 0
 version_map = {
     '真': ([plate_to_dx_version['真'], plate_to_dx_version['初']], '真'),
     '超': ([plate_to_sd_version['超']], '超'),
@@ -364,8 +368,8 @@ version_map = {
     '宴': ([plate_to_dx_version['双']], '双&宴'),
     '镜': ([plate_to_dx_version['镜']], '镜'),
     '彩': ([plate_to_dx_version['彩']], '彩'),
-    '丸': ([plate_to_dx_version['丸']], '丸'),
-    '圆': ([plate_to_dx_version['圆']], '圆')
+    '丸': ([_future_dx_versions['丸']], '丸'),
+    '圆': ([_future_dx_versions['圆']], '圆')
 }
 
 

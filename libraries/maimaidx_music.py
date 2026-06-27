@@ -383,6 +383,8 @@ class MaiMusic:
         """获取所有曲目数据。force=True 时强制从网络刷新，忽略本地缓存。"""
         self.total_list = await get_music_list(force=force)
         self.total_level_data = self.total_list.by_level_list()
+        from .maimaidx_best_50 import invalidate_b15_version_cache
+        invalidate_b15_version_cache()
 
     async def get_music_alias(self, force: bool = False) -> None:
         """获取所有曲目别名。force=True 时强制从网络刷新，忽略本地缓存。"""

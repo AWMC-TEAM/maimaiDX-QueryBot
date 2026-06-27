@@ -19,6 +19,14 @@ class RatingGridConfig:
     stats_second_line_x = 292
     stats_second_line_y = 323
 
+    @classmethod
+    def advance_group_y(cls, y: int, song_count: int) -> int:
+        """与 update_rating_table 一致：空分组不推进，非空按行数累加。"""
+        if song_count <= 0:
+            return y
+        rows = (song_count - 1) // cls.row_count + 1
+        return y + rows * cls.gap + 30
+
 
 class PlateGridConfig:
     start_x = 180

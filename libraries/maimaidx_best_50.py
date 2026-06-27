@@ -899,8 +899,14 @@ def _yueji_b50_records(records: List[PlayInfoDev], threshold: float) -> List[Pla
 _cached_b15_versions: Optional[set[str]] = None
 
 
+def invalidate_b15_version_cache() -> None:
+    """曲库更新后清除 B15 版本缓存，使 _get_b15_version_set 重新推断世代。"""
+    global _cached_b15_versions
+    _cached_b15_versions = None
+
+
 def _get_b15_version_set() -> set[str]:
-    """曲库中实际生效的 B15 版本名（CiRCLE 未收录时回退镜彩代）。"""
+    """曲库实际生效的 B15 版本名（按 plate_to_dx_version 与曲库推断）。"""
     global _cached_b15_versions
     if _cached_b15_versions is None:
         lib = {
@@ -913,19 +919,71 @@ def _get_b15_version_set() -> set[str]:
     return _cached_b15_versions
 
 
-def _is_latest_version(r: PlayInfoDev) -> bool:
-    """
-    成绩所属曲目是否为 config 中的最新版本（用于常规 b50 归入 B15 区）；否则归入 B35 区。
-    与谱面类型 SD/DX 无关；查分器 B15=dx、B35=sd。
-    """
+def _song_version_in_b15(song_id: Union[str, int]) -> bool:
     latest_versions = _get_b15_version_set()
     try:
-        music = mai.total_list.by_id(str(r.song_id))
+        music = mai.total_list.by_id(str(song_id))
         if music and getattr(music, 'basic_info', None):
             return getattr(music.basic_info, 'version', None) in latest_versions
     except Exception:
         pass
     return False
+
+
+def _is_latest_version(r: PlayInfoDev) -> bool:
+    """
+    成绩所属曲目是否为 config 中的最新版本（用于常规 b50 归入 B15 区）；否则归入 B35 区。
+    与谱面类型 SD/DX 无关；查分器 B15=dx、B35=sd。
+    """
+    return _song_version_in_b15(r.song_id)
+
+
+def _is_latest_version_chart(chart: ChartInfo) -> bool:
+    return _song_version_in_b15(chart.song_id)
+
+
+def _chart_keys(charts: List[ChartInfo]) -> set[tuple[int, int]]:
+    return {(c.song_id, c.level_index) for c in charts}
+
+
+def regroup_b50_userinfo(userinfo: UserInfo) -> UserInfo:
+    """
+    按当前 B15 版本规则重分 charts.sd(B35) / charts.dx(B15)。
+    查分器 API 可能分区滞后；本地合并后按国服当前 B15 版本重新分组。
+    """
+    if not userinfo or not userinfo.charts:
+        return userinfo
+
+    all_charts = list(userinfo.charts.sd or []) + list(userinfo.charts.dx or [])
+    if not all_charts:
+        return userinfo
+
+    b15_list = sorted(
+        [c for c in all_charts if _is_latest_version_chart(c)],
+        key=lambda x: -x.ra,
+    )[:15]
+    b35_list = sorted(
+        [c for c in all_charts if not _is_latest_version_chart(c)],
+        key=lambda x: -x.ra,
+    )[:35]
+
+    old_sd = userinfo.charts.sd or []
+    old_dx = userinfo.charts.dx or []
+    if (
+        _chart_keys(old_sd) == _chart_keys(b35_list)
+        and _chart_keys(old_dx) == _chart_keys(b15_list)
+    ):
+        return userinfo
+
+    total_ra = int(sum(c.ra for c in b35_list) + sum(c.ra for c in b15_list))
+    return UserInfo(
+        nickname=userinfo.nickname or userinfo.username or '未知',
+        plate=userinfo.plate,
+        additional_rating=userinfo.additional_rating if userinfo.additional_rating is not None else 0,
+        rating=total_ra,
+        username=userinfo.username,
+        charts=Data(sd=b35_list, dx=b15_list),
+    )
 
 
 def _get_fit_diff(r: PlayInfoDev) -> Optional[float]:

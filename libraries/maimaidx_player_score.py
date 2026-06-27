@@ -473,17 +473,12 @@ class DrawScore(ScoreBaseImage):
         return self._im
 
 
-def _resolve_rise_b15_generation(dx_list: List[ChartInfo]) -> int:
-    """上分推荐：仅依据曲库与玩家 B15 实际曲目推断版本世代。"""
+def _resolve_rise_b15_generation() -> int:
+    """上分 B15 曲目搜索起始世代：按曲库实际收录，不读玩家 B15（避免旧 B15 拖低 B35 边界）。"""
     lib_versions = {
         m.basic_info.version for m in mai.total_list if m.basic_info.version
     }
-    chart_versions: set[str] = set()
-    for chart in dx_list:
-        chart_music = mai.total_list.by_id(str(chart.song_id))
-        if chart_music and chart_music.basic_info.version:
-            chart_versions.add(chart_music.basic_info.version)
-    return resolve_b15_generation(lib_versions, chart_versions=chart_versions or None)
+    return resolve_b15_generation(lib_versions)
 
 
 def _pick_rise_scores(
@@ -562,7 +557,7 @@ def get_rise_score_list(
         level: 等级
         score: 分数
         fallback_ra: B15 为空时用于估算定数区间的 B35 底分
-        b15_gen: 已解析的 B15 版本世代（与 B35/B15 列共用）
+        b15_gen: B15 曲目搜索起始世代（仅新版本列；B35 边界为当前 B15 上一代）
     Returns:
         `Tuple[List[RiseScore], int]`
     """
@@ -585,29 +580,33 @@ def get_rise_score_list(
     sssp_ds = round(ra / 22.4, 1)
     ds = (round(sssp_ds + 0.1, 1), round(ss_ds + 0.1, 1))
 
-    if b15_gen is None:
-        b15_gen = _resolve_rise_b15_generation(b50_list if chart_type == 'DX' else [])
     values = list(plate_to_dx_version.values())
     max_gen = max((len(values) - 2) // 2, 0)
-    gen_order = list(range(b15_gen, max_gen + 1)) + list(range(0, b15_gen))
 
     music: List[RiseScore] = []
-    for gen in gen_order:
-        if chart_type == 'DX':
-            version = get_b15_version_names_at_generation(gen)
-        else:
-            version = get_b35_version_names_for_generation(gen)
+    if chart_type == 'SD':
+        # B35：排除当前 B15 两代（镜彩），更早版本均属旧版
+        version = get_b35_version_names_for_generation(0)
         candidate = mai.total_list.filter(level=level, ds=ds, version=version)
-        if not candidate:
-            continue
         music = _pick_rise_scores(
             old_records, candidate, ignore=ignore, ra=ra, score=score,
         )
-        if music:
-            break
+    else:
+        if b15_gen is None:
+            b15_gen = _resolve_rise_b15_generation()
+        for gen in range(0, max_gen + 1):
+            version = get_b15_version_names_at_generation(gen)
+            candidate = mai.total_list.filter(level=level, ds=ds, version=version)
+            if not candidate:
+                continue
+            music = _pick_rise_scores(
+                old_records, candidate, ignore=ignore, ra=ra, score=score,
+            )
+            if music:
+                break
 
     if not music and chart_type == 'DX':
-        allowed = set(get_b15_version_names_at_generation(b15_gen))
+        allowed = set(get_b15_version_names_at_generation(b15_gen or 0))
         candidate = mai.total_list.filter(level=level, ds=ds)
         music = _pick_rise_scores(
             old_records, candidate, ignore=ignore, ra=ra, score=score,
@@ -648,7 +647,7 @@ async def rise_score_data(
         # chart_type 谱面类型；charts.sd/dx 对应 B35/B15（旧版本/新版本成绩）
         sd_list = (user.charts and user.charts.sd) or []
         dx_list = (user.charts and user.charts.dx) or []
-        b15_gen = _resolve_rise_b15_generation(dx_list)
+        b15_gen = _resolve_rise_b15_generation()
         b35_scores, b35_low = get_rise_score_list(
             old_records, 'SD', sd_list, level, score, b15_gen=b15_gen,
         )
