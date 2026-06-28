@@ -7,7 +7,12 @@ from nonebot.exception import IgnoredException
 from nonebot.params import CommandArg, Depends, RegexMatched
 
 from ..libraries.maimaidx_api_data import maiApi
-from ..libraries.maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError
+from ..libraries.maimaidx_error import (
+    BreakInsufficientError,
+    UserDisabledQueryError,
+    UserNotFoundError,
+    UserNotExistsError,
+)
 from ..libraries.maimaidx_group_rating import (
     group_weak_rank,
     group_rating_ranking,
@@ -208,7 +213,13 @@ async def _finish_score(
     """统一成绩图收尾：计时执行 coro，成功追加「数据源 + 耗时」文案，错误原样发送。"""
     from ..libraries.maimaidx_timing import run_timed
     from ..libraries.maimaidx_player_cache import clear_fetch_meta
-    result, total = await run_timed(coro)
+    from ..libraries.maimaidx_error import BreakInsufficientError
+    try:
+        result, total = await run_timed(coro)
+    except BreakInsufficientError as e:
+        clear_fetch_meta()
+        await matcher.finish(str(e), reply_message=True)
+        return
     if isinstance(result, str):
         clear_fetch_meta()
         await matcher.finish(result, reply_message=True)
@@ -259,6 +270,9 @@ async def _refresh_b50(
             username=username or None,
             force_refresh=True,
         )
+    except BreakInsufficientError as e:
+        await refresh_b50.finish(str(e), reply_message=True)
+        return
     except LxnsDataError as e:
         await refresh_b50.finish(str(e), reply_message=True)
         return

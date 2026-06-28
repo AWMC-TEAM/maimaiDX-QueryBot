@@ -13,6 +13,10 @@ from typing import List, Optional, Tuple
 from ..config import log
 from . import maimaidx_timing as _timing
 from .maimaidx_api_data import maiApi
+from .maimaidx_break import (
+    ensure_query_affordable,
+    settle_query_api_charge,
+)
 from .maimaidx_error import LxnsDataError
 from .maimaidx_lxns_client import (
     dev_get_bests,
@@ -25,10 +29,12 @@ from .maimaidx_lxns_db import lxns_db
 from .maimaidx_model import ChartInfo, Data, PlayInfoDev, UserInfo
 from .maimaidx_music import mai
 from .maimaidx_player_cache import (
+    clear_fetch_meta,
     get_cached_player,
     resolve_player_b50,
     resolve_player_records,
     save_cached_player,
+    will_fetch_from_api,
 )
 
 _LEVEL_LABELS = ['Basic', 'Advanced', 'Expert', 'Master', 'Re:Master']
@@ -266,6 +272,30 @@ async def _lxns_get_bests_and_player(qqid: int) -> Tuple[Optional[dict], str, in
 # ─────────────────────────── 统一对外接口 ───────────────────────────
 
 
+def _prepare_break_gate(
+    qqid: Optional[int],
+    username: Optional[str],
+    source: str,
+    *,
+    force_refresh: bool = False,
+    need_charts: bool = True,
+) -> None:
+    """查分前 BREAK 预检（仅当可能触发 API 时）。"""
+    if username:
+        qqid = None
+    if not will_fetch_from_api(
+        qqid, username, source, force_refresh=force_refresh, need_charts=need_charts
+    ):
+        return
+    ensure_query_affordable(qqid)
+
+
+def _finalize_break_charge(qqid: Optional[int], username: Optional[str]) -> None:
+    if username:
+        qqid = None
+    settle_query_api_charge(qqid)
+
+
 async def get_user_b50(
     qqid: Optional[int] = None,
     username: Optional[str] = None,
@@ -282,6 +312,8 @@ async def get_user_b50(
         以及水鱼的 UserNotFoundError 等
     """
     source = force_source or (get_user_source(qqid) if qqid and not username else 'divingfish')
+    clear_fetch_meta()
+    _prepare_break_gate(qqid, username, source, force_refresh=force_refresh, need_charts=True)
 
     if source == 'lxns' and qqid and not username:
 
@@ -294,16 +326,20 @@ async def get_user_b50(
                 )
             return lxns_bests_to_userinfo(bests, nickname=nickname, rating=rating)
 
-        return await resolve_player_b50(
+        result = await resolve_player_b50(
             qqid, username, source, _fetch_lxns_b50, force_refresh=force_refresh
         )
+        _finalize_break_charge(qqid, username)
+        return result
 
     async def _fetch_df_b50():
         return await maiApi.query_user_b50(qqid=qqid, username=username)
 
-    return await resolve_player_b50(
+    result = await resolve_player_b50(
         qqid, username, source, _fetch_df_b50, force_refresh=force_refresh
     )
+    _finalize_break_charge(qqid, username)
+    return result
 
 
 async def get_user_b50_or_fallback(
@@ -339,6 +375,8 @@ async def get_user_records(
         以及水鱼的 UserNotFoundError 等
     """
     source = force_source or (get_user_source(qqid) if qqid and not username else 'divingfish')
+    clear_fetch_meta()
+    _prepare_break_gate(qqid, username, source, force_refresh=force_refresh, need_charts=False)
 
     if source == 'lxns' and qqid and not username:
 
@@ -369,9 +407,11 @@ async def get_user_records(
             records = lxns_scores_to_records(scores)
             return userinfo, records
 
-        return await resolve_player_records(
+        result = await resolve_player_records(
             qqid, username, source, _fetch_lxns_records, force_refresh=force_refresh
         )
+        _finalize_break_charge(qqid, username)
+        return result
 
     # 水鱼
     if username:
@@ -394,6 +434,8 @@ async def get_user_records(
         records = list(dev.records or [])
         return userinfo, records
 
-    return await resolve_player_records(
+    result = await resolve_player_records(
         qqid, username, source, _fetch_df_records, force_refresh=force_refresh
     )
+    _finalize_break_charge(qqid, username)
+    return result

@@ -1,7 +1,9 @@
 import nonebot
 from nonebot.plugin import PluginMetadata, require
+from pathlib import Path
+import asyncio
 
-from .config import plate_tabledir, rating_table_dir
+from .config import Config, driver, log, maiconfig, plate_tabledir, rating_table_dir
 from .command import *
 nonebot.load_plugin("nonebot_plugin_maimaidx.command.mai_jacket")
 from .libraries.maimaidx_music_info import get_music_tags, _get_dxrating_token
@@ -67,5 +69,16 @@ async def get_music():
             '请及时私聊BOT使用指令「更新完成表」进行生成。'
         )
     log.opt(colors=True).success('<g>maimaiDX 插件初始化完成，等待客户端连接</g>')
+    if maiconfig.b50_assets_path:
+        from .libraries.b50_analysis.context_builder import load_peer_stats
+        from .command.mai_b50_analysis import set_peer_stats
+        stats = load_peer_stats(maiconfig.b50_assets_path)
+        set_peer_stats(stats)
+        if stats:
+            log.info('B50 分析 peer_stats 已加载')
+        else:
+            log.warning('B50 分析 peer_stats 未找到，分析b50 同段对比可能受限')
+    elif maiconfig.b50_llm_key:
+        log.warning('已配置 b50_llm_key 但未配置 b50_assets_path')
 
 scheduler.add_job(update_daily, 'cron', hour=4)

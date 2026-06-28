@@ -75,6 +75,37 @@ def clear_fetch_meta() -> None:
     _FETCH_META.set(None)
 
 
+def peek_fetch_meta() -> Optional[PlayerFetchMeta]:
+    """读取本次请求的取数元信息，不清除。"""
+    return _FETCH_META.get()
+
+
+def will_fetch_from_api(
+    qqid: Optional[int],
+    username: Optional[str],
+    source: str,
+    *,
+    force_refresh: bool = False,
+    need_charts: bool = True,
+) -> bool:
+    """预判是否会发起查分器 API（用于 BREAK 预检，不写入 fetch meta）。"""
+    if force_refresh:
+        return True
+    ttl = _cache_ttl_seconds()
+    hit = player_cache_db.get(qqid, username, source, ttl)
+    if hit is None:
+        if qqid and not username:
+            snap = _try_storage_snapshot(qqid, _storage_fallback_ttl_seconds())
+            if snap is not None:
+                if need_charts and snap.userinfo.charts is None:
+                    return True
+                return False
+        return True
+    if need_charts and hit.userinfo.charts is None:
+        return True
+    return False
+
+
 def pop_data_freshness_footer_lines() -> List[str]:
     """取出并清除本次请求的取数元信息，转为 footer 行。"""
     meta = _FETCH_META.get()

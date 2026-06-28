@@ -75,6 +75,12 @@ class Config(BaseModel):
     # 友人对战读取本地成绩缓存的最长有效期（秒），默认 7 天；重启后仍可用 SQLite/存档，减少重复拉取水鱼。MAIMAIDX_FRIEND_BATTLE_CACHE_SECONDS
     maimaidx_friend_battle_cache_seconds: int = 604800
 
+    # ---------- B50 分析（LLM 锐评） ----------
+    b50_llm_url: str = 'https://api.openai.com/v1'
+    b50_llm_key: str = ''
+    b50_llm_model: str = 'gemini-3-flash-preview'
+    b50_assets_path: str = ''
+
 
 maiconfig = get_plugin_config(Config)
 

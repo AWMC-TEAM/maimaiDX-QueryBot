@@ -49,6 +49,20 @@ class TokenDisableError(Exception):
         return '开发者Token被禁用'
 
 
+class BreakInsufficientError(Exception):
+    """BREAK 余额不足。"""
+
+    def __init__(self, required: int, current: int):
+        self.required = required
+        self.current = current
+
+    def __str__(self) -> str:
+        return (
+            f'BREAK 不足（需要 {self.required}，当前 {self.current}）。\n'
+            '发送「AWMC签到」获取 BREAK，每日首次查分免费哦~'
+        )
+
+
 class TokenNotFoundError(Exception):
 
     def __str__(self) -> str:
