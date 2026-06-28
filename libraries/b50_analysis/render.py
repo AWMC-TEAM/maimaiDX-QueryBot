@@ -297,12 +297,32 @@ class _Draw:
         overlap_val = (peer.get("b50_overlap") or {}).get("value")
         arpi_text = "N/A" if arpi is None else f"{_f(arpi):+.4f}"
         overlap_text = "N/A" if overlap_val is None else f"{_f(overlap_val):.2f}%"
-        self.d.text((80, 251), "DXRating", font=self.font("en", 26), fill=(120, 120, 120))
-        self.d.text((220, 249), f"{summary.get('b35_ra', 0)} / {summary.get('b15_ra', 0)}", font=self.font("en", 32), fill=(51, 51, 51))
-        self.d.text((80, 310), "ARPI", font=self.font("en", 26), fill=(120, 120, 120))
-        self.d.text((220, 306), arpi_text, font=self.font("en", 36), fill=(46, 125, 50) if _f(arpi, 0) >= 0 else (198, 40, 40))
-        self.d.text((80, 360), "平均重合", font=self.font("cn", 26), fill=(120, 120, 120))
-        self.d.text((220, 358), overlap_text, font=self.font("en", 36), fill=(66, 133, 244))
+        if arpi is None:
+            arpi_color = (120, 120, 120)
+        elif _f(arpi) >= 0:
+            arpi_color = (46, 125, 50)
+        else:
+            arpi_color = (198, 40, 40)
+        label_x, value_x = 80, 200
+        row_h = 52
+        y0 = 251
+        value_font = self.font("en", 28)
+        self.d.text((label_x, y0), "B35/B15 RA", font=self.font("cn", 26), fill=(120, 120, 120))
+        self.d.text(
+            (value_x, y0),
+            f"{summary.get('b35_ra', 0)} / {summary.get('b15_ra', 0)}",
+            font=value_font,
+            fill=(51, 51, 51),
+        )
+        self.d.text((label_x, y0 + row_h), "ARPI", font=self.font("en", 26), fill=(120, 120, 120))
+        self.d.text(
+            (value_x, y0 + row_h),
+            arpi_text,
+            font=value_font,
+            fill=arpi_color,
+        )
+        self.d.text((label_x, y0 + row_h * 2), "平均重合", font=self.font("cn", 26), fill=(120, 120, 120))
+        self.d.text((value_x, y0 + row_h * 2), overlap_text, font=value_font, fill=(66, 133, 244))
 
         self.rrect((640, 30, 1080, 420), 16, (245, 248, 255, 230))
         self.d.text((660, 55), "平均值", font=self.font("cn", 30), fill=(26, 115, 232))
@@ -365,12 +385,18 @@ class _Draw:
         tf, title = self.fit_line(str(song.get("title") or ""), 580, 24, 18)
         self.d.text((tx, y + 18), title, font=tf, fill=(51, 51, 51))
         line_y = y + 55
-        self.d.line((tx, line_y, x + 800, line_y), fill=border_color + (255,), width=7)
+        self.d.line((tx, line_y, x + w - 30, line_y), fill=border_color + (255,), width=7)
         ach = _f(song.get("achievement"))
         ach_text = f"{ach:.4f}%"
-        self.d.text((tx, y + 53), ach_text, font=self.font("en", 48), fill=(33, 33, 33))
+        ach_font = self.font("en", 44)
+        ach_y = y + 56
+        self.d.text((tx, ach_y), ach_text, font=ach_font, fill=(33, 33, 33))
+        ach_w = ach_font.getbbox(ach_text)[2]
+        rank = self.icon(_rank_icon(ach), (72, 36))
+        if rank:
+            self.paste(rank, (tx + ach_w + 14, ach_y + 4))
         ds = _f(song.get("ds"))
-        info_y = y + 105
+        info_y = y + 112
         if 0 <= level_idx <= 4:
             diff_path = self.icons / DIFF_FILE[level_idx]
             if diff_path.exists():
@@ -397,10 +423,9 @@ class _Draw:
             ol_text = f"重合{_f(song.get('overlap')):.2f}%"
             self.d.text((icon_x, info_y + ds_y_offset), ol_text, font=self.font("cn", 20), fill=(66, 133, 244))
             icon_x += self.font("cn", 20).getbbox(ol_text)[2] + 8
-        rank = self.icon(_rank_icon(ach), (110, 55))
         is_push = label == "推分"
         fc_img = self.icon(FC_ICON.get(str(song.get("fc_label") or ""), ""), (72, 72))
-        row2_y = y + 145
+        row2_y = y + 152
         gain_1005 = _i(song.get("gain_1005"))
         tag_x = tx
         score_end_x = tx
@@ -419,15 +444,13 @@ class _Draw:
                 gap = _f(song.get("gap"))
                 gap_x = tx + self.font("cn", 20).getbbox(p_text)[2] + 8
                 self.d.text((gap_x, row2_y), f"ARPI {gap:+.4f}", font=self.font("en", 24), fill=(46, 125, 50) if gap >= 0 else (198, 40, 40))
-        if rank:
-            self.paste(rank, (icon_x, y + 66))
         if fc_img:
             if is_push and gain_1005 > 0:
-                fc_x = icon_x + 110 + 8 
-                self.paste(fc_img, (fc_x, y + 66 + 10)) 
+                fc_x = tx + ach_w + 14 + 72 + 8
+                self.paste(fc_img, (fc_x, ach_y + 6))
             else:
                 self.paste(fc_img, (icon_x, info_y + ds_y_offset + 3))
-        row3_y = y + 177 if not is_push else y + 209
+        row3_y = y + 184 if not is_push else y + 216
         if show_reason:
             reason = " ".join(str(song.get("reason") or song.get("recommend_reason") or "").replace("\r", " ").replace("\n", " ").split())
             if reason:

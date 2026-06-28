@@ -33,7 +33,7 @@ def get_at_qq(message: MessageEvent) -> Optional[int]:
 async def _():
     text = (
         '【AWMC BREAK 系统】\n'
-        '· AWMC签到 — 每日签到获取 BREAK\n'
+        '· AWMC签到 — 每日签到获取 BREAK（随机 1~5，含加成与连续奖励）\n'
         '· 我的AWMC — 查看账号状态与使用统计\n'
         '· 查分指令 — 每日首次实际请求查分器 API 免费，之后每次扣 1 BREAK（缓存命中不扣）\n'
         '· 分析b50 — 每次成功消耗 3 BREAK（AI 锐评 + 分析长图）\n'

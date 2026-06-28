@@ -8,6 +8,7 @@ AWMC BREAK 积分：签到、查分扣费、账号统计。
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -25,7 +26,8 @@ DB_DIR = Path(__file__).resolve().parent.parent / 'data' / 'break'
 DB_PATH = DB_DIR / 'break.db'
 
 DEFAULT_CONFIG: Dict[str, str] = {
-    'checkin_base': '5',
+    'checkin_base_min': '1',
+    'checkin_base_max': '5',
     'query_cost': '1',
     'analysis_cost': '3',
     'streak_bonus': '3,5,8,12,20',
@@ -118,8 +120,17 @@ class CheckinResult:
     streak_bonus: int
     base: int
     multiplier_sum: float
+    base_min: int = 1
+    base_max: int = 5
     bonus_labels: List[str] = field(default_factory=list)
     already_checked: bool = False
+
+
+def _parse_config_int(raw: str, default: int) -> int:
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return default
 
 
 class BreakDatabase:
@@ -386,6 +397,19 @@ class BreakDatabase:
         idx = min(max(streak - 1, 0), len(parts) - 1)
         return parts[idx]
 
+    def _checkin_base_range(self) -> tuple[int, int]:
+        lo = _parse_config_int(self.get_config('checkin_base_min', DEFAULT_CONFIG['checkin_base_min']), 1)
+        hi = _parse_config_int(self.get_config('checkin_base_max', DEFAULT_CONFIG['checkin_base_max']), 5)
+        if lo > hi:
+            lo, hi = hi, lo
+        return lo, hi
+
+    def _roll_checkin_base(self) -> tuple[int, int, int]:
+        lo, hi = self._checkin_base_range()
+        if lo == hi:
+            return lo, lo, hi
+        return random.randint(lo, hi), lo, hi
+
     def _is_group_first_today(self, group_id: Optional[int]) -> bool:
         if not group_id:
             return False
@@ -411,7 +435,7 @@ class BreakDatabase:
                 already_checked=True,
             )
 
-        base = int(float(self.get_config('checkin_base', '5')))
+        base, base_min, base_max = self._roll_checkin_base()
         bonus_labels: List[str] = []
         multiplier_sum = 0.0
 
@@ -467,7 +491,13 @@ class BreakDatabase:
             qqid,
             reward,
             'checkin',
-            meta={'streak': streak, 'labels': bonus_labels, 'group_id': group_id},
+            meta={
+                'streak': streak,
+                'labels': bonus_labels,
+                'group_id': group_id,
+                'base': base,
+                'base_range': [base_min, base_max],
+            },
         )
         self._conn.commit()
 
@@ -479,6 +509,8 @@ class BreakDatabase:
             streak_bonus=streak_bonus,
             base=base,
             multiplier_sum=multiplier_sum,
+            base_min=base_min,
+            base_max=base_max,
             bonus_labels=bonus_labels,
         )
 
@@ -648,11 +680,16 @@ def format_checkin_result(result: CheckinResult) -> str:
         return f'今天已经签到过啦~ 当前 BREAK：{result.balance}'
     bonus = ' · '.join(result.bonus_labels) if result.bonus_labels else '无额外加成'
     streak_extra = f'（+{result.streak_bonus} BREAK）' if result.streak_bonus else ''
+    range_hint = (
+        f'{result.base} BREAK（随机 {result.base_min}~{result.base_max}）'
+        if result.base_min != result.base_max
+        else f'{result.base} BREAK'
+    )
     return (
         '✅ AWMC 签到成功！\n'
         '━━━━━━━━━━━━━━\n'
         f'📅 连续签到：{result.streak} 天{streak_extra}\n'
-        f'🎁 基础奖励：{result.base} BREAK\n'
+        f'🎲 随机基础：{range_hint}\n'
         f'✨ 今日加成：{bonus}\n'
         f'💰 获得：{result.reward} BREAK\n'
         f'💳 当前余额：{result.balance} BREAK'

@@ -1,72 +1,79 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Set, Tuple
 
+from ..maimaidx_best_50 import _music_is_new
 from ..maimaidx_datasource import get_user_b50, get_user_records
 from ..maimaidx_model import ChartInfo, PlayInfoDev, UserInfo
 from ..maimaidx_music import mai
 
-_NEW_VERSION_POOL = {
-    'maimai でらっくす PRiSM',
-    'maimai でらっくす BUDDiES PLUS',
-}
-
 
 def _chart_to_dict(chart: ChartInfo) -> dict:
-    data = chart.model_dump(by_alias=True)
-    data['song_id'] = chart.song_id
-    data['music_id'] = chart.song_id
-    data['achievements'] = chart.achievements
-    data['achievement'] = chart.achievements
-    return data
+    return {
+        'song_id': chart.song_id,
+        'music_id': chart.song_id,
+        'title': chart.title or '',
+        'type': chart.type or 'SD',
+        'level': chart.level or '',
+        'level_index': chart.level_index,
+        'level_label': getattr(chart, 'level_label', None) or chart.level or '',
+        'ds': chart.ds,
+        'achievements': chart.achievements,
+        'achievement': chart.achievements,
+        'ra': int(chart.ra or 0),
+        'fc': chart.fc or '',
+        'fs': chart.fs or '',
+        'rate': chart.rate or '',
+    }
 
 
 def _record_to_dict(record: PlayInfoDev) -> dict:
-    data = record.model_dump(by_alias=True)
-    data['song_id'] = record.song_id
-    data['music_id'] = record.song_id
-    data['achievements'] = record.achievements
-    data['achievement'] = record.achievements
-    return data
+    return {
+        'song_id': record.song_id,
+        'music_id': record.song_id,
+        'title': record.title or '',
+        'type': record.type or 'SD',
+        'level': record.level or '',
+        'level_index': record.level_index,
+        'level_label': getattr(record, 'level_label', None) or record.level or '',
+        'ds': record.ds,
+        'achievements': record.achievements,
+        'achievement': record.achievements,
+        'ra': int(record.ra or 0),
+        'fc': record.fc or '',
+        'fs': record.fs or '',
+        'rate': record.rate or '',
+    }
 
 
-def _music_lookup() -> Dict[str, dict]:
-    lookup: Dict[str, dict] = {}
-    for music in mai.total_list:
-        version = music.basic_info.version
-        lookup[str(music.id)] = {
-            'basic_info': {'from': version},
-            'from': version,
-        }
-    return lookup
+def _chart_key(chart: dict) -> Tuple[str, int]:
+    return (
+        str(chart.get('song_id') or chart.get('music_id') or ''),
+        int(chart.get('level_index') or 0),
+    )
 
 
-def _is_new(music_id: str, lookup: Dict[str, dict]) -> bool:
-    m = lookup.get(music_id)
-    if not m:
+def _is_new_song(music_id: str) -> bool:
+    music = mai.total_list.by_id(str(music_id))
+    if not music:
         return False
-    version = str(m.get('basic_info', {}).get('from', '') or m.get('from', ''))
-    return version in _NEW_VERSION_POOL
+    return _music_is_new(music)
 
 
-def _sort_old_new(
-    records: List[dict],
-    lookup: Dict[str, dict],
-) -> tuple[List[dict], List[dict]]:
+def _split_records(records: List[PlayInfoDev]) -> tuple[List[dict], List[dict]]:
     old, new = [], []
-    for c in records:
-        mid = str(c.get('song_id') or c.get('music_id') or '')
-        if _is_new(mid, lookup):
-            new.append(c)
+    for record in records:
+        item = _record_to_dict(record)
+        if _is_new_song(str(record.song_id)):
+            new.append(item)
         else:
-            old.append(c)
-    old.sort(key=lambda x: x.get('ra', 0), reverse=True)
-    new.sort(key=lambda x: x.get('ra', 0), reverse=True)
+            old.append(item)
+    old.sort(key=lambda x: int(x.get('ra') or 0), reverse=True)
+    new.sort(key=lambda x: int(x.get('ra') or 0), reverse=True)
     return old, new
 
 
 def userinfo_to_b50_dict(userinfo: UserInfo) -> dict:
-    qq = 0
     sd: List[dict] = []
     dx: List[dict] = []
     if userinfo.charts:
@@ -81,39 +88,40 @@ def userinfo_to_b50_dict(userinfo: UserInfo) -> dict:
     }
 
 
-def records_to_b50_dict(
-    nickname: str,
-    rating: int,
+def _merge_push_pool(
+    b50_sd: List[dict],
+    b50_dx: List[dict],
     records: List[PlayInfoDev],
-) -> dict:
-    lookup = _music_lookup()
-    raw = [_record_to_dict(r) for r in records]
-    old, new = _sort_old_new(raw, lookup)
-    total_ra = sum(int(c.get('ra') or 0) for c in old + new)
-    return {
-        'nickname': nickname,
-        'rating': rating or total_ra,
-        'charts': {'sd': old, 'dx': new},
-    }
+) -> Dict[str, List[dict]]:
+    """B50 区用查分器分组结果，其余全量成绩供推分候选。"""
+    b50_keys: Set[Tuple[str, int]] = {_chart_key(c) for c in b50_sd + b50_dx}
+    pool_sd = list(b50_sd)
+    pool_dx = list(b50_dx)
+    old, new = _split_records(records)
+    for item in old:
+        if _chart_key(item) not in b50_keys:
+            pool_sd.append(item)
+    for item in new:
+        if _chart_key(item) not in b50_keys:
+            pool_dx.append(item)
+    return {'sd': pool_sd, 'dx': pool_dx}
 
 
 async def fetch_for_analysis(qqid: int, *, assets_path: str = '') -> dict:
     """
-    拉取 B50 分析所需数据：优先全量 dev 成绩（有水鱼 token），否则用 B50。
+    拉取 B50 分析数据：B35/B15 以 get_user_b50（含 PRiSM PLUS 重分组）为准；
+    有水鱼 dev 成绩时追加非 B50 谱面供推分候选。
     """
     userinfo = await get_user_b50(qqid=qqid)
-    try:
-        info, records = await get_user_records(qqid=qqid)
-        if records:
-            result = records_to_b50_dict(
-                str(info.nickname or userinfo.nickname or f'Player({qqid})'),
-                int(info.rating or userinfo.rating or 0),
-                records,
-            )
-            result['_assets_path'] = assets_path
-            return result
-    except Exception:
-        pass
     result = userinfo_to_b50_dict(userinfo)
     result['_assets_path'] = assets_path
+
+    try:
+        _, records = await get_user_records(qqid=qqid)
+        if records:
+            b50_sd = result['charts']['sd']
+            b50_dx = result['charts']['dx']
+            result['charts'] = _merge_push_pool(b50_sd, b50_dx, records)
+    except Exception:
+        pass
     return result

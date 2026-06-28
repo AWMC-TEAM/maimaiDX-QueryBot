@@ -61,6 +61,7 @@ def _normalize(chart: dict) -> dict:
     c = dict(chart)
     c["music_id"] = str(c.get("song_id") or c.get("music_id") or "")
     c["achievement"] = _f(c.get("achievements") or c.get("achievement"))
+    c["ra"] = _i(c.get("ra") or c.get("rating"))
     c["fc_label"] = FC_LABEL_MAP.get(str(c.get("fc") or "").lower(), "")
     return c
 
