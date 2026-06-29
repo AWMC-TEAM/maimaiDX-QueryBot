@@ -7,10 +7,12 @@ AWMC BREAK 积分：签到、查分扣费、账号统计。
 
 from __future__ import annotations
 
+import contextvars
 import json
 import random
 import sqlite3
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -518,6 +520,73 @@ class BreakDatabase:
 break_db = BreakDatabase()
 
 
+@dataclass
+class _BreakChargeSession:
+    spent: int = 0
+    used_free: bool = False
+    balance: int = 0
+
+
+_billing_qqid: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    'break_billing_qqid', default=None
+)
+_charge_session: contextvars.ContextVar[Optional[_BreakChargeSession]] = contextvars.ContextVar(
+    'break_charge_session', default=None
+)
+_pending_charge_footer: contextvars.ContextVar[Optional[List[str]]] = contextvars.ContextVar(
+    'break_pending_footer', default=None
+)
+
+
+def get_billing_qqid() -> Optional[int]:
+    return _billing_qqid.get()
+
+
+@asynccontextmanager
+async def break_billing(qqid: Optional[int]):
+    """指令级扣费上下文：查分器/落雪成绩 API 成功后会在此 qq 上结算 BREAK。"""
+    payer = int(qqid) if qqid else None
+    if payer and is_superuser_exempt(payer):
+        payer = None
+    t1 = _billing_qqid.set(payer)
+    t2 = _charge_session.set(
+        _BreakChargeSession(balance=break_db.get_balance(payer) if payer else 0)
+    )
+    try:
+        yield
+    finally:
+        session = _charge_session.get()
+        if session and (session.spent > 0 or session.used_free):
+            if session.spent == 0:
+                lines = [f'💳 今日首次查分免费 · 余额 {session.balance} BREAK']
+            else:
+                hint = '（含今日免费）' if session.used_free else ''
+                lines = [f'💳 消耗 {session.spent} BREAK{hint} · 余额 {session.balance} BREAK']
+            _pending_charge_footer.set(lines)
+        _billing_qqid.reset(t1)
+        _charge_session.reset(t2)
+
+
+def take_break_charge_footer() -> List[str]:
+    lines = _pending_charge_footer.get() or []
+    _pending_charge_footer.set(None)
+    return lines
+
+
+def format_break_insufficient_message(
+    qqid: Optional[int],
+    required: int,
+    current: int,
+) -> str:
+    checked = break_db.is_checked_in_today(qqid) if qqid else False
+    lines = [f'❌ BREAK 不足（需要 {required}，当前 {current}）']
+    if checked:
+        lines.append('今日已签到，请明天再试。')
+    else:
+        lines.append('发送「AWMC签到」获取 BREAK；每日首次查分免费哦~')
+    return '\n'.join(lines)
+
+
 def _config_int(key: str, default: int) -> int:
     try:
         return int(float(break_db.get_config(key, str(default))))
@@ -542,26 +611,54 @@ def analysis_cost() -> int:
 
 
 def ensure_query_affordable(qqid: Optional[int]) -> None:
-    """API 即将发起前：余额或免费额度检查。"""
+    """查分器/落雪成绩 API 即将发起前：余额或免费额度检查。"""
     if not qqid or is_superuser_exempt(qqid):
         return
     cost = query_cost()
+    balance = break_db.get_balance(qqid)
     if break_db.is_daily_free_available(qqid):
         return
-    if break_db.get_balance(qqid) < cost:
-        raise BreakInsufficientError(cost, break_db.get_balance(qqid))
+    if balance < cost:
+        raise BreakInsufficientError(cost, balance, qqid=qqid)
 
 
 def ensure_analysis_affordable(qqid: int) -> None:
     if is_superuser_exempt(qqid):
         return
     cost = analysis_cost()
-    if break_db.get_balance(qqid) < cost:
-        raise BreakInsufficientError(cost, break_db.get_balance(qqid))
+    balance = break_db.get_balance(qqid)
+    if balance < cost:
+        raise BreakInsufficientError(cost, balance, qqid=qqid)
+
+
+def settle_prober_fetch(qqid: Optional[int]) -> None:
+    """单次查分器/落雪成绩 API 成功后结算（免费额度或扣 BREAK）。"""
+    if not qqid or is_superuser_exempt(qqid):
+        return
+    session = _charge_session.get()
+    cost = query_cost()
+    if break_db.is_daily_free_available(qqid):
+        break_db.mark_daily_free_used(qqid)
+        break_db.record_usage(qqid, 'query', break_delta=0)
+        if session:
+            session.used_free = True
+            session.balance = break_db.get_balance(qqid)
+        log.debug(f'[BREAK] qq={qqid} daily free query')
+        return
+    if not break_db.try_consume(qqid, cost, 'query', meta={'kind': 'prober_api'}):
+        log.warning(f'[BREAK] qq={qqid} query consume failed after fetch')
+        return
+    break_db.record_usage(qqid, 'query', break_delta=-cost)
+    if session:
+        session.spent += cost
+        session.balance = break_db.get_balance(qqid)
 
 
 def settle_query_api_charge(qqid: Optional[int]) -> None:
-    """API 实际请求成功后结算（免费额度或扣 BREAK）。"""
+    """兼容旧调用：在扣费上下文中等价于 settle_prober_fetch。"""
+    if get_billing_qqid() is not None:
+        settle_prober_fetch(qqid)
+        return
     if not qqid or is_superuser_exempt(qqid):
         return
     from .maimaidx_player_cache import peek_fetch_meta
@@ -573,10 +670,8 @@ def settle_query_api_charge(qqid: Optional[int]) -> None:
     if break_db.is_daily_free_available(qqid):
         break_db.mark_daily_free_used(qqid)
         break_db.record_usage(qqid, 'query', break_delta=0)
-        log.debug(f'[BREAK] qq={qqid} daily free query used')
         return
     if not break_db.try_consume(qqid, cost, 'query', meta={'kind': 'prober_api'}):
-        log.warning(f'[BREAK] qq={qqid} query consume failed after API call')
         return
     break_db.record_usage(qqid, 'query', break_delta=-cost)
 

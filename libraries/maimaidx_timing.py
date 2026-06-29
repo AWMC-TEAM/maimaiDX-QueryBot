@@ -75,11 +75,16 @@ def timing_text(total: float) -> str:
     return format_summary(total, get_fetch())
 
 
-async def run_timed(coro: Awaitable[T]) -> tuple[T, float]:
-    """reset 后执行协程并返回 (结果, 总秒数)。"""
+async def run_timed(coro: Awaitable[T], *, billing_qqid: Optional[int] = None) -> tuple[T, float]:
+    """reset 后执行协程并返回 (结果, 总秒数)。billing_qqid 开启查分 BREAK 扣费上下文。"""
     reset()
     t0 = time.perf_counter()
-    result = await coro
+    if billing_qqid is not None:
+        from .maimaidx_break import break_billing
+        async with break_billing(billing_qqid):
+            result = await coro
+    else:
+        result = await coro
     return result, time.perf_counter() - t0
 
 
@@ -112,10 +117,25 @@ async def finish_timed(
     *,
     extra: str = '',
     reply_message: bool = True,
+    billing_qqid: Optional[int] = None,
 ) -> None:
     """计时执行生成协程，成功时追加 ⏱️ 耗时后 finish。"""
-    result, total = await run_timed(coro)
+    from .maimaidx_break import take_break_charge_footer
+    from .maimaidx_error import BreakInsufficientError
+    from .maimaidx_player_cache import clear_fetch_meta
+
+    try:
+        result, total = await run_timed(coro, billing_qqid=billing_qqid)
+    except BreakInsufficientError as e:
+        clear_fetch_meta()
+        await matcher.finish(str(e), reply_message=reply_message)
+        return
+    charge = take_break_charge_footer()
+    if charge:
+        charge_text = '\n'.join(charge)
+        extra = f'{charge_text}\n{extra}' if extra else charge_text
     if isinstance(result, str):
+        clear_fetch_meta()
         await matcher.finish(result, reply_message=reply_message)
         return
     await matcher.finish(

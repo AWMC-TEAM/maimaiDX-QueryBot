@@ -266,7 +266,18 @@ async def handle_pc50(
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
-    await pc50.finish(await generate_pc50(qqid), reply_message=True)
+    from ..libraries.maimaidx_break import break_billing, take_break_charge_footer
+    from ..libraries.maimaidx_error import BreakInsufficientError
+    try:
+        async with break_billing(event.user_id):
+            result = await generate_pc50(qqid)
+    except BreakInsufficientError as e:
+        await pc50.finish(str(e), reply_message=True)
+        return
+    charge = take_break_charge_footer()
+    if charge and not isinstance(result, str):
+        result = result + MessageSegment.text('\n' + '\n'.join(charge))
+    await pc50.finish(result, reply_message=True)
 
 
 @pca50.handle()
@@ -277,4 +288,15 @@ async def handle_pca50(
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
-    await pca50.finish(await generate_pca50(qqid), reply_message=True)
+    from ..libraries.maimaidx_break import break_billing, take_break_charge_footer
+    from ..libraries.maimaidx_error import BreakInsufficientError
+    try:
+        async with break_billing(event.user_id):
+            result = await generate_pca50(qqid)
+    except BreakInsufficientError as e:
+        await pca50.finish(str(e), reply_message=True)
+        return
+    charge = take_break_charge_footer()
+    if charge and not isinstance(result, str):
+        result = result + MessageSegment.text('\n' + '\n'.join(charge))
+    await pca50.finish(result, reply_message=True)

@@ -197,6 +197,10 @@ def _build_footer(
     warning = pop_b50_warning_footer()
     if warning:
         sections.append([warning])
+    from ..libraries.maimaidx_break import take_break_charge_footer
+    charge = take_break_charge_footer()
+    if charge:
+        sections.append(charge)
     sections.append([format_summary(total, get_fetch())])
     return footer_join_sections(sections)
 
@@ -206,6 +210,7 @@ async def _finish_score(
     coro,
     qqid: Optional[int],
     *,
+    billing_qqid: int,
     username: Optional[str] = None,
     forced_source: Optional[str] = None,
     unsupported_feature: Optional[str] = None,
@@ -215,7 +220,7 @@ async def _finish_score(
     from ..libraries.maimaidx_player_cache import clear_fetch_meta
     from ..libraries.maimaidx_error import BreakInsufficientError
     try:
-        result, total = await run_timed(coro)
+        result, total = await run_timed(coro, billing_qqid=billing_qqid)
     except BreakInsufficientError as e:
         clear_fetch_meta()
         await matcher.finish(str(e), reply_message=True)
@@ -245,7 +250,8 @@ async def _(
     # 数据源路由统一由 libraries.maimaidx_datasource.get_user_b50 处理
     # username 查询强制水鱼；qqid 查询按用户偏好（自己/@的人均生效）
     await _finish_score(
-        best50, generate(qqid, username), None if username else qqid, username=username or None
+        best50, generate(qqid, username), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
     )
 
 
@@ -261,15 +267,17 @@ async def _refresh_b50(
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
     from ..libraries.maimaidx_datasource import get_user_records
+    from ..libraries.maimaidx_break import break_billing
     from ..libraries.maimaidx_error import LxnsDataError
 
     await refresh_b50.send('正在从查分器同步最新成绩并生成 b50，请稍候…', reply_message=True)
     try:
-        await get_user_records(
-            qqid=None if username else qqid,
-            username=username or None,
-            force_refresh=True,
-        )
+        async with break_billing(event.user_id):
+            await get_user_records(
+                qqid=None if username else qqid,
+                username=username or None,
+                force_refresh=True,
+            )
     except BreakInsufficientError as e:
         await refresh_b50.finish(str(e), reply_message=True)
         return
@@ -288,6 +296,7 @@ async def _refresh_b50(
         generate(qqid, username),
         None if username else qqid,
         username=username or None,
+        billing_qqid=event.user_id,
     )
 
 
@@ -303,7 +312,8 @@ async def _best_all50(
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
     await _finish_score(
-        best_all50, generate_all(qqid, username), None if username else qqid, username=username or None
+        best_all50, generate_all(qqid, username), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
     )
 
 
@@ -339,7 +349,7 @@ async def _coop_resolve_nicks_and_finish(event, at_qq, cmd, generator):
     else:
         nick_b = str(at_qq)
     from ..libraries.maimaidx_timing import finish_timed
-    await finish_timed(cmd, generator(event.user_id, at_qq, nick_a, nick_b))
+    await finish_timed(cmd, generator(event.user_id, at_qq, nick_a, nick_b), billing_qqid=event.user_id)
 
 
 @coop_b50.handle()
@@ -370,7 +380,9 @@ async def _how_weak(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip() or None
-    await _finish_score(how_weak, generate_how_weak(qqid=qqid, username=username), None if username else qqid, username=username or None, unsupported_feature='我有多菜')
+    await _finish_score(how_weak, generate_how_weak(qqid=qqid, username=username), None if username else qqid, username=username or None, unsupported_feature='我有多菜',
+        billing_qqid=event.user_id,
+    )
 
 
 @group_weak.handle()
@@ -628,7 +640,7 @@ async def _friend_battle(event: MessageEvent, message: Message = CommandArg()):
         return await draw_friend_battle_image(result)
 
     from ..libraries.maimaidx_timing import finish_timed
-    await finish_timed(friend_battle, _gen())
+    await finish_timed(friend_battle, _gen(), billing_qqid=event.user_id)
 
 
 @friend_battle_rank.handle()
@@ -689,7 +701,9 @@ async def _fcb50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await _finish_score(fcb50, generate_fc_b50(qqid, username), None if username else qqid, username=username or None)
+    await _finish_score(fcb50, generate_fc_b50(qqid, username), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
+    )
 
 
 @fcallb50.handle()
@@ -702,7 +716,9 @@ async def _fcallb50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await _finish_score(fcallb50, generate_fc_all_b50(qqid, username), None if username else qqid, username=username or None)
+    await _finish_score(fcallb50, generate_fc_all_b50(qqid, username), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
+    )
 
 
 @apb50.handle()
@@ -715,7 +731,9 @@ async def _apb50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await _finish_score(apb50, generate_ap_b50(qqid, username), None if username else qqid, username=username or None)
+    await _finish_score(apb50, generate_ap_b50(qqid, username), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
+    )
 
 
 @apallb50.handle()
@@ -728,7 +746,9 @@ async def _apallb50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await _finish_score(apallb50, generate_ap_all_b50(qqid, username), None if username else qqid, username=username or None)
+    await _finish_score(apallb50, generate_ap_all_b50(qqid, username), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
+    )
 
 
 @fit_b50.handle()
@@ -741,7 +761,9 @@ async def _fit_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await _finish_score(fit_b50, generate_fit_b50(qqid, username), None if username else qqid, username=username or None, unsupported_feature='拟合b50')
+    await _finish_score(fit_b50, generate_fit_b50(qqid, username), None if username else qqid, username=username or None, unsupported_feature='拟合b50',
+        billing_qqid=event.user_id,
+    )
 
 
 @fit_all_b50.handle()
@@ -754,7 +776,9 @@ async def _fit_all_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await _finish_score(fit_all_b50, generate_fit_all_b50(qqid, username), None if username else qqid, username=username or None, unsupported_feature='拟合ab50')
+    await _finish_score(fit_all_b50, generate_fit_all_b50(qqid, username), None if username else qqid, username=username or None, unsupported_feature='拟合ab50',
+        billing_qqid=event.user_id,
+    )
 
 
 def _parse_threshold_and_username(args: str) -> tuple:
@@ -782,7 +806,9 @@ async def _sun_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     threshold, username = _parse_threshold_and_username(message.extract_plain_text())
-    await _finish_score(sun_b50, generate_sun_b50(qqid, username, threshold), None if username else qqid, username=username or None)
+    await _finish_score(sun_b50, generate_sun_b50(qqid, username, threshold), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
+    )
 
 
 @sun_all_b50.handle()
@@ -795,7 +821,9 @@ async def _sun_all_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     threshold, username = _parse_threshold_and_username(message.extract_plain_text())
-    await _finish_score(sun_all_b50, generate_sun_all_b50(qqid, username, threshold), None if username else qqid, username=username or None)
+    await _finish_score(sun_all_b50, generate_sun_all_b50(qqid, username, threshold), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
+    )
 
 
 
@@ -810,7 +838,9 @@ async def _lock_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     _, username = _parse_threshold_and_username(message.extract_plain_text())
-    await _finish_score(lock_b50, generate_lock_b50(qqid, username), None if username else qqid, username=username or None)
+    await _finish_score(lock_b50, generate_lock_b50(qqid, username), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
+    )
 
 
 @lock_ab50.handle()
@@ -823,7 +853,9 @@ async def _lock_ab50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     _, username = _parse_threshold_and_username(message.extract_plain_text())
-    await _finish_score(lock_ab50, generate_lock_all_b50(qqid, username), None if username else qqid, username=username or None)
+    await _finish_score(lock_ab50, generate_lock_all_b50(qqid, username), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
+    )
 
 
 @yueji_b50.handle()
@@ -837,7 +869,9 @@ async def _yueji_b50(
     qqid = user_id or event.user_id
     th, username = _parse_threshold_and_username(message.extract_plain_text())
     threshold = th if th is not None else 97.0
-    await _finish_score(yueji_b50, generate_yueji_b50(qqid, username, threshold), None if username else qqid, username=username or None)
+    await _finish_score(yueji_b50, generate_yueji_b50(qqid, username, threshold), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
+    )
 
 
 @yueji_ab50.handle()
@@ -851,7 +885,9 @@ async def _yueji_ab50(
     qqid = user_id or event.user_id
     th, username = _parse_threshold_and_username(message.extract_plain_text())
     threshold = th if th is not None else 97.0
-    await _finish_score(yueji_ab50, generate_yueji_all_b50(qqid, username, threshold), None if username else qqid, username=username or None)
+    await _finish_score(yueji_ab50, generate_yueji_all_b50(qqid, username, threshold), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
+    )
 
 
 @difficulty_b50.handle()
@@ -867,19 +903,12 @@ async def _difficulty_b50(event: MessageEvent, matched = RegexMatched()):
         await difficulty_b50.finish('请提供难度，如：紫b50、13b50、Master b50', reply_message=True)
 
     qqid = event.user_id
-    import time as _t
-    from ..libraries.maimaidx_timing import reset
-    from ..libraries.maimaidx_player_cache import clear_fetch_meta
-    reset()
-    t0 = _t.perf_counter()
-    result = await generate_difficulty_b50(qqid=qqid, difficulty=difficulty)
-    total = _t.perf_counter() - t0
-    if result is not None:
-        if isinstance(result, str):
-            clear_fetch_meta()
-            await difficulty_b50.finish(result, reply_message=True)
-        else:
-            await difficulty_b50.finish(result + MessageSegment.text(_build_footer(qqid, total)), reply_message=True)
+    await _finish_score(
+        difficulty_b50,
+        generate_difficulty_b50(qqid=qqid, difficulty=difficulty),
+        qqid,
+        billing_qqid=event.user_id,
+    )
 
 
 @difficulty_ab50.handle()
@@ -895,19 +924,12 @@ async def _difficulty_ab50(event: MessageEvent, matched = RegexMatched()):
         await difficulty_ab50.finish('请提供难度，如：紫ab50、13ab50、Master ab50', reply_message=True)
 
     qqid = event.user_id
-    import time as _t
-    from ..libraries.maimaidx_timing import reset
-    from ..libraries.maimaidx_player_cache import clear_fetch_meta
-    reset()
-    t0 = _t.perf_counter()
-    result = await generate_difficulty_all_b50(qqid=qqid, difficulty=difficulty)
-    total = _t.perf_counter() - t0
-    if result is not None:
-        if isinstance(result, str):
-            clear_fetch_meta()
-            await difficulty_ab50.finish(result, reply_message=True)
-        else:
-            await difficulty_ab50.finish(result + MessageSegment.text(_build_footer(qqid, total)), reply_message=True)
+    await _finish_score(
+        difficulty_ab50,
+        generate_difficulty_all_b50(qqid=qqid, difficulty=difficulty),
+        qqid,
+        billing_qqid=event.user_id,
+    )
 
 
 @ideal_b50.handle()
@@ -921,7 +943,9 @@ async def _ideal_b50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await _finish_score(ideal_b50, generate_ideal_b50(qqid, username), None if username else qqid, username=username or None)
+    await _finish_score(ideal_b50, generate_ideal_b50(qqid, username), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
+    )
 
 
 @ideal_ab50.handle()
@@ -935,7 +959,9 @@ async def _ideal_ab50(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await _finish_score(ideal_ab50, generate_ideal_all_b50(qqid, username), None if username else qqid, username=username or None)
+    await _finish_score(ideal_ab50, generate_ideal_all_b50(qqid, username), None if username else qqid, username=username or None,
+        billing_qqid=event.user_id,
+    )
 
 
 @enable_data_storage.handle()
@@ -1099,7 +1125,9 @@ async def _weekly_report(event: MessageEvent):
             reply_message=True,
         )
         return
-    await _finish_score(weekly_report, generate_progress_report(qqid, 7), qqid)
+    await _finish_score(weekly_report, generate_progress_report(qqid, 7), qqid,
+        billing_qqid=event.user_id,
+    )
 
 
 @monthly_report.handle()
@@ -1111,7 +1139,9 @@ async def _monthly_report(event: MessageEvent):
             reply_message=True,
         )
         return
-    await _finish_score(monthly_report, generate_progress_report(qqid, 30), qqid)
+    await _finish_score(monthly_report, generate_progress_report(qqid, 30), qqid,
+        billing_qqid=event.user_id,
+    )
 
 
 @annual_report.handle()
@@ -1123,7 +1153,9 @@ async def _annual_report(event: MessageEvent):
             reply_message=True,
         )
         return
-    await _finish_score(annual_report, generate_progress_report(qqid, 365), qqid)
+    await _finish_score(annual_report, generate_progress_report(qqid, 365), qqid,
+        billing_qqid=event.user_id,
+    )
 
 
 @daily_report.handle()
@@ -1135,7 +1167,9 @@ async def _daily_report(event: MessageEvent):
             reply_message=True,
         )
         return
-    await _finish_score(daily_report, generate_daily_report(qqid), qqid)
+    await _finish_score(daily_report, generate_daily_report(qqid), qqid,
+        billing_qqid=event.user_id,
+    )
 
 
 @today_gain_recommend.handle()
@@ -1147,7 +1181,9 @@ async def _today_gain_recommend(event: MessageEvent):
             reply_message=True,
         )
         return
-    await _finish_score(today_gain_recommend, generate_today_gain_recommendation(qqid), qqid)
+    await _finish_score(today_gain_recommend, generate_today_gain_recommendation(qqid), qqid,
+        billing_qqid=event.user_id,
+    )
 
 
 @floor_query.handle()
@@ -1174,6 +1210,7 @@ async def _floor_query(
         generate_floor_query(qqid, username or None, filter_text=filter_text),
         None if username else qqid,
         username=username or None,
+        billing_qqid=event.user_id,
     )
 
 
@@ -1193,8 +1230,13 @@ async def _plate_count_stats(event: MessageEvent, user_id: Optional[int] = Depen
             return
 
     await plate_count_stats.send("无本地快照或快照为空，正在拉取全量成绩并统计…", reply_message=True)
+    from ..libraries.maimaidx_break import break_billing, take_break_charge_footer
     try:
-        records = await fetch_dev_records_as_score_records(qqid)
+        async with break_billing(event.user_id):
+            records = await fetch_dev_records_as_score_records(qqid)
+    except BreakInsufficientError as e:
+        await plate_count_stats.finish(str(e), reply_message=True)
+        return
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         await plate_count_stats.finish(str(e), reply_message=True)
         return
@@ -1218,8 +1260,10 @@ async def _plate_count_stats(event: MessageEvent, user_id: Optional[int] = Depen
     tip = ""
     if data_storage.is_enabled(qqid):
         tip = "\n提示：你已开启数据存储，发送「立即存储数据」后下次将优先用本地快照。"
+    charge = take_break_charge_footer()
+    charge_text = ('\n' + '\n'.join(charge)) if charge else ''
     await plate_count_stats.finish(
-        format_plate_count_message_from_records(records, note) + tip,
+        format_plate_count_message_from_records(records, note) + tip + charge_text,
         reply_message=True,
     )
 
@@ -1240,7 +1284,9 @@ async def _compare_report(event: MessageEvent, message: Message = CommandArg()):
             reply_message=True,
         )
         return
-    await _finish_score(compare_report, generate_progress_report_between(qqid, args[0], args[1]), qqid)
+    await _finish_score(compare_report, generate_progress_report_between(qqid, args[0], args[1]), qqid,
+        billing_qqid=event.user_id,
+    )
 
 
 @gold_content.handle()
@@ -1253,7 +1299,9 @@ async def _gold_content(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await _finish_score(gold_content, generate_gold_content(qqid, username), None if username else qqid, username=username or None, unsupported_feature='含金量')
+    await _finish_score(gold_content, generate_gold_content(qqid, username), None if username else qqid, username=username or None, unsupported_feature='含金量',
+        billing_qqid=event.user_id,
+    )
 
 
 @water_content.handle()
@@ -1266,7 +1314,9 @@ async def _water_content(
         raise IgnoredException('功能已禁用')
     qqid = user_id or event.user_id
     username = message.extract_plain_text().strip()
-    await _finish_score(water_content, generate_water_content(qqid, username), None if username else qqid, username=username or None, unsupported_feature='含水量')
+    await _finish_score(water_content, generate_water_content(qqid, username), None if username else qqid, username=username or None, unsupported_feature='含水量',
+        billing_qqid=event.user_id,
+    )
 
 
 @version_b50.handle()
@@ -1283,7 +1333,9 @@ async def _(
     if not version_name:
         await version_b50.finish('版本名称不能为空', reply_message=True)
         return
-    await _finish_score(version_b50, generate_version_b50(qqid, None, version_name), None if user_id else qqid)
+    await _finish_score(version_b50, generate_version_b50(qqid, None, version_name), None if user_id else qqid,
+        billing_qqid=event.user_id,
+    )
 
 
 @legacy_b50.handle()
@@ -1322,19 +1374,23 @@ async def _(
     if not ds_map:
         await legacy_b50.finish(f"「{version_name}」版本无定数变化数据", reply_message=True)
         return
-    import time as _t
-    from ..libraries.maimaidx_timing import reset
-    reset()
-    _t0 = _t.perf_counter()
-    result = await b50_pipeline(
-        qqid=qqid,
-        recalculate=True,
-        ds_map=ds_map,
-        by_group=False,
-        compact_layout=True,
-        hide_logo=False,
-    )
-    _total = _t.perf_counter() - _t0
+    from ..libraries.maimaidx_timing import run_timed
+    from ..libraries.maimaidx_error import BreakInsufficientError
+    try:
+        result, _total = await run_timed(
+            b50_pipeline(
+                qqid=qqid,
+                recalculate=True,
+                ds_map=ds_map,
+                by_group=False,
+                compact_layout=True,
+                hide_logo=False,
+            ),
+            billing_qqid=event.user_id,
+        )
+    except BreakInsufficientError as e:
+        await legacy_b50.finish(str(e), reply_message=True)
+        return
     if isinstance(result, str):
         await legacy_b50.finish(result, reply_message=True)
     else:
@@ -1377,20 +1433,24 @@ async def _(
     if not ds_map:
         await legacy_b35.finish(f"「{version_name}」版本无定数变化数据", reply_message=True)
         return
-    import time as _t
-    from ..libraries.maimaidx_timing import reset
-    reset()
-    _t0 = _t.perf_counter()
-    result = await b50_pipeline(
-        qqid=qqid,
-        recalculate=True,
-        ds_map=ds_map,
-        by_group=False,
-        max_display=35,
-        compact_layout=True,
-        hide_logo=False,
-    )
-    _total = _t.perf_counter() - _t0
+    from ..libraries.maimaidx_timing import run_timed
+    from ..libraries.maimaidx_error import BreakInsufficientError
+    try:
+        result, _total = await run_timed(
+            b50_pipeline(
+                qqid=qqid,
+                recalculate=True,
+                ds_map=ds_map,
+                by_group=False,
+                max_display=35,
+                compact_layout=True,
+                hide_logo=False,
+            ),
+            billing_qqid=event.user_id,
+        )
+    except BreakInsufficientError as e:
+        await legacy_b35.finish(str(e), reply_message=True)
+        return
     if isinstance(result, str):
         await legacy_b35.finish(result, reply_message=True)
     else:
@@ -1417,12 +1477,16 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
     if not ds_map:
         await dx2025_b50.finish(f"「{version_name}」版本无定数变化数据", reply_message=True)
         return
-    import time as _t
-    from ..libraries.maimaidx_timing import reset
-    reset()
-    _t0 = _t.perf_counter()
-    result = await dx2025_b50_pipeline(qqid=qqid, ds_map=ds_map)
-    _total = _t.perf_counter() - _t0
+    from ..libraries.maimaidx_timing import run_timed
+    from ..libraries.maimaidx_error import BreakInsufficientError
+    try:
+        result, _total = await run_timed(
+            dx2025_b50_pipeline(qqid=qqid, ds_map=ds_map),
+            billing_qqid=event.user_id,
+        )
+    except BreakInsufficientError as e:
+        await dx2025_b50.finish(str(e), reply_message=True)
+        return
     if isinstance(result, str):
         await dx2025_b50.finish(result, reply_message=True)
     else:
@@ -1449,8 +1513,9 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
     qqid = user_id or event.user_id
 
     async def _gen():
+        from ..libraries.maimaidx_datasource import get_user_b50
         try:
-            userinfo = await maiApi.query_user_b50(qqid=qqid)
+            userinfo = await get_user_b50(qqid=qqid)
         except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
             return str(e)
         stats = get_b50_tag_stats(userinfo)
@@ -1458,7 +1523,7 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
         return MessageSegment.image(image_to_message_segment(im))
 
     from ..libraries.maimaidx_timing import finish_timed
-    await finish_timed(tag_analysis, _gen())
+    await finish_timed(tag_analysis, _gen(), billing_qqid=event.user_id)
 
 
 @weakness_prescription.handle()
@@ -1471,7 +1536,7 @@ async def _weakness_prescription(event: MessageEvent, user_id: Optional[int] = D
         return await generate_weakness_prescription(qqid)
 
     from ..libraries.maimaidx_timing import finish_timed
-    await finish_timed(weakness_prescription, _gen())
+    await finish_timed(weakness_prescription, _gen(), billing_qqid=event.user_id)
 
 
 @b50_risk_warning.handle()
@@ -1484,7 +1549,7 @@ async def _b50_risk_warning(event: MessageEvent, user_id: Optional[int] = Depend
         return await generate_b50_risk_warning(qqid)
 
     from ..libraries.maimaidx_timing import finish_timed
-    await finish_timed(b50_risk_warning, _gen())
+    await finish_timed(b50_risk_warning, _gen(), billing_qqid=event.user_id)
 
 
 @head_to_head.handle()
@@ -1518,7 +1583,7 @@ async def _head_to_head(
         return await generate_head_to_head(event.user_id, at_qq, nick_a, nick_b)
 
     from ..libraries.maimaidx_timing import finish_timed
-    await finish_timed(head_to_head, _gen())
+    await finish_timed(head_to_head, _gen(), billing_qqid=event.user_id)
 
 
 @rating_sandbox.handle()
@@ -1548,6 +1613,7 @@ async def _rating_sandbox(
         generate_rating_sandbox(None if username else qqid, target, username or None),
         None if username else qqid,
         username=username or None,
+        billing_qqid=event.user_id,
     )
 
 
@@ -1581,7 +1647,7 @@ async def _(
             music_id = str(aliases[0].SongID)
     
     from ..libraries.maimaidx_timing import finish_timed
-    await finish_timed(minfo, draw_music_play_data(qqid, music_id))
+    await finish_timed(minfo, draw_music_play_data(qqid, music_id), billing_qqid=event.user_id)
 
 
 @ginfo.handle()

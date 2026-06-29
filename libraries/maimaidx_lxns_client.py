@@ -90,20 +90,36 @@ async def refresh_token(refresh_token: str) -> Dict[str, Any]:
 # ─────────────────────────── 开发者 API ───────────────────────────
 
 
+async def _billable_lxns_fetch(coro):
+    """落雪成绩/玩家 API：在 break_billing 上下文中扣费。"""
+    from .maimaidx_break import ensure_query_affordable, get_billing_qqid, settle_prober_fetch
+
+    qqid = get_billing_qqid()
+    if qqid:
+        ensure_query_affordable(qqid)
+    result = await coro
+    if qqid and result is not None:
+        settle_prober_fetch(qqid)
+    return result
+
+
 async def dev_get_player_by_qq(qq: int) -> Optional[Dict[str, Any]]:
     """通过 QQ 号获取玩家信息（开发者 Token）。"""
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(
-            f'{_BASE_URL}/api/v0/maimai/player/qq/{qq}',
-            headers=_dev_headers(),
-        )
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        result = resp.json()
-        if not result.get('success'):
-            return None
-        return result.get('data')
+    async def _fetch():
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f'{_BASE_URL}/api/v0/maimai/player/qq/{qq}',
+                headers=_dev_headers(),
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            result = resp.json()
+            if not result.get('success'):
+                return None
+            return result.get('data')
+
+    return await _billable_lxns_fetch(_fetch())
 
 
 async def dev_get_player_by_friend_code(friend_code: int) -> Optional[Dict[str, Any]]:
@@ -124,18 +140,21 @@ async def dev_get_player_by_friend_code(friend_code: int) -> Optional[Dict[str, 
 
 async def dev_get_bests(friend_code: int) -> Optional[Dict[str, Any]]:
     """通过好友码获取玩家 Best50（开发者 Token）。"""
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(
-            f'{_BASE_URL}/api/v0/maimai/player/{friend_code}/bests',
-            headers=_dev_headers(),
-        )
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        result = resp.json()
-        if not result.get('success'):
-            return None
-        return result.get('data')
+    async def _fetch():
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f'{_BASE_URL}/api/v0/maimai/player/{friend_code}/bests',
+                headers=_dev_headers(),
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            result = resp.json()
+            if not result.get('success'):
+                return None
+            return result.get('data')
+
+    return await _billable_lxns_fetch(_fetch())
 
 
 # ─────────────────────────── 用户 API（OAuth） ───────────────────────────
@@ -143,57 +162,69 @@ async def dev_get_bests(friend_code: int) -> Optional[Dict[str, Any]]:
 
 async def user_get_bests(access_token: str) -> Optional[Dict[str, Any]]:
     """获取当前用户的 Best50（OAuth token）。"""
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(
-            f'{_BASE_URL}/api/v0/user/maimai/player/bests',
-            headers=_oauth_headers(access_token),
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        if not result.get('success'):
-            raise ValueError(result.get('message', '获取 b50 失败'))
-        return result.get('data')
+    async def _fetch():
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f'{_BASE_URL}/api/v0/user/maimai/player/bests',
+                headers=_oauth_headers(access_token),
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            if not result.get('success'):
+                raise ValueError(result.get('message', '获取 b50 失败'))
+            return result.get('data')
+
+    return await _billable_lxns_fetch(_fetch())
 
 
 async def user_get_player(access_token: str) -> Optional[Dict[str, Any]]:
     """获取当前用户信息（OAuth token）。"""
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(
-            f'{_BASE_URL}/api/v0/user/maimai/player',
-            headers=_oauth_headers(access_token),
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        if not result.get('success'):
-            raise ValueError(result.get('message', '获取用户信息失败'))
-        return result.get('data')
+    async def _fetch():
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f'{_BASE_URL}/api/v0/user/maimai/player',
+                headers=_oauth_headers(access_token),
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            if not result.get('success'):
+                raise ValueError(result.get('message', '获取用户信息失败'))
+            return result.get('data')
+
+    return await _billable_lxns_fetch(_fetch())
 
 
 async def user_get_scores(access_token: str) -> Optional[list]:
     """获取当前用户所有成绩（OAuth token）。返回 Score 列表。"""
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(
-            f'{_BASE_URL}/api/v0/user/maimai/player/scores',
-            headers=_oauth_headers(access_token),
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        if not result.get('success'):
-            raise ValueError(result.get('message', '获取成绩失败'))
-        return result.get('data')
+    async def _fetch():
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f'{_BASE_URL}/api/v0/user/maimai/player/scores',
+                headers=_oauth_headers(access_token),
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            if not result.get('success'):
+                raise ValueError(result.get('message', '获取成绩失败'))
+            return result.get('data')
+
+    return await _billable_lxns_fetch(_fetch())
 
 
 async def dev_get_scores(friend_code: int) -> Optional[list]:
     """通过好友码获取玩家所有成绩（开发者 Token）。返回 Score 列表。"""
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(
-            f'{_BASE_URL}/api/v0/maimai/player/{friend_code}/scores',
-            headers=_dev_headers(),
-        )
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        result = resp.json()
-        if not result.get('success'):
-            return None
-        return result.get('data')
+    async def _fetch():
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f'{_BASE_URL}/api/v0/maimai/player/{friend_code}/scores',
+                headers=_dev_headers(),
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            result = resp.json()
+            if not result.get('success'):
+                return None
+            return result.get('data')
+
+    return await _billable_lxns_fetch(_fetch())

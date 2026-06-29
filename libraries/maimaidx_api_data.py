@@ -114,6 +114,12 @@ class MaimaiAPI:
         """
         # 查分器 /chart_stats 等接口数据量大，超时放宽至 90 秒避免启动失败
         _is_fetch = any(endpoint.startswith(e) for e in _FETCH_ENDPOINTS)
+        _bill_qq = None
+        if _is_fetch:
+            from .maimaidx_break import ensure_query_affordable, get_billing_qqid, settle_prober_fetch
+            _bill_qq = get_billing_qqid()
+            if _bill_qq:
+                ensure_query_affordable(_bill_qq)
         _ctx = _timing.measure('fetch') if _is_fetch else None
         if _ctx:
             _ctx.__enter__()
@@ -130,6 +136,8 @@ class MaimaiAPI:
                 _ctx.__exit__(None, None, None)
         if res.status_code == 200:
             data = res.json()
+            if _bill_qq:
+                settle_prober_fetch(_bill_qq)
         elif res.status_code == 400:
             error: Dict = res.json()
             if 'message' in error:

@@ -7,7 +7,8 @@ from nonebot.permission import SUPERUSER
 
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_player_score import *
-from ..libraries.maimaidx_error import UserDisabledQueryError, UserNotExistsError, UserNotFoundError
+from ..libraries.maimaidx_error import BreakInsufficientError, UserDisabledQueryError, UserNotExistsError, UserNotFoundError
+from ..libraries.maimaidx_break import take_break_charge_footer
 from ..libraries.maimaidx_timing import attach_timing, finish_timed, run_timed, run_timed_call
 from ..libraries.maimaidx_update_plate import *
 
@@ -67,6 +68,7 @@ async def _(event: MessageEvent, match = RegexMatched()):
         await finish_timed(
             rating_table_pfm,
             draw_rating_table(event.user_id, ra, True if plan and plan.lower() in comboRank else False),
+            billing_qqid=event.user_id,
         )
     else:
         await rating_table_pfm.finish('无法识别的定数', reply_message=True)
@@ -81,7 +83,7 @@ async def _(event: MessageEvent, match = RegexMatched()):
     if f'{ver}{plan}' == '真将':
         await plate_table_pfm.finish('真系没有真将哦', reply_message=True)
     page = int(match.group(3)) if match.group(3) else 1
-    await finish_timed(plate_table_pfm, draw_plate_table(event.user_id, ver, plan, page))
+    await finish_timed(plate_table_pfm, draw_plate_table(event.user_id, ver, plan, page), billing_qqid=event.user_id)
 
 
 @rise_score.handle()
@@ -99,11 +101,20 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
     if username:
         qqid = None
 
-    result, total = await run_timed(rise_score_data(qqid, username, rating, score))
+    try:
+        result, total = await run_timed(
+            rise_score_data(qqid, username, rating, score),
+            billing_qqid=event.user_id,
+        )
+    except BreakInsufficientError as e:
+        await rise_score.finish(str(e), reply_message=True)
+        return
+    charge = take_break_charge_footer()
+    charge_text = ('\n' + '\n'.join(charge)) if charge else ''
     if isinstance(result, str):
-        await rise_score.finish(result, reply_message=True)
+        await rise_score.finish(result + charge_text, reply_message=True)
     else:
-        msg = Message(result) + Message(f"\n{_RISE_SCORE_TIP}")
+        msg = Message(result) + Message(f"\n{_RISE_SCORE_TIP}{charge_text}")
         await rise_score.finish(attach_timing(msg, total), reply_message=True)
 
 
@@ -116,7 +127,7 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
     if f'{ver}{plan}' == '真将':
         await plate_process.finish('真系没有真将哦', reply_message=True)
 
-    await finish_timed(plate_process, player_plate_data(qqid, '', ver, plan))
+    await finish_timed(plate_process, player_plate_data(qqid, '', ver, plan), billing_qqid=event.user_id)
 
 
 @level_process.handle()
@@ -152,6 +163,7 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
     await finish_timed(
         level_process,
         level_process_data(qqid, username, level, plan, category, int(page) if page else 1),
+        billing_qqid=event.user_id,
     )
 
 
@@ -191,17 +203,22 @@ async def _level_plate_progress(event: MessageEvent, match=RegexMatched(), user_
         return summary, pic
 
     try:
-        result, total = await run_timed(_generate())
+        result, total = await run_timed(_generate(), billing_qqid=event.user_id)
+    except BreakInsufficientError as e:
+        await level_plate_progress.finish(str(e), reply_message=True)
+        return
     except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError) as e:
         await level_plate_progress.finish(str(e), reply_message=True)
         return
 
     summary, pic = result
+    charge = take_break_charge_footer()
+    charge_text = ('\n' + '\n'.join(charge)) if charge else ''
     if isinstance(pic, str):
-        await level_plate_progress.finish(pic, reply_message=True)
+        await level_plate_progress.finish(pic + charge_text, reply_message=True)
     from nonebot.adapters.onebot.v11 import Message
     await level_plate_progress.finish(
-        attach_timing(Message(summary) + Message(pic), total),
+        attach_timing(Message(summary) + Message(pic), total, extra=charge_text.strip()),
         reply_message=True,
     )
 
@@ -226,4 +243,5 @@ async def _(event: MessageEvent, match = RegexMatched(), user_id: Optional[int] 
     await finish_timed(
         level_achievement_list,
         level_achievement_list_data(qqid, username, rating, int(page) if page else 1),
+        billing_qqid=event.user_id,
     )

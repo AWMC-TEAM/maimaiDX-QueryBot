@@ -1,4 +1,5 @@
 from textwrap import dedent
+from typing import Optional
 
 
 class UserNotFoundError(Exception):
@@ -52,15 +53,14 @@ class TokenDisableError(Exception):
 class BreakInsufficientError(Exception):
     """BREAK 余额不足。"""
 
-    def __init__(self, required: int, current: int):
+    def __init__(self, required: int, current: int, qqid: Optional[int] = None):
         self.required = required
         self.current = current
+        self.qqid = qqid
 
     def __str__(self) -> str:
-        return (
-            f'BREAK 不足（需要 {self.required}，当前 {self.current}）。\n'
-            '发送「AWMC签到」获取 BREAK，每日首次查分免费哦~'
-        )
+        from .maimaidx_break import format_break_insufficient_message
+        return format_break_insufficient_message(self.qqid, self.required, self.current)
 
 
 class TokenNotFoundError(Exception):

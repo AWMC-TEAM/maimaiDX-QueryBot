@@ -21,8 +21,11 @@ from ..libraries.b50_analysis import (
 from ..libraries.b50_analysis.adapter import fetch_for_analysis
 from ..libraries.maimaidx_break import (
     analysis_cost,
+    break_billing,
+    break_db,
     ensure_analysis_affordable,
     settle_analysis_charge,
+    take_break_charge_footer,
 )
 from ..libraries.maimaidx_error import BreakInsufficientError
 
@@ -79,7 +82,8 @@ async def _handle(matcher: Matcher, event: MessageEvent, args: Message = Command
             return
 
     try:
-        b50_data = await fetch_for_analysis(qq, assets_path=maiconfig.b50_assets_path)
+        async with break_billing(qq):
+            b50_data = await fetch_for_analysis(qq, assets_path=maiconfig.b50_assets_path)
     except BreakInsufficientError as e:
         await matcher.finish(str(e), reply_message=True)
         return
@@ -131,7 +135,14 @@ async def _handle(matcher: Matcher, event: MessageEvent, args: Message = Command
     img.save(buf, format='PNG')
     buf.seek(0)
     cost = analysis_cost()
+    balance = break_db.get_balance(qq)
+    query_footer = take_break_charge_footer()
+    footer_parts = []
+    if query_footer:
+        footer_parts.extend(query_footer)
+    footer_parts.append(f'💳 分析消耗 {cost} BREAK · 余额 {balance} BREAK')
+    footer = '\n' + '\n'.join(footer_parts)
     await matcher.finish(
-        MessageSegment.image(buf) + MessageSegment.text(f'\n（消耗 {cost} BREAK）'),
+        MessageSegment.image(buf) + MessageSegment.text(footer),
         reply_message=True,
     )
