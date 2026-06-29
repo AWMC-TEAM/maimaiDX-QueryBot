@@ -626,7 +626,7 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e)}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -765,7 +765,7 @@ async def draw_rating_table(qqid: int, rating: str, isfc: bool = False) -> Union
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e)}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -1046,5 +1046,5 @@ async def draw_plate_table(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e)}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg

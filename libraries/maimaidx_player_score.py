@@ -632,7 +632,7 @@ async def rise_score_data(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e)}\n请联系Bot管理员'
+        msg = format_command_error(e)
         
     return msg
 
@@ -919,7 +919,7 @@ async def level_process_data(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e)}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -987,7 +987,7 @@ async def level_achievement_list_data(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e)}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -1024,5 +1024,5 @@ async def rating_ranking_data(name: Optional[str], page: Optional[int]) -> Union
             data = MessageSegment.image(text_to_bytes_io((msg.strip())))
     except Exception as e:
         log.error(traceback.format_exc())
-        data = f'未知错误：{type(e)}\n请联系Bot管理员'
+        data = format_command_error(e)
     return data

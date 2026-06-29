@@ -1098,7 +1098,7 @@ async def _fit_b50_common(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e)}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -1187,7 +1187,7 @@ async def _fc_ap_b50_common(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e)}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -1294,7 +1294,7 @@ async def _sun_b50_common(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e)}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -1374,7 +1374,7 @@ async def _lock_b50_common(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e).__name__}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -1425,7 +1425,7 @@ async def generate_pc50(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e).__name__}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -1479,7 +1479,7 @@ async def generate_pca50(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e).__name__}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -1568,7 +1568,7 @@ async def generate_all(qqid: Optional[int] = None, username: Optional[str] = Non
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e).__name__}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -1719,7 +1719,7 @@ async def generate_version_b50(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e).__name__}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -1780,7 +1780,7 @@ async def _yueji_b50_common(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e).__name__}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -2065,7 +2065,7 @@ async def _ideal_b50_common(
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e).__name__}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg
 
 
@@ -2138,7 +2138,7 @@ async def generate_coop_b50(
         return MessageSegment.image(image_to_base64(img))
     except Exception as e:
         log.error(traceback.format_exc())
-        return f'未知错误：{type(e).__name__}\n请联系Bot管理员'
+        return format_command_error(e)
 
 
 async def generate_coop_all_b50(
@@ -2190,7 +2190,7 @@ async def generate_coop_all_b50(
         return MessageSegment.image(image_to_base64(img))
     except Exception as e:
         log.error(traceback.format_exc())
-        return f'未知错误：{type(e).__name__}\n请联系Bot管理员'
+        return format_command_error(e)
 
 
 async def generate(qqid: Optional[int] = None, username: Optional[str] = None) -> Union[MessageSegment, str]:
@@ -2228,5 +2228,5 @@ async def generate(qqid: Optional[int] = None, username: Optional[str] = None) -
         msg = str(e)
     except Exception as e:
         log.error(traceback.format_exc())
-        msg = f'未知错误：{type(e).__name__}\n请联系Bot管理员'
+        msg = format_command_error(e)
     return msg

@@ -28,7 +28,7 @@ from ..config import log, plate_to_dx_version
 from .image import image_to_base64
 from .maimaidx_api_data import maiApi
 from .maimaidx_best_50 import DrawBest, _is_latest_version, computeRa, filter_utage_records
-from .maimaidx_error import UserDisabledQueryError, UserNotExistsError, UserNotFoundError
+from .maimaidx_error import UserDisabledQueryError, UserNotExistsError, UserNotFoundError, format_command_error
 from .maimaidx_model import ChartInfo, Data, PlayInfoDev, UserInfo
 from .maimaidx_music import mai
 
@@ -290,7 +290,7 @@ async def b50_pipeline(
     except Exception as e:
         log.error(f"[b50_pipeline] 未知错误: {type(e).__name__}: {e}")
         log.error(traceback.format_exc())
-        msg = f"未知错误：{type(e).__name__}\n请联系Bot管理员"
+        msg = format_command_error(e)
     return msg
 
 
@@ -362,5 +362,5 @@ async def dx2025_b50_pipeline(
     except Exception as e:
         log.error(f"[dx2025_b50] 未知错误: {type(e).__name__}: {e}")
         log.error(traceback.format_exc())
-        msg = f"未知错误：{type(e).__name__}\n请联系Bot管理员"
+        msg = format_command_error(e)
     return msg

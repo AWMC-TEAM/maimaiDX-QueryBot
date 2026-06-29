@@ -95,3 +95,23 @@ class AliasesNotFoundError(Exception):
 
 class UnknownError(Exception):
     """未知错误"""
+
+
+def format_command_error(e: Exception) -> str:
+    """将异常转为可发给玩家的中文文案；已知业务异常（如 BREAK 不足）直接透传。"""
+    if isinstance(e, (
+        BreakInsufficientError,
+        UserNotFoundError,
+        LxnsDataError,
+        UserNotExistsError,
+        UserDisabledQueryError,
+        MusicNotPlayError,
+        EnterError,
+        AliasesNotFoundError,
+        TokenError,
+        TokenDisableError,
+        TokenNotFoundError,
+        ServerError,
+    )):
+        return str(e)
+    return f'未知错误：{type(e).__name__}\n请联系Bot管理员'

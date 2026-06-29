@@ -11,7 +11,7 @@ from ..config import *
 from .maimaidx_theme import pic
 from .image import DrawText, draw_centered_design_footer, image_to_base64, music_picture
 from .maimaidx_api_data import maiApi
-from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError
+from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError, format_command_error
 from .maimaidx_model import ChartInfo, UserInfo
 from .maimaidx_music import mai
 
@@ -338,7 +338,7 @@ async def generate_gold_content(qqid: Optional[int] = None, username: Optional[s
     except Exception as e:
         from .. import log
         log.error(traceback.format_exc())
-        return f'未知错误：{type(e)}\n请联系Bot管理员'
+        return format_command_error(e)
 
 
 async def generate_water_content(qqid: Optional[int] = None, username: Optional[str] = None) -> Union[MessageSegment, str]:
@@ -357,4 +357,4 @@ async def generate_water_content(qqid: Optional[int] = None, username: Optional[
     except Exception as e:
         from .. import log
         log.error(traceback.format_exc())
-        return f'未知错误：{type(e)}\n请联系Bot管理员'
+        return format_command_error(e)
