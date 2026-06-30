@@ -10,17 +10,18 @@ from nonebot.exception import IgnoredException
 from nonebot.params import CommandArg, Depends, RegexStr
 
 from ..config import log, maiconfig
-from ..libraries.maimaidx_best_50 import generate_pc50, generate_pca50
+from ..libraries.maimaidx_best_50 import generate_pc50, generate_pca50, generate_pc_rank50
 from ..libraries.maimaidx_music import feature_manager
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_playcount_fetcher import playcount_fetcher
 
 update_pc = on_command('更新pc数', aliases={'更新PC数', '同步pc数', '同步PC数', '绑定机台', '登录机台'})
 my_pc = on_command('我的pc数', aliases={'我的PC数', '我的pc', '我的PC'})
-pc_rank = on_command('pc排行', aliases={'PC排行', 'pc数排行', 'PC数排行'})
+pc_rank = on_command('pc排行', aliases={'PC排行', 'pc数排行', 'PC数排行', 'pc全部排行', 'PC全部排行'})
 pc_detail = on_command('pc数', aliases={'PC数'})
 pc50 = on_command('pc50', aliases={'PC50', '嫖娼50'})
 pca50 = on_command('pca50', aliases={'PCA50', '嫖娼a50'})
+pc_rank50 = on_command('游玩排行50', aliases={'游玩PC50', 'PC游玩50', 'pc游玩50'})
 
 _waiting_qrcode: dict[int, bool] = {}
 
@@ -138,9 +139,10 @@ async def _handle_sdgb_update(bot: Bot, event: GroupMessageEvent, qqid: int, qrc
             f'- 收录谱面: {count} 个\n'
             f'- 总游玩次数: {total_plays} 次\n\n'
             f'使用「pc50」查看按次数排序的 B50\n'
-            f'使用「pca50」查看全局 PC 排行的 B50\n'
+            f'使用「pca50」查看 B50 内按 PC 排序\n'
+            f'使用「游玩排行50」查看游玩最多的 50 首谱面\n'
             f'使用「我的pc数」查看详细数据\n'
-            f'使用「pc排行」查看群内排行'
+            f'使用「pc排行」查看全部用户 PC 排行'
         )
     )
 
@@ -178,14 +180,14 @@ async def handle_my_pc(bot: Bot, event: GroupMessageEvent):
 
 @pc_rank.handle()
 async def handle_pc_rank(bot: Bot, event: GroupMessageEvent):
-    """处理「pc排行」命令，展示群内用户PC数排行。"""
+    """处理「pc排行」命令，展示全部已同步 PC 数据的用户排行。"""
     await check_feature(bot, event)
 
     all_users = pc_db.get_all_users_with_data()
     if not all_users:
         await pc_rank.finish(
             MessageSegment.reply(event.message_id)
-            + MessageSegment.text('暂无PC排行数据，请群成员先使用「更新pc数」同步数据。')
+            + MessageSegment.text('暂无PC排行数据，请先使用「更新pc数」同步数据。')
         )
 
     user_stats = []
@@ -196,8 +198,8 @@ async def handle_pc_rank(bot: Bot, event: GroupMessageEvent):
 
     user_stats.sort(key=lambda x: x[1], reverse=True)
 
-    lines = ['群内PC数排行:']
-    for i, (uid, total, count) in enumerate(user_stats[:15], 1):
+    lines = [f'PC全部排行（共 {len(user_stats)} 人）:']
+    for i, (uid, total, count) in enumerate(user_stats, 1):
         lines.append(f'{i:2}. QQ:{uid} - PC: {total} 次 ({count} 谱面)')
 
     msg = '\n'.join(lines)
@@ -300,3 +302,25 @@ async def handle_pca50(
     if charge and not isinstance(result, str):
         result = result + MessageSegment.text('\n' + '\n'.join(charge))
     await pca50.finish(result, reply_message=True)
+
+
+@pc_rank50.handle()
+async def handle_pc_rank50(
+    event: MessageEvent,
+    user_id: Optional[int] = Depends(get_at_qq)
+):
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
+        raise IgnoredException('功能已禁用')
+    qqid = user_id or event.user_id
+    from ..libraries.maimaidx_break import break_billing, take_break_charge_footer
+    from ..libraries.maimaidx_error import BreakInsufficientError
+    try:
+        async with break_billing(event.user_id):
+            result = await generate_pc_rank50(qqid)
+    except BreakInsufficientError as e:
+        await pc_rank50.finish(str(e), reply_message=True)
+        return
+    charge = take_break_charge_footer()
+    if charge and not isinstance(result, str):
+        result = result + MessageSegment.text('\n' + '\n'.join(charge))
+    await pc_rank50.finish(result, reply_message=True)

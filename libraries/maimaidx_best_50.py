@@ -14,7 +14,7 @@ from .maimaidx_api_data import maiApi
 from .maimaidx_error import *
 from .maimaidx_model import ChartInfo, Data, PlayInfoDefault, PlayInfoDev, UserInfo
 from .maimaidx_music import mai
-from .maimaidx_playcount_db import pc_db
+from .maimaidx_playcount_db import PlayCountRecord, pc_db
 
 
 def _prepare_b50_warnings(userinfo: UserInfo, qqid: Optional[int], username: Optional[str] = None) -> None:
@@ -341,6 +341,7 @@ class DrawBest(ScoreBaseImage):
         hide_logo: bool = False,
         play_counts: Optional[dict[tuple[int, int], int]] = None,
         max_display: int = 50,
+        compact_subtitle: Optional[str] = None,
         theme: str = None,
     ) -> None:
         from .maimaidx_theme import Theme, resolve_theme_path, get_user_theme
@@ -373,6 +374,7 @@ class DrawBest(ScoreBaseImage):
         self.hide_logo = hide_logo
         # 最大显示条数（50=B50, 35=B35），用于 compact_layout 的副标题显示
         self.max_display = max_display
+        self.compact_subtitle = compact_subtitle
 
     def _findRaPic(self) -> str:
         """
@@ -460,9 +462,10 @@ class DrawBest(ScoreBaseImage):
         self._sy.draw(445, 135, 25, self.userName, (0, 0, 0, 255), 'lm')
         if self.compact_layout:
             # 无视分组：用思源字体绘制含中文的副标题，避免「首」等字乱码
+            subtitle = self.compact_subtitle or f'{self.max_display}首等于{self.Rating}'
             self._sy.draw(
                 570, 172, 17,
-                f'{self.max_display}首等于{self.Rating}',
+                subtitle,
                 (0, 0, 0, 255), 'mm', 3, (255, 255, 255, 255)
             )
         else:
@@ -1429,6 +1432,70 @@ async def generate_pc50(
     return msg
 
 
+async def generate_pc_rank50(
+    qqid: Optional[int] = None,
+) -> Union[MessageSegment, str]:
+    """从全量机台 PC 数据取游玩次数最多的 50 首谱面绘图（不限于 rating B50）。"""
+    try:
+        if not qqid:
+            return '请指定要查询的 QQ 号。'
+
+        try:
+            pc_records = pc_db.get_user_play_counts(qqid)
+        except Exception:
+            pc_records = []
+
+        if not pc_records:
+            return '你还没有PC数据，请先使用「更新pc数」命令同步数据。'
+
+        last_update = max(r.updated_at for r in pc_records)
+        last_update_str = datetime.fromtimestamp(last_update).strftime('%Y-%m-%d %H:%M:%S')
+
+        top50_records = pc_records[:50]
+        play_counts = {(r.song_id, r.level_index): r.play_count for r in pc_records}
+        charts = [_pc_record_to_chartinfo(r) for r in top50_records]
+        b35_list = charts[:35]
+        b15_list = charts[35:50]
+        total_pc_top50 = sum(r.play_count for r in top50_records)
+
+        nickname = f'QQ{qqid}'
+        plate = None
+        add_rating = 0
+        rating = 0
+        try:
+            userinfo = await maiApi.query_user_b50(qqid=qqid)
+            nickname = userinfo.nickname or userinfo.username or nickname
+            plate = userinfo.plate
+            add_rating = userinfo.additional_rating if userinfo.additional_rating is not None else 0
+            rating = userinfo.rating if userinfo.rating is not None else 0
+        except Exception:
+            pass
+
+        pc_userinfo = UserInfo(
+            nickname=nickname,
+            plate=plate,
+            additional_rating=add_rating,
+            rating=rating,
+            username=None,
+            charts=Data(sd=b35_list, dx=b15_list),
+        )
+
+        draw_best = DrawBest(
+            pc_userinfo,
+            qqid,
+            compact_layout=True,
+            play_counts=play_counts,
+            compact_subtitle=f'游玩最多50首共{total_pc_top50}次',
+        )
+        msg = MessageSegment.image(image_to_base64(await draw_best.draw())) + MessageSegment.text(
+            f'\n上次更新: {last_update_str}'
+        )
+    except Exception as e:
+        log.error(traceback.format_exc())
+        msg = format_command_error(e)
+    return msg
+
+
 async def generate_pca50(
     qqid: Optional[int] = None,
     username: Optional[str] = None,
@@ -1598,6 +1665,56 @@ def _rating_to_display_dan(rating: int) -> int:
     if rating < 15000:
         return 9
     return 10
+
+
+def _pc_record_to_chartinfo(record: PlayCountRecord) -> ChartInfo:
+    """将机台 PC 记录转换为 ChartInfo，供游玩排行图绘制。"""
+    song_id = record.song_id
+    level_index = max(0, min(4, record.level_index))
+    achievements = record.achievements or 0.0
+    rate = record.rate or ''
+    fc = record.fc or ''
+    fs = record.fs or ''
+    title = record.title or ''
+    type_ = 'SD'
+    level = record.level or ''
+    ds = float(record.dx_rating or 0)
+    dx_score = int(record.dx_score or 0)
+    ra = 0
+
+    try:
+        music = mai.total_list.by_id(str(song_id))
+        if music and level_index < len(music.ds):
+            title = music.title
+            type_ = music.type
+            level = music.level[level_index] if level_index < len(music.level) else level
+            ds = round(float(music.ds[level_index]), 1)
+    except Exception:
+        pass
+
+    if ds > 0 and achievements >= 0:
+        computed = computeRa(ds, achievements, israte=True)
+        if isinstance(computed, tuple):
+            ra, rate_calc = computed
+            if not rate:
+                rate = rate_calc
+
+    level_label = diffs[level_index] if level_index < len(diffs) else level
+    return ChartInfo(
+        achievements=achievements,
+        fc=fc,
+        fs=fs,
+        level=level,
+        level_index=level_index,
+        title=title,
+        type=type_,
+        ds=ds,
+        dxScore=dx_score,
+        ra=ra,
+        rate=rate,
+        level_label=level_label,
+        song_id=song_id,
+    )
 
 
 def _playinfo_to_chartinfo(play: PlayInfoDefault) -> ChartInfo:
