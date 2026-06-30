@@ -4,8 +4,9 @@
 - 我在群里有多菜：群内排名 + 上下 5 位的合并转发
 - 看看<rating>有多少人：群内 rating >= 指定值的人数与列表（合并转发）
 - 看看群rating排名<参数>：群内 rating 倒序前 N 名（合并转发，默认 10 ）
-支持按群号缓存 rating 列表，时长由 maimaidx_rating_cache_seconds 控制（默认 15 分钟）。
-群成员 rating 使用并发请求 + 信号量限流，减少总耗时。
+群成员 rating 优先读本地玩家缓存 / 数据存储快照，仅对无本地数据的成员并发拉查分器并写回用户级缓存；
+每次请求都会重新获取群成员列表，群人数变化时新成员会自动纳入、退群成员不再计入。
+群成员 rating 网络补拉使用并发请求 + 信号量限流，减少总耗时。
 
 - 我的 <歌曲> 排名：群内指定歌曲成绩排名（支持难度筛选）
 - <歌曲> 排名：群内指定歌曲成绩排行榜（支持难度筛选）
@@ -14,6 +15,7 @@
 """
 import asyncio
 import math
+import random
 import time
 from typing import List, Optional, Tuple
 
@@ -25,6 +27,7 @@ from ..config import log
 from .maimaidx_data_storage import data_storage
 from .maimaidx_api_data import maiApi
 from .maimaidx_datasource import get_user_b50, get_user_records
+from .maimaidx_player_cache import get_cached_rating_for_friend_battle
 from .maimaidx_error import UserDisabledQueryError, UserNotFoundError, UserNotExistsError, MusicNotPlayError
 from .maimaidx_score_formatter import (
     format_leaderboard_text,
@@ -33,9 +36,6 @@ from .maimaidx_score_formatter import (
     format_score_line_from_dict,
     get_difficulty_name,
 )
-
-# 群内 rating 列表缓存：key = group_id, value = (rows, expiry_timestamp)
-_group_rating_cache: dict = {}
 
 # 群内歌曲成绩缓存：key = (group_id, music_id, level_index), value = (rows, expiry_timestamp)
 _group_song_score_cache: dict = {}
@@ -50,22 +50,6 @@ _group_sun_lock_raw_cache: dict = {}
 def _get_cache_ttl() -> int:
     """获取缓存时长（秒），默认 900（15 分钟）"""
     return getattr(maiconfig, 'maimaidx_rating_cache_seconds', 900) or 900
-
-
-def _group_rating_cache_get(group_id: int):
-    now = time.time()
-    if group_id in _group_rating_cache:
-        val, expiry = _group_rating_cache[group_id]
-        if now < expiry:
-            return val
-        del _group_rating_cache[group_id]
-    return None
-
-
-def _group_rating_cache_set(group_id: int, rows: List[Tuple[int, str, int]], ttl_seconds: int):
-    if ttl_seconds <= 0:
-        return
-    _group_rating_cache[group_id] = (rows, time.time() + ttl_seconds)
 
 
 def _group_song_score_cache_get(group_id: int, music_id: str, level_index: int):
@@ -135,17 +119,19 @@ _GROUP_RATING_CONCURRENCY = 15
 async def get_group_member_ratings(
     bot: Bot,
     group_id: int,
+    *,
+    net_fetch_limit: Optional[int] = None,
+    shuffle_net: bool = False,
+    require_token_for_net: bool = False,
 ) -> List[Tuple[int, str, int]]:
     """
-    获取群成员列表并并发查询 rating（绑定查分器且可查的才计入），信号量限流。
+    获取群成员列表并汇总 rating（绑定查分器且可查的才计入）。
+    优先读本地玩家缓存 / 数据存储快照；无本地数据的成员再并发拉查分器（写回用户级缓存）。
     返回: [(user_id, display_name, rating), ...]，按 rating 降序。
-    结果按群号缓存，时长由 maimaidx_rating_cache_seconds 控制。
-    """
-    ttl = _get_cache_ttl()
-    cached = _group_rating_cache_get(group_id)
-    if cached is not None:
-        return cached
 
+    net_fetch_limit: 网络补拉人数上限（None=不限制）；shuffle_net 为 True 时先打乱再截取。
+    require_token_for_net: 为 True 时未配置开发者 TOKEN 则跳过网络补拉。
+    """
     try:
         raw = await bot.call_api("get_group_member_list", group_id=group_id)
     except Exception:
@@ -153,29 +139,51 @@ async def get_group_member_ratings(
     if not raw or not isinstance(raw, list):
         return []
 
-    sem = asyncio.Semaphore(_GROUP_RATING_CONCURRENCY)
-
-    async def _fetch_one(m: dict) -> Optional[Tuple[int, str, int]]:
+    rows: List[Tuple[int, str, int]] = []
+    need_net: List[dict] = []
+    for m in raw:
         uid = m.get("user_id")
         if uid is None:
-            return None
-        async with sem:
-            try:
-                userinfo = await get_user_b50(qqid=int(uid))
-                ra = int(userinfo.rating or 0)
-                name = _display_name(m)
-                return (int(uid), name, ra)
-            except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError, ValueError, TypeError):
-                return None
-            except Exception:
-                return None
+            continue
+        name = _display_name(m)
+        qq = int(uid)
+        ra = get_cached_rating_for_friend_battle(qq)
+        if ra is not None and ra > 0:
+            rows.append((qq, name, ra))
+        else:
+            need_net.append(m)
 
-    tasks = [_fetch_one(m) for m in raw]
-    gathered = await asyncio.gather(*tasks)
-    result = [r for r in gathered if r is not None]
-    result.sort(key=lambda x: x[2], reverse=True)
-    _group_rating_cache_set(group_id, result, ttl)
-    return result
+    if need_net:
+        if require_token_for_net and not bool(getattr(maiconfig, "maimaidxtoken", None)):
+            need_net = []
+        if shuffle_net:
+            random.shuffle(need_net)
+        if net_fetch_limit is not None and net_fetch_limit > 0:
+            need_net = need_net[:net_fetch_limit]
+
+        sem = asyncio.Semaphore(_GROUP_RATING_CONCURRENCY)
+
+        async def _fetch_one(m: dict) -> Optional[Tuple[int, str, int]]:
+            uid = m.get("user_id")
+            if uid is None:
+                return None
+            async with sem:
+                try:
+                    userinfo = await get_user_b50(qqid=int(uid))
+                    ra = int(userinfo.rating or 0)
+                    if ra <= 0:
+                        return None
+                    return (int(uid), _display_name(m), ra)
+                except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError, ValueError, TypeError):
+                    return None
+                except Exception:
+                    return None
+
+        gathered = await asyncio.gather(*[_fetch_one(m) for m in need_net])
+        rows.extend(r for r in gathered if r is not None)
+
+    rows.sort(key=lambda x: x[2], reverse=True)
+    return rows
 
 
 def build_forward_node(user_id: str, nickname: str, content: str) -> dict:
@@ -221,7 +229,11 @@ async def group_weak_rank(
         return "你尚未绑定查分器或未同意协议，无法参与群内排名。", []
 
     exceeded = total - rank  # 严格比你低的人数
-    percent = (exceeded / total) * 100.0 if total else 0.0
+    others = total - 1
+    if others <= 0:
+        percent = 100.0
+    else:
+        percent = (exceeded / others) * 100.0
     text = f"你的 rating 在群里的排名为 {rank}/{total}，超过了 {percent:.1f}% 的群友。"
 
     # 合并转发：展示当前用户上下各 5 位，前后不足 5 位时按实际人数展示

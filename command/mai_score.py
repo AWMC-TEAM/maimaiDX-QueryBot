@@ -450,7 +450,7 @@ async def _group_rating_leaderboard(event: MessageEvent, message: Message = Comm
     )
     if not nodes:
         await group_rating_leaderboard.finish(text or '群内暂无已绑定查分器的成员。', reply_message=False)
-    # 计算当前用户在群内排名（使用同一缓存）
+    # 计算当前用户在群内排名（与排行榜同一数据源）
     rows = await get_group_member_ratings(bot, event.group_id)
     user_rank = None
     for i, (uid, _, _) in enumerate(rows):

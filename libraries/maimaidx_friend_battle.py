@@ -23,7 +23,6 @@ from .maimaidx_datasource import get_user_b50, get_user_records, get_user_source
 from .maimaidx_player_cache import (
     get_cached_b50_for_friend_battle,
     get_cached_player_for_friend_battle,
-    get_cached_rating_for_friend_battle,
 )
 from .maimaidx_data_storage import ScoreRecord, data_storage
 from .maimaidx_error import (
@@ -492,59 +491,16 @@ async def _get_group_ratings_for_friend_battle(
     group_id: int,
     members: List[dict],
 ) -> List[Tuple[int, str, int]]:
-    """
-    群友 rating：先读本地 SQLite/数据存储，仅对缺档且配置了 token 的少量成员补拉 B50。
-    结果仍写入群 rating 缓存，供其它群功能复用。
-    """
-    from .maimaidx_group_rating import _group_rating_cache_get, _group_rating_cache_set, _get_cache_ttl
+    """群友 rating：复用群内 rating 汇总（本地优先，网络补拉有上限）。"""
+    from .maimaidx_group_rating import get_group_member_ratings
 
-    ttl = _get_cache_ttl()
-    cached = _group_rating_cache_get(group_id)
-    if cached is not None:
-        return cached
-
-    rows: List[Tuple[int, str, int]] = []
-    need_net: List[dict] = []
-    for m in members:
-        uid = m.get("user_id")
-        if uid is None:
-            continue
-        name = _display_name(m)
-        qq = int(uid)
-        ra = get_cached_rating_for_friend_battle(qq)
-        if ra is not None and ra > 0:
-            rows.append((qq, name, ra))
-        else:
-            need_net.append(m)
-
-    has_token = bool(getattr(maiconfig, "maimaidxtoken", None))
-    if need_net and has_token:
-        sem = asyncio.Semaphore(5)
-        random.shuffle(need_net)
-        need_net = need_net[:_FRIEND_BATTLE_GROUP_B50_NET_MAX]
-
-        async def _fetch_one(m: dict) -> Optional[Tuple[int, str, int]]:
-            uid = m.get("user_id")
-            if uid is None:
-                return None
-            async with sem:
-                try:
-                    userinfo = await get_user_b50(qqid=int(uid))
-                    ra = int(userinfo.rating or 0)
-                    if ra <= 0:
-                        return None
-                    return (int(uid), _display_name(m), ra)
-                except (UserNotFoundError, UserNotExistsError, UserDisabledQueryError, ValueError, TypeError):
-                    return None
-                except Exception:
-                    return None
-
-        gathered = await asyncio.gather(*[_fetch_one(m) for m in need_net])
-        rows.extend(r for r in gathered if r is not None)
-
-    rows.sort(key=lambda x: x[2], reverse=True)
-    _group_rating_cache_set(group_id, rows, ttl)
-    return rows
+    return await get_group_member_ratings(
+        bot,
+        group_id,
+        net_fetch_limit=_FRIEND_BATTLE_GROUP_B50_NET_MAX,
+        shuffle_net=True,
+        require_token_for_net=True,
+    )
 
 
 async def _build_friend_battle_group_context(
