@@ -842,7 +842,7 @@ class Guess:
 
     def end(self, gid: int):
         """结束猜歌"""
-        del self.Group[gid]
+        self.Group.pop(gid, None)
 
     async def on(self, gid: int) -> str:
         """开启猜歌"""

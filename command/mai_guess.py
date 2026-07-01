@@ -108,25 +108,80 @@ async def _award_guess_points(
     )
 
 
-async def _safe_matcher_send(
+_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘或猜曲子'
+_GUESS_SEND_FAIL_MSG = '游戏数据获取失败，本游戏已结束。'
+GUESS_SEND_TIMEOUT_TEXT = 15
+GUESS_SEND_TIMEOUT_MEDIA = 60
+
+
+class GuessSendAborted(Exception):
+    """猜歌局内消息发送失败，本局已强制结束。"""
+
+
+async def _force_end_guess_round(gid: int) -> None:
+    """强制结束本群猜歌局（可重复调用）。"""
+    guess.Preparing.discard(gid)
+    if gid not in guess.Group:
+        return
+    guess.Group[gid].end = True
+    await guess_score.reset_all_streaks(gid)
+    guess.end(gid)
+
+
+async def _guess_notify(
     matcher: Matcher,
     event: GroupMessageEvent,
     message,
     *,
     reply: bool = False,
+    timeout: int = GUESS_SEND_TIMEOUT_TEXT,
 ) -> None:
+    """尽力发送通知，不修改游戏状态。"""
     try:
-        await matcher.send(message, reply_message=reply)
+        await asyncio.wait_for(
+            matcher.send(message, reply_message=reply),
+            timeout=timeout,
+        )
     except Exception as e:
-        log.warning(f'[maimai] 猜歌消息发送失败: {type(e).__name__}: {e}')
-        if reply:
-            await matcher.send(message, reply_message=False)
+        log.warning(
+            f'[maimai] 猜歌通知发送失败 gid={event.group_id}: {type(e).__name__}: {e}'
+        )
+
+
+async def _safe_matcher_send(
+    matcher: Matcher,
+    event: GroupMessageEvent,
+    message,
+    gid: int,
+    *,
+    reply: bool = False,
+    media: bool = False,
+    fatal: bool = True,
+    timeout: Optional[int] = None,
+) -> None:
+    if timeout is None:
+        timeout = GUESS_SEND_TIMEOUT_MEDIA if media else GUESS_SEND_TIMEOUT_TEXT
+    try:
+        await asyncio.wait_for(
+            matcher.send(message, reply_message=reply),
+            timeout=timeout,
+        )
+    except Exception as e:
+        log.warning(
+            f'[maimai] 猜歌消息发送失败 gid={gid}: {type(e).__name__}: {e}'
+        )
+        if not fatal:
+            return
+        await _force_end_guess_round(gid)
+        await _guess_notify(matcher, event, _GUESS_SEND_FAIL_MSG)
+        raise GuessSendAborted() from e
 
 
 async def _send_guess_answer_bundle(
     matcher: Matcher,
     event: GroupMessageEvent,
     data: GuessData,
+    gid: int,
     *,
     header: str,
     settlement: str = '',
@@ -137,13 +192,20 @@ async def _send_guess_answer_bundle(
         await _safe_matcher_send(
             matcher, event,
             MessageSegment.text('\n'.join(lines)),
+            gid,
             reply=reply,
+            fatal=False,
         )
-    await _safe_matcher_send(matcher, event, await draw_music_info(data.music))
+    await _safe_matcher_send(
+        matcher, event, await draw_music_info(data.music), gid, fatal=False,
+    )
     if isinstance(data, GuessPicData):
         await _safe_matcher_send(
             matcher, event,
             MessageSegment.image(guess.render_pic_reveal(data)),
+            gid,
+            media=True,
+            fatal=False,
         )
     if (
         isinstance(data, GuessAudioData)
@@ -161,6 +223,9 @@ async def _send_guess_answer_bundle(
             matcher, event,
             MessageSegment.text(f'[{label}]\n')
             + MessageSegment.record(str(stage_path)),
+            gid,
+            media=True,
+            fatal=False,
         )
 
 
@@ -190,9 +255,6 @@ async def _send_guess_score_forward(
         log.warning(f'[maimai] 猜歌积分排行 合并转发发送失败: {type(e).__name__}: {e}')
         await matcher.finish('合并转发发送失败，请稍后再试。', reply_message=True)
     await matcher.finish(reply_message=True)
-
-
-_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘或猜曲子'
 
 
 def _get_at_qq(event: GroupMessageEvent) -> Optional[int]:
@@ -345,41 +407,56 @@ async def _(event: GroupMessageEvent):
     if guess.is_busy(gid):
         await guess_music_start.finish(_GUESS_BUSY_HINT)
     guess.start(gid)
-    await guess_music_start.send(
-        dedent('''\
-            我将从热门乐曲中选择一首歌，每隔8秒描述它的特征，
-            请输入歌曲的 id 标题 或 别名（需bot支持，无需大小写）进行猜歌（DX乐谱和标准乐谱视为两首歌）。
-            猜歌时查歌等其他命令依然可用。
-            积分：越早猜中越高（基础最高7分）；首条提示前猜中可叠加首阶段×2、首答×2，理论最高4倍。
-        ''')
-    )
-    await asyncio.sleep(4)
-    for cycle in range(7):
-        if event.group_id not in guess.switch.enable or gid not in guess.Group or guess.Group[gid].end:
-            break
-        if cycle < 6:
-            await guess_music_start.send(f'{cycle + 1}/7 这首歌{guess.Group[gid].options[cycle]}')
-            guess.Group[gid].hint_step = cycle + 1
-            await asyncio.sleep(8)
-        else:
-            await guess_music_start.send(
-                MessageSegment.text('7/7 这首歌封面的一部分是：\n') + 
-                MessageSegment.image(guess.Group[gid].img) + 
-                MessageSegment.text('答案将在30秒后揭晓')
-            )
-            guess.Group[gid].hint_step = 7
-            for _ in range(30):
-                await asyncio.sleep(1)
-                if gid in guess.Group:
-                    if event.group_id not in guess.switch.enable or guess.Group[gid].end:
+    try:
+        await _safe_matcher_send(
+            guess_music_start, event,
+            dedent('''\
+                我将从热门乐曲中选择一首歌，每隔8秒描述它的特征，
+                请输入歌曲的 id 标题 或 别名（需bot支持，无需大小写）进行猜歌（DX乐谱和标准乐谱视为两首歌）。
+                猜歌时查歌等其他命令依然可用。
+                积分：越早猜中越高（基础最高7分）；首条提示前猜中可叠加首阶段×2、首答×2，理论最高4倍。
+            '''),
+            gid,
+        )
+        await asyncio.sleep(4)
+        for cycle in range(7):
+            if event.group_id not in guess.switch.enable or gid not in guess.Group or guess.Group[gid].end:
+                break
+            if cycle < 6:
+                await _safe_matcher_send(
+                    guess_music_start, event,
+                    f'{cycle + 1}/7 这首歌{guess.Group[gid].options[cycle]}',
+                    gid,
+                )
+                guess.Group[gid].hint_step = cycle + 1
+                await asyncio.sleep(8)
+            else:
+                await _safe_matcher_send(
+                    guess_music_start, event,
+                    MessageSegment.text('7/7 这首歌封面的一部分是：\n')
+                    + MessageSegment.image(guess.Group[gid].img)
+                    + MessageSegment.text('答案将在30秒后揭晓'),
+                    gid,
+                    media=True,
+                )
+                guess.Group[gid].hint_step = 7
+                for _ in range(30):
+                    await asyncio.sleep(1)
+                    if gid in guess.Group:
+                        if event.group_id not in guess.switch.enable or guess.Group[gid].end:
+                            await guess_music_start.finish()
+                    else:
                         await guess_music_start.finish()
-                else:
-                    await guess_music_start.finish()
-            guess.Group[gid].end = True
-            await guess_score.reset_all_streaks(gid)
-            answer = MessageSegment.text('答案是：\n') + await draw_music_info(guess.Group[gid].music)
-            guess.end(gid)
-            await guess_music_start.finish(answer)
+                guess.Group[gid].end = True
+                await guess_score.reset_all_streaks(gid)
+                answer = (
+                    MessageSegment.text('答案是：\n')
+                    + await draw_music_info(guess.Group[gid].music)
+                )
+                guess.end(gid)
+                await guess_music_start.finish(answer)
+    except GuessSendAborted:
+        await guess_music_start.finish()
 
 
 @guess_music_pic.handle()
@@ -391,62 +468,81 @@ async def _(event: GroupMessageEvent):
         await guess_music_pic.finish(_GUESS_BUSY_HINT, reply_message=True)
     guess.startpic(gid)
     data = guess.Group[gid]
-    await guess_music_pic.send(
-        dedent(f'''\
-            开始猜曲绘！可以直接发送答案！
-            每隔10秒会给出进一步提示。发送 重置猜歌 可结束游戏。
-            当前难度：{data.difficulty}，当前干扰类型：{'、'.join(data.interference_labels)}
-            积分：难度越高基础分越高（1～3分）；首次扩增前猜中可叠加首阶段×2、首答×2，理论最高4倍。
-        ''')
-    )
-    await guess_music_pic.send(MessageSegment.image(guess.render_pic_crop(data)))
+    try:
+        await _safe_matcher_send(
+            guess_music_pic, event,
+            dedent(f'''\
+                开始猜曲绘！可以直接发送答案！
+                每隔10秒会给出进一步提示。发送 重置猜歌 可结束游戏。
+                当前难度：{data.difficulty}，当前干扰类型：{'、'.join(data.interference_labels)}
+                积分：难度越高基础分越高（1～3分）；首次扩增前猜中可叠加首阶段×2、首答×2，理论最高4倍。
+            '''),
+            gid,
+        )
+        await _safe_matcher_send(
+            guess_music_pic, event,
+            MessageSegment.image(guess.render_pic_crop(data)),
+            gid,
+            media=True,
+        )
 
-    hint_interval = 10
-    timeout_after_clear = 30
-    clear_at = (data.expansion_count + 2) * hint_interval
-    total_duration = clear_at + timeout_after_clear
+        hint_interval = 10
+        timeout_after_clear = 30
+        clear_at = (data.expansion_count + 2) * hint_interval
+        total_duration = clear_at + timeout_after_clear
 
-    for elapsed in range(1, total_duration + 1):
-        await asyncio.sleep(1)
-        if gid not in guess.Group:
-            await guess_music_pic.finish()
-        data = guess.Group[gid]
-        if gid not in guess.switch.enable or data.end:
-            await guess_music_pic.finish()
+        for elapsed in range(1, total_duration + 1):
+            await asyncio.sleep(1)
+            if gid not in guess.Group:
+                await guess_music_pic.finish()
+            data = guess.Group[gid]
+            if gid not in guess.switch.enable or data.end:
+                await guess_music_pic.finish()
 
-        if elapsed % hint_interval != 0:
-            continue
+            if elapsed % hint_interval != 0:
+                continue
 
-        step = elapsed // hint_interval
-        if step <= data.expansion_count:
-            guess.expand_pic_crop(data)
-            await guess_music_pic.send(
-                MessageSegment.text('[区域扩增!]\n') +
-                MessageSegment.image(guess.render_pic_crop(data))
-            )
-            data.hint_step += 1
-        elif step == data.expansion_count + 1 and not data.global_shown:
-            data.global_shown = True
-            await guess_music_pic.send(
-                MessageSegment.text('[全局视野!]\n') +
-                MessageSegment.image(guess.render_pic_global(data))
-            )
-            data.hint_step += 1
-        elif step == data.expansion_count + 2 and not data.interference_cleared:
-            data.interference_cleared = True
-            await guess_music_pic.send(
-                MessageSegment.text('[干扰消除!]\n') +
-                MessageSegment.image(guess.render_pic_clear(data))
-            )
-            data.hint_step += 1
+            step = elapsed // hint_interval
+            if step <= data.expansion_count:
+                guess.expand_pic_crop(data)
+                await _safe_matcher_send(
+                    guess_music_pic, event,
+                    MessageSegment.text('[区域扩增!]\n')
+                    + MessageSegment.image(guess.render_pic_crop(data)),
+                    gid,
+                    media=True,
+                )
+                data.hint_step += 1
+            elif step == data.expansion_count + 1 and not data.global_shown:
+                data.global_shown = True
+                await _safe_matcher_send(
+                    guess_music_pic, event,
+                    MessageSegment.text('[全局视野!]\n')
+                    + MessageSegment.image(guess.render_pic_global(data)),
+                    gid,
+                    media=True,
+                )
+                data.hint_step += 1
+            elif step == data.expansion_count + 2 and not data.interference_cleared:
+                data.interference_cleared = True
+                await _safe_matcher_send(
+                    guess_music_pic, event,
+                    MessageSegment.text('[干扰消除!]\n')
+                    + MessageSegment.image(guess.render_pic_clear(data)),
+                    gid,
+                    media=True,
+                )
+                data.hint_step += 1
 
-    data.end = True
-    await guess_score.reset_all_streaks(gid)
-    guess.end(gid)
-    await _send_guess_answer_bundle(
-        guess_music_pic, event, data, header='答案是：',
-    )
-    await guess_music_pic.finish()
+        data.end = True
+        await guess_score.reset_all_streaks(gid)
+        guess.end(gid)
+        await _send_guess_answer_bundle(
+            guess_music_pic, event, data, gid, header='答案是：',
+        )
+        await guess_music_pic.finish()
+    except GuessSendAborted:
+        await guess_music_pic.finish()
 
 
 @guess_music_audio.handle()
@@ -457,91 +553,105 @@ async def _(event: GroupMessageEvent):
     if not await guess.try_begin_prepare(gid):
         await guess_music_audio.finish(_GUESS_BUSY_HINT, reply_message=True)
 
+    data = None
     try:
-        await guess_music_audio.send('正在准备猜曲音频，请稍候…')
-        log.info(f'[GuessAudio] 猜曲子开局 gid={gid}')
-        data = await guess.prepare_audio_round()
-        if data is None:
-            log.warning(f'[GuessAudio] 猜曲子无可用音频 gid={gid}')
-            await guess_music_audio.finish(
-                '暂无可用猜曲音频（CDN 无资源或分轨失败）。'
-                '管理员可运行 scripts/build_guess_audio_cache.py 预烘焙，或安装 demucs 后重试。',
-                reply_message=True,
+        try:
+            await _safe_matcher_send(
+                guess_music_audio, event, '正在准备猜曲音频，请稍候…', gid,
             )
+            log.info(f'[GuessAudio] 猜曲子开局 gid={gid}')
+            data = await guess.prepare_audio_round()
+            if data is None:
+                log.warning(f'[GuessAudio] 猜曲子无可用音频 gid={gid}')
+                await guess_music_audio.finish(
+                    '暂无可用猜曲音频（CDN 无资源或分轨失败）。'
+                    '管理员可运行 scripts/build_guess_audio_cache.py 预烘焙，或安装 demucs 后重试。',
+                    reply_message=True,
+                )
 
-        guess.startaudio(gid, data)
-    finally:
-        guess.end_prepare(gid)
-    stage_count = data.stage_count
-    audio_meta = get_audio_manifest_entry(data.music.id)
-    log.info(
-        f'[GuessAudio] 猜曲子开始 gid={gid} music_id={data.music.id} '
-        f'title={data.music.title} stages={stage_count} mode={audio_meta.get("mode", "?")}'
-    )
-    season_line = (
-        '\n【赛季限时双倍得分】猜曲子积分 ×2（截至 6/30；'
-        '第二段前猜中可叠加首阶段×2、首答×2，理论最高 8 倍）'
-        if guess_score.audio_season_double_active()
-        else ''
-    )
-    await guess_music_audio.send(
-        dedent(f'''\
-            猜曲子开始！共 {stage_count} 个阶段，每段约 30 秒，
-            每隔 {STAGE_INTERVAL} 秒会放出更完整的混音。
-            第四阶段结束后仍有 {STAGE_FINAL_GRACE} 秒作答时间。{season_line}
-            请输入歌曲 id、标题或别名猜歌（DX 与标准视为不同曲目）。
-            发送 重置猜歌 可结束本局。
-        ''')
-    )
+            guess.startaudio(gid, data)
+        finally:
+            guess.end_prepare(gid)
 
-    for stage_idx in range(stage_count):
-        if gid not in guess.Group:
-            await guess_music_audio.finish()
-        cur = guess.Group[gid]
-        if gid not in guess.switch.enable or cur.end:
-            await guess_music_audio.finish()
-
-        label = STAGE_LABELS[stage_idx] if stage_idx < len(STAGE_LABELS) else '更多乐器'
-        stage_path = Path(cur.stage_paths[stage_idx]).resolve()
+        stage_count = data.stage_count
+        audio_meta = get_audio_manifest_entry(data.music.id)
         log.info(
-            f'[GuessAudio] 发送阶段 {stage_idx + 1}/{stage_count} gid={gid} '
-            f'file={stage_path.name} size={stage_path.stat().st_size}'
+            f'[GuessAudio] 猜曲子开始 gid={gid} music_id={data.music.id} '
+            f'title={data.music.title} stages={stage_count} mode={audio_meta.get("mode", "?")}'
         )
-        await guess_music_audio.send(
-            MessageSegment.text(f'{stage_idx + 1}/{stage_count} [{label}]\n')
-            + MessageSegment.record(str(stage_path))
+        season_line = (
+            '\n【赛季限时双倍得分】猜曲子积分 ×2（截至 6/30；'
+            '第二段前猜中可叠加首阶段×2、首答×2，理论最高 8 倍）'
+            if guess_score.audio_season_double_active()
+            else ''
         )
-        cur.hint_step = stage_idx + 1
+        await _safe_matcher_send(
+            guess_music_audio, event,
+            dedent(f'''\
+                猜曲子开始！共 {stage_count} 个阶段，每段约 30 秒，
+                每隔 {STAGE_INTERVAL} 秒会放出更完整的混音。
+                第四阶段结束后仍有 {STAGE_FINAL_GRACE} 秒作答时间。{season_line}
+                请输入歌曲 id、标题或别名猜歌（DX 与标准视为不同曲目）。
+                发送 重置猜歌 可结束本局。
+            '''),
+            gid,
+        )
 
-        if stage_idx == stage_count - 1:
-            await guess_music_audio.send(
-                f'第四阶段已放出，最后 {STAGE_FINAL_GRACE} 秒作答时间！'
+        for stage_idx in range(stage_count):
+            if gid not in guess.Group:
+                await guess_music_audio.finish()
+            cur = guess.Group[gid]
+            if gid not in guess.switch.enable or cur.end:
+                await guess_music_audio.finish()
+
+            label = STAGE_LABELS[stage_idx] if stage_idx < len(STAGE_LABELS) else '更多乐器'
+            stage_path = Path(cur.stage_paths[stage_idx]).resolve()
+            log.info(
+                f'[GuessAudio] 发送阶段 {stage_idx + 1}/{stage_count} gid={gid} '
+                f'file={stage_path.name} size={stage_path.stat().st_size}'
             )
+            await _safe_matcher_send(
+                guess_music_audio, event,
+                MessageSegment.text(f'{stage_idx + 1}/{stage_count} [{label}]\n')
+                + MessageSegment.record(str(stage_path)),
+                gid,
+                media=True,
+            )
+            cur.hint_step = stage_idx + 1
 
-        if stage_idx < stage_count - 1:
-            for _ in range(STAGE_INTERVAL):
-                await asyncio.sleep(1)
-                if gid not in guess.Group:
-                    await guess_music_audio.finish()
-                cur = guess.Group[gid]
-                if gid not in guess.switch.enable or cur.end:
-                    await guess_music_audio.finish()
+            if stage_idx == stage_count - 1:
+                await _safe_matcher_send(
+                    guess_music_audio, event,
+                    f'第四阶段已放出，最后 {STAGE_FINAL_GRACE} 秒作答时间！',
+                    gid,
+                )
 
-    for _ in range(STAGE_FINAL_GRACE):
-        await asyncio.sleep(1)
-        if gid not in guess.Group:
-            await guess_music_audio.finish()
-        cur = guess.Group[gid]
-        if gid not in guess.switch.enable or cur.end:
-            await guess_music_audio.finish()
+            if stage_idx < stage_count - 1:
+                for _ in range(STAGE_INTERVAL):
+                    await asyncio.sleep(1)
+                    if gid not in guess.Group:
+                        await guess_music_audio.finish()
+                    cur = guess.Group[gid]
+                    if gid not in guess.switch.enable or cur.end:
+                        await guess_music_audio.finish()
 
-    cur.end = True
-    await guess_score.reset_all_streaks(gid)
-    guess.end(gid)
-    await _send_guess_answer_bundle(
-        guess_music_audio, event, data, header='答案是：',
-    )
-    await guess_music_audio.finish()
+        for _ in range(STAGE_FINAL_GRACE):
+            await asyncio.sleep(1)
+            if gid not in guess.Group:
+                await guess_music_audio.finish()
+            cur = guess.Group[gid]
+            if gid not in guess.switch.enable or cur.end:
+                await guess_music_audio.finish()
+
+        cur.end = True
+        await guess_score.reset_all_streaks(gid)
+        guess.end(gid)
+        await _send_guess_answer_bundle(
+            guess_music_audio, event, data, gid, header='答案是：',
+        )
+        await guess_music_audio.finish()
+    except GuessSendAborted:
+        await guess_music_audio.finish()
 
 
 @update_guess_audio.handle()
@@ -584,31 +694,33 @@ async def _(event: GroupMessageEvent):
             first_guess=first_guess,
         )
         guess.end(gid)
-        await _send_guess_answer_bundle(
-            guess_music_solve, event, data,
-            header='猜对了！',
-            settlement=settlement,
-            reply=True,
-        )
+        try:
+            await _send_guess_answer_bundle(
+                guess_music_solve, event, data, gid,
+                header='猜对了！',
+                settlement=settlement,
+                reply=True,
+            )
+        except GuessSendAborted:
+            pass
         await guess_music_solve.finish()
 
 
 @guess_music_reset.handle()
 async def _(event: GroupMessageEvent):
     gid = event.group_id
-    if gid in guess.Group:
-        data = guess.Group[gid]
-        data.end = True
-        await guess_score.reset_all_streaks(gid)
-        guess.end(gid)
-        await _send_guess_answer_bundle(
-            guess_music_reset, event, data,
-            header='已重置该群猜歌，答案是：',
-            reply=True,
-        )
-        await guess_music_reset.finish()
-    else:
+    if gid not in guess.Group:
         await guess_music_reset.finish('该群未处在猜歌状态', reply_message=True)
+        return
+    data = guess.Group[gid]
+    music = data.music
+    await _force_end_guess_round(gid)
+    await _guess_notify(
+        guess_music_reset, event,
+        f'已重置该群猜歌，本游戏已结束。\n答案是：{music.title}（ID: {music.id}）',
+        reply=True,
+    )
+    await guess_music_reset.finish()
 
 
 async def _handle_guess_score_board(
