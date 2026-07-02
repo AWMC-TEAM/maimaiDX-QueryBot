@@ -595,11 +595,8 @@ def _config_int(key: str, default: int) -> int:
 
 
 def is_superuser_exempt(qqid: int) -> bool:
-    try:
-        from nonebot import get_driver
-        return str(qqid) in get_driver().config.superusers
-    except Exception:
-        return False
+    from .maimaidx_bot_admin import is_plugin_admin
+    return is_plugin_admin(qqid)
 
 
 def query_cost() -> int:

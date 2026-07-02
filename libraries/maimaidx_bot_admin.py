@@ -1,0 +1,86 @@
+"""插件管理员：合并 NoneBot SUPERUSER 与 .env 配置的 platform id。"""
+
+from __future__ import annotations
+
+import re
+from typing import Set, Union
+
+from nonebot.adapters.onebot.v11 import GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent
+from nonebot.permission import Permission, SUPERUSER
+
+from ..config import maiconfig
+
+
+def _parse_id_list(raw: str) -> Set[str]:
+    if not raw:
+        return set()
+    parts = re.split(r'[,\s;|]+', str(raw).strip())
+    return {p.strip() for p in parts if p.strip()}
+
+
+def get_plugin_admin_ids() -> Set[str]:
+    """NoneBot superusers ∪ MAIMAIDX_BOT_ADMINS。"""
+    ids: Set[str] = set()
+    ids.update(_parse_id_list(getattr(maiconfig, 'maimaidx_bot_admins', '') or ''))
+    try:
+        from nonebot import get_driver
+        ids.update(str(u) for u in get_driver().config.superusers)
+    except Exception:
+        pass
+    return ids
+
+
+def is_plugin_admin(user_id: Union[int, str]) -> bool:
+    return str(user_id) in get_plugin_admin_ids()
+
+
+def _qq_group_role(event) -> str | None:
+    """官方 QQ 群消息中的 member_role：owner / admin / member。"""
+    author = getattr(event, 'author', None)
+    if author is None:
+        return None
+    role = getattr(author, 'member_role', None)
+    if role:
+        return str(role).lower()
+    if isinstance(author, dict):
+        r = author.get('member_role')
+        return str(r).lower() if r else None
+    return None
+
+
+def is_qq_group_manager(event) -> bool:
+    return _qq_group_role(event) in ('owner', 'admin')
+
+
+async def _group_manager_or_plugin_admin(
+    event,
+    *,
+    _group_owner=GROUP_OWNER,
+    _group_admin=GROUP_ADMIN,
+    _superuser=SUPERUSER,
+) -> bool:
+    uid = str(event.get_user_id())
+    if is_plugin_admin(uid):
+        return True
+    if isinstance(event, GroupMessageEvent):
+        if await _group_owner(event):
+            return True
+        if await _group_admin(event):
+            return True
+    if is_qq_group_manager(event):
+        return True
+    if await _superuser(event):
+        return True
+    return False
+
+
+# 猜歌群管 / 插件管理员（兼容 OneBot 群管 + 官方 QQ owner/admin）
+GUESS_GROUP_MANAGER = Permission(_group_manager_or_plugin_admin)
+
+
+async def _plugin_admin_only(event, **kwargs) -> bool:
+    return is_plugin_admin(event.get_user_id()) or await SUPERUSER(event)
+
+
+# 仅插件管理员（含 env 与 superuser）
+PLUGIN_ADMIN_ONLY = Permission(_plugin_admin_only)

@@ -81,6 +81,14 @@ class Config(BaseModel):
     b50_llm_model: str = 'gemini-3-flash-preview'
     b50_assets_path: str = ''
 
+    # ---------- 平台适配（OneBot / 官方 QQ） ----------
+    # onebot | qq_official —— MAIMAIDX_PLATFORM
+    maimaidx_platform: str = 'onebot'
+    # 官方 QQ 下是否尝试卡片形态发图（暂以图片消息为主，后续扩展 Ark）
+    maimaidx_use_qq_card: bool = False
+    # 插件管理员 platform id（逗号/空格分隔），与 SUPERUSER 等效；官方 QQ 填 openid
+    maimaidx_bot_admins: str = ''
+
 
 maiconfig = get_plugin_config(Config)
 

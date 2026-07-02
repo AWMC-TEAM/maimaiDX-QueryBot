@@ -30,7 +30,8 @@ from ..libraries.maimaidx_break import (
     settle_analysis_charge,
     take_break_charge_footer,
 )
-from ..libraries.maimaidx_error import BreakInsufficientError, format_command_error
+from ..libraries.maimaidx_error import BreakInsufficientError, format_command_error, QBindRequiredError
+from ..libraries.maimaidx_platform import platform_user_id, resolve_query_qqid
 
 _peer_stats = None
 
@@ -59,9 +60,10 @@ b50_analysis_cmd = on_command(
 async def _handle(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
     style = args.extract_plain_text().strip()
     qq = int(event.get_user_id())
+    billing_qq = int(platform_user_id(event))
 
     try:
-        ensure_analysis_affordable(qq)
+        ensure_analysis_affordable(billing_qq)
     except BreakInsufficientError as e:
         await matcher.finish(str(e), reply_message=True)
         return
@@ -88,9 +90,13 @@ async def _handle(matcher: Matcher, event: MessageEvent, args: Message = Command
             return
 
     try:
-        async with break_billing(qq):
-            b50_data = await fetch_for_analysis(qq, assets_path=maiconfig.b50_assets_path)
+        legacy_qq = resolve_query_qqid(billing_qq)
+        async with break_billing(billing_qq):
+            b50_data = await fetch_for_analysis(legacy_qq, assets_path=maiconfig.b50_assets_path)
     except BreakInsufficientError as e:
+        await matcher.finish(str(e), reply_message=True)
+        return
+    except QBindRequiredError as e:
         await matcher.finish(str(e), reply_message=True)
         return
     except ValueError as e:
@@ -103,7 +109,7 @@ async def _handle(matcher: Matcher, event: MessageEvent, args: Message = Command
 
     peer_stats = get_peer_stats()
     context = build_context(b50_data, peer_stats)
-    context['player']['qq'] = str(qq)
+    context['player']['qq'] = str(legacy_qq)
 
     try:
         analysis_text = await generate_analysis(context, maiconfig, style)
@@ -136,13 +142,13 @@ async def _handle(matcher: Matcher, event: MessageEvent, args: Message = Command
         await matcher.finish(f'制图失败：{e}', reply_message=True)
         return
 
-    settle_analysis_charge(qq)
+    settle_analysis_charge(billing_qq)
 
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
     cost = analysis_cost()
-    balance = break_db.get_balance(qq)
+    balance = break_db.get_balance(billing_qq)
     query_footer = take_break_charge_footer()
     footer_parts = []
     if query_footer:

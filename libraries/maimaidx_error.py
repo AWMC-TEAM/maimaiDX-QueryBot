@@ -50,6 +50,21 @@ class TokenDisableError(Exception):
         return '开发者Token被禁用'
 
 
+class QBindRequiredError(Exception):
+    """官方 QQ 未绑定水鱼查分 QQ。"""
+
+    def __init__(self, platform_id: str):
+        self.platform_id = platform_id
+        super().__init__(platform_id)
+
+    def __str__(self) -> str:
+        return (
+            '你尚未绑定查分 QQ。\n'
+            '请发送：qbind 你的QQ号\n'
+            '（水鱼/落雪查分器绑定的那个 QQ，用于拉取成绩与数据源设置）'
+        )
+
+
 class BreakInsufficientError(Exception):
     """BREAK 余额不足。"""
 
@@ -101,6 +116,7 @@ def format_command_error(e: Exception) -> str:
     """将异常转为可发给玩家的中文文案；已知业务异常（如 BREAK 不足）直接透传。"""
     if isinstance(e, (
         BreakInsufficientError,
+        QBindRequiredError,
         UserNotFoundError,
         LxnsDataError,
         UserNotExistsError,

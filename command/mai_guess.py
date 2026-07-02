@@ -5,12 +5,11 @@ from typing import Literal, Optional, Union
 
 from loguru import logger as log
 from nonebot import get_bot, on_command, on_message, on_regex
-from nonebot.adapters.onebot.v11 import Bot, GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent, Message, MessageEvent, MessageSegment, PrivateMessageEvent
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment, PrivateMessageEvent
 from nonebot.matcher import Matcher
-from nonebot.params import CommandArg, Depends, RegexMatched
-from nonebot.permission import SUPERUSER
-from nonebot.rule import Rule
+from nonebot.params import CommandArg, RegexMatched
 
+from ..libraries.maimaidx_bot_admin import GUESS_GROUP_MANAGER, PLUGIN_ADMIN_ONLY
 from ..libraries.maimaidx_guess_boost_card import (
     DEFAULT_CARD_HOURS,
     guess_boost_card,
@@ -36,51 +35,20 @@ def is_now_playing_guess_music(event: GroupMessageEvent) -> bool:
     return event.group_id in guess.Group
 
 
-def _guess_solve_not_command():
-    """猜歌作答规则：非命令消息。兼容无 not_command 的旧版 NoneBot。"""
-    try:
-        from nonebot.rule import not_command
-        return not_command()
-    except ImportError:
-        pass
-    try:
-        from nonebot.rule import command as _command_rule
-
-        async def _inverted(event) -> bool:
-            return not await _command_rule()(event)
-
-        return _inverted
-    except ImportError:
-        async def _prefix_fallback(event) -> bool:
-            if not isinstance(event, MessageEvent):
-                return False
-            text = event.get_plaintext().lstrip()
-            if not text:
-                return True
-            try:
-                from nonebot import get_driver
-                starts = get_driver().config.command_start
-            except Exception:
-                starts = frozenset()
-            return not any(text.startswith(s) for s in starts)
-
-        return _prefix_fallback
-
-
 guess_music_start   = on_command('猜歌')
 guess_music_pic     = on_command('猜曲绘')
 guess_music_audio   = on_command('猜曲子')
-update_guess_audio  = on_regex(r'^更新猜曲音频(?:\s+(-full))?\s*$', permission=SUPERUSER)
-guess_boost_grant   = on_command('发加倍卡', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
+update_guess_audio  = on_regex(r'^更新猜曲音频(?:\s+(-full))?\s*$', permission=PLUGIN_ADMIN_ONLY)
+guess_boost_grant   = on_command('发加倍卡', permission=GUESS_GROUP_MANAGER)
 guess_boost_query   = on_command('查加倍卡')
 guess_music_solve   = on_message(
-    rule=Rule(is_now_playing_guess_music, _guess_solve_not_command()),
+    rule=is_now_playing_guess_music,
     priority=10,
     block=False,
 )
 guess_music_reset   = on_command('重置猜歌', priority=4, block=True)
-guess_music_enable  = on_command('开启mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
-guess_music_disable = on_command('关闭mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
+guess_music_enable  = on_command('开启mai猜歌', permission=GUESS_GROUP_MANAGER)
+guess_music_disable = on_command('关闭mai猜歌', permission=GUESS_GROUP_MANAGER)
 guess_score_rank    = on_command('猜歌积分排行')
 guess_score_daily   = on_command('猜歌积分日榜')
 guess_score_weekly  = on_command('猜歌积分周榜')

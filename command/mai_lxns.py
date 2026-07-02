@@ -20,6 +20,7 @@ from nonebot.params import Arg, CommandArg
 from ..config import log, maiconfig
 from ..libraries.image import image_to_base64
 from ..libraries.maimaidx_best_50 import DrawBest
+from ..libraries.maimaidx_error import QBindRequiredError
 from ..libraries.maimaidx_lxns_client import (
     fetch_token,
     get_authorize_url,
@@ -27,8 +28,14 @@ from ..libraries.maimaidx_lxns_client import (
     user_get_player,
 )
 from ..libraries.maimaidx_lxns_db import lxns_db
+from ..libraries.maimaidx_platform import resolve_score_qqid
 
 # ─────────────────────────── helpers ───────────────────────────
+
+
+def _lxns_qqid(event) -> int:
+    """落雪库与 API 统一用查分 QQ（官方 QQ 需先 qbind）。"""
+    return resolve_score_qqid(event)
 
 
 async def _do_token_refresh(qqid: int, db_row: dict) -> Optional[str]:
@@ -101,7 +108,10 @@ async def _lxbind(matcher: Matcher, message: Message = CommandArg()):
 
 @lxbind.got('code')
 async def _lxbind_got(matcher: Matcher, event: MessageEvent, code_msg: Message = Arg('code')):
-    qqid = event.user_id
+    try:
+        qqid = _lxns_qqid(event)
+    except QBindRequiredError as e:
+        await lxbind.finish(str(e), reply_message=True)
     code = code_msg.extract_plain_text().strip()
 
     # 取消机制
@@ -173,7 +183,10 @@ lxunbind = on_command('lxunbind', aliases={'解绑落雪', '解绑lx'})
 
 @lxunbind.handle()
 async def _lxunbind(event: MessageEvent):
-    qqid = event.user_id
+    try:
+        qqid = _lxns_qqid(event)
+    except QBindRequiredError as e:
+        await lxunbind.finish(str(e), reply_message=True)
     user = lxns_db.get_user(qqid)
     if not user:
         await lxunbind.finish('你尚未绑定落雪查分器。', reply_message=True)
@@ -188,7 +201,10 @@ source_cmd = on_command('数据源', aliases={'切换数据源', 'datasource'})
 
 @source_cmd.handle()
 async def _source_cmd(event: MessageEvent, message: Message = CommandArg()):
-    qqid = event.user_id
+    try:
+        qqid = _lxns_qqid(event)
+    except QBindRequiredError as e:
+        await source_cmd.finish(str(e), reply_message=True)
     args = message.extract_plain_text().strip().lower()
 
     source_map = {
@@ -259,7 +275,10 @@ lxb50 = on_command('lxb50', aliases={'落雪b50', '落雪B50', 'lx50'})
 
 @lxb50.handle()
 async def _lxb50(event: MessageEvent):
-    qqid = event.user_id
+    try:
+        qqid = _lxns_qqid(event)
+    except QBindRequiredError as e:
+        await lxb50.finish(str(e), reply_message=True)
 
     try:
         from ..libraries.maimaidx_timing import run_timed, timing_text

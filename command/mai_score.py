@@ -9,10 +9,12 @@ from nonebot.params import CommandArg, Depends, RegexMatched
 from ..libraries.maimaidx_api_data import maiApi
 from ..libraries.maimaidx_error import (
     BreakInsufficientError,
+    QBindRequiredError,
     UserDisabledQueryError,
     UserNotFoundError,
     UserNotExistsError,
 )
+from ..libraries.maimaidx_platform import resolve_score_qqid
 from ..libraries.maimaidx_group_rating import (
     group_weak_rank,
     group_rating_ranking,
@@ -232,6 +234,10 @@ async def _finish_score(
         clear_fetch_meta()
         await matcher.finish(str(e), reply_message=True)
         return
+    except QBindRequiredError as e:
+        clear_fetch_meta()
+        await matcher.finish(str(e), reply_message=True)
+        return
     if isinstance(result, str):
         clear_fetch_meta()
         await matcher.finish(result, reply_message=True)
@@ -256,7 +262,7 @@ async def _(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     # 数据源路由统一由 libraries.maimaidx_datasource.get_user_b50 处理
     # username 查询强制水鱼；qqid 查询按用户偏好（自己/@的人均生效）
@@ -275,7 +281,7 @@ async def _refresh_b50(
     """强制从查分器拉取最新成绩后生成常规 b50。"""
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     from ..libraries.maimaidx_datasource import get_user_records
     from ..libraries.maimaidx_break import break_billing
@@ -320,7 +326,7 @@ async def _best_all50(
     """常规 ab50：无视 B35/B15 分组，直接取 rating 最高的 50 首。"""
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     await _finish_score(
         best_all50, generate_all(qqid, username), None if username else qqid, username=username or None,
@@ -389,7 +395,7 @@ async def _how_weak(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip() or None
     await _finish_score(how_weak, generate_how_weak(qqid=qqid, username=username), None if username else qqid, username=username or None, unsupported_feature='我有多菜',
         billing_qqid=event.user_id,
@@ -710,7 +716,7 @@ async def _fcb50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     await _finish_score(fcb50, generate_fc_b50(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
@@ -725,7 +731,7 @@ async def _fcallb50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     await _finish_score(fcallb50, generate_fc_all_b50(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
@@ -740,7 +746,7 @@ async def _apb50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     await _finish_score(apb50, generate_ap_b50(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
@@ -755,7 +761,7 @@ async def _apallb50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     await _finish_score(apallb50, generate_ap_all_b50(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
@@ -770,7 +776,7 @@ async def _fit_b50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     await _finish_score(fit_b50, generate_fit_b50(qqid, username), None if username else qqid, username=username or None, unsupported_feature='拟合b50',
         billing_qqid=event.user_id,
@@ -785,7 +791,7 @@ async def _fit_all_b50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     await _finish_score(fit_all_b50, generate_fit_all_b50(qqid, username), None if username else qqid, username=username or None, unsupported_feature='拟合ab50',
         billing_qqid=event.user_id,
@@ -815,7 +821,7 @@ async def _sun_b50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     threshold, username = _parse_threshold_and_username(message.extract_plain_text())
     await _finish_score(sun_b50, generate_sun_b50(qqid, username, threshold), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
@@ -830,7 +836,7 @@ async def _sun_all_b50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     threshold, username = _parse_threshold_and_username(message.extract_plain_text())
     await _finish_score(sun_all_b50, generate_sun_all_b50(qqid, username, threshold), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
@@ -847,7 +853,7 @@ async def _lock_b50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     _, username = _parse_threshold_and_username(message.extract_plain_text())
     await _finish_score(lock_b50, generate_lock_b50(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
@@ -862,7 +868,7 @@ async def _lock_ab50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     _, username = _parse_threshold_and_username(message.extract_plain_text())
     await _finish_score(lock_ab50, generate_lock_all_b50(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
@@ -877,7 +883,7 @@ async def _yueji_b50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     th, username = _parse_threshold_and_username(message.extract_plain_text())
     threshold = th if th is not None else 97.0
     await _finish_score(yueji_b50, generate_yueji_b50(qqid, username, threshold), None if username else qqid, username=username or None,
@@ -893,7 +899,7 @@ async def _yueji_ab50(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     th, username = _parse_threshold_and_username(message.extract_plain_text())
     threshold = th if th is not None else 97.0
     await _finish_score(yueji_ab50, generate_yueji_all_b50(qqid, username, threshold), None if username else qqid, username=username or None,
@@ -913,7 +919,7 @@ async def _difficulty_b50(event: MessageEvent, matched = RegexMatched()):
     if not difficulty:
         await difficulty_b50.finish('请提供难度，如：紫b50、13b50、Master b50', reply_message=True)
 
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     await _finish_score(
         difficulty_b50,
         generate_difficulty_b50(qqid=qqid, difficulty=difficulty),
@@ -934,7 +940,7 @@ async def _difficulty_ab50(event: MessageEvent, matched = RegexMatched()):
     if not difficulty:
         await difficulty_ab50.finish('请提供难度，如：紫ab50、13ab50、Master ab50', reply_message=True)
 
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     await _finish_score(
         difficulty_ab50,
         generate_difficulty_all_b50(qqid=qqid, difficulty=difficulty),
@@ -952,7 +958,7 @@ async def _ideal_b50(
     """理想b50：将每个成绩的评级提高一个档次，新版本取前15，旧版本取前35，按 B35/B15 分组显示。"""
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     await _finish_score(ideal_b50, generate_ideal_b50(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
@@ -968,7 +974,7 @@ async def _ideal_ab50(
     """理想ab50：将每个成绩的评级提高一个档次，无视分组直接取前50首。"""
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     await _finish_score(ideal_ab50, generate_ideal_all_b50(qqid, username), None if username else qqid, username=username or None,
         billing_qqid=event.user_id,
@@ -978,7 +984,7 @@ async def _ideal_ab50(
 @enable_data_storage.handle()
 async def _enable_data_storage(event: MessageEvent):
     """开启数据存储：每天自动存储成绩；首次开启立即拉取一次全量存档"""
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     success = data_storage.enable_user(qqid)
     if success:
         await enable_data_storage.send('正在首次同步全量成绩到本地，请稍候…', reply_message=True)
@@ -1002,7 +1008,7 @@ async def _enable_data_storage(event: MessageEvent):
 @disable_data_storage.handle()
 async def _disable_data_storage(event: MessageEvent):
     """关闭数据存储：停止自动存储成绩"""
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     success = data_storage.disable_user(qqid)
     if success:
         await disable_data_storage.finish('已关闭数据存储功能。', reply_message=True)
@@ -1013,7 +1019,7 @@ async def _disable_data_storage(event: MessageEvent):
 @store_data_now.handle()
 async def _store_data_now(event: MessageEvent):
     """立即存储数据：手动触发成绩存储"""
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     
     # 检查是否已开启存储
     if not data_storage.is_enabled(qqid):
@@ -1054,7 +1060,7 @@ async def _store_data_now(event: MessageEvent):
 @storage_history.handle()
 async def _storage_history(event: MessageEvent, message: Message = CommandArg()):
     """查询存储历史：展示最近 N 次快照摘要（默认 10 次）"""
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     if not data_storage.is_enabled(qqid):
         await storage_history.finish(
             '你尚未开启数据存储功能，请先发送「开启存储数据」。',
@@ -1091,7 +1097,7 @@ async def _storage_history(event: MessageEvent, message: Message = CommandArg())
 @storage_snapshot.handle()
 async def _storage_snapshot(event: MessageEvent, message: Message = CommandArg()):
     """查看某次存档详情：查看存档 <snapshot_id>"""
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     if not data_storage.is_enabled(qqid):
         await storage_snapshot.finish(
             '你尚未开启数据存储功能，请先发送「开启存储数据」。',
@@ -1129,7 +1135,7 @@ async def _storage_snapshot(event: MessageEvent, message: Message = CommandArg()
 
 @weekly_report.handle()
 async def _weekly_report(event: MessageEvent):
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     if not data_storage.is_enabled(qqid):
         await weekly_report.finish(
             '你尚未开启数据存储功能，请先发送「开启存储数据」。',
@@ -1143,7 +1149,7 @@ async def _weekly_report(event: MessageEvent):
 
 @monthly_report.handle()
 async def _monthly_report(event: MessageEvent):
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     if not data_storage.is_enabled(qqid):
         await monthly_report.finish(
             '你尚未开启数据存储功能，请先发送「开启存储数据」。',
@@ -1157,7 +1163,7 @@ async def _monthly_report(event: MessageEvent):
 
 @annual_report.handle()
 async def _annual_report(event: MessageEvent):
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     if not data_storage.is_enabled(qqid):
         await annual_report.finish(
             '你尚未开启数据存储功能，请先发送「开启存储数据」。',
@@ -1171,7 +1177,7 @@ async def _annual_report(event: MessageEvent):
 
 @daily_report.handle()
 async def _daily_report(event: MessageEvent):
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     if not data_storage.is_enabled(qqid):
         await daily_report.finish(
             '你尚未开启数据存储功能，请先发送「开启存储数据」。',
@@ -1185,7 +1191,7 @@ async def _daily_report(event: MessageEvent):
 
 @today_gain_recommend.handle()
 async def _today_gain_recommend(event: MessageEvent):
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     if not data_storage.is_enabled(qqid):
         await today_gain_recommend.finish(
             '你尚未开启数据存储功能，请先发送「开启存储数据」。',
@@ -1205,7 +1211,7 @@ async def _floor_query(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     arg = message.extract_plain_text().strip()
     username = ''
     filter_text = arg
@@ -1230,7 +1236,7 @@ async def _plate_count_stats(event: MessageEvent, user_id: Optional[int] = Depen
     """牌子统计：优先本地最近快照；否则本指令内拉取 dev 全量一次再统计（不强制开启存储）。"""
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, "score"):
         raise IgnoredException("功能已禁用")
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
 
     metas = data_storage.list_snapshots(qqid, limit=1)
     if metas:
@@ -1281,7 +1287,7 @@ async def _plate_count_stats(event: MessageEvent, user_id: Optional[int] = Depen
 
 @compare_report.handle()
 async def _compare_report(event: MessageEvent, message: Message = CommandArg()):
-    qqid = event.user_id
+    qqid = resolve_score_qqid(event)
     if not data_storage.is_enabled(qqid):
         await compare_report.finish(
             '你尚未开启数据存储功能，请先发送「开启存储数据」。',
@@ -1308,7 +1314,7 @@ async def _gold_content(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     await _finish_score(gold_content, generate_gold_content(qqid, username), None if username else qqid, username=username or None, unsupported_feature='含金量',
         billing_qqid=event.user_id,
@@ -1323,7 +1329,7 @@ async def _water_content(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     username = message.extract_plain_text().strip()
     await _finish_score(water_content, generate_water_content(qqid, username), None if username else qqid, username=username or None, unsupported_feature='含水量',
         billing_qqid=event.user_id,
@@ -1339,7 +1345,7 @@ async def _(
     """版本 B50：根据版本代号筛选歌曲，按 RA 降序排序，无视类型分组"""
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     version_name = match.group(1) if match else ''
     if not version_name:
         await version_b50.finish('版本名称不能为空', reply_message=True)
@@ -1358,7 +1364,7 @@ async def _(
     """历代版本 b50：使用指定版本的定数重算 rating。格式：l镜代b50 / l祭代b50"""
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     version_alias = match.group(1) if match else ''
     if not version_alias:
         await legacy_b50.finish('请输入版本代号，例如：l镜代b50', reply_message=True)
@@ -1417,7 +1423,7 @@ async def _(
     """历代版本 b35：使用指定版本的定数重算 rating，仅取前 35 首。格式：l镜代b35"""
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     version_alias = match.group(1) if match else ''
     if not version_alias:
         await legacy_b35.finish('请输入版本代号，例如：l镜代b35', reply_message=True)
@@ -1473,7 +1479,7 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
     """dx2025b50：读取 2026-06-09 本地存档 + PRiSM 定数，按 2025 规则分 B35/B15 出图"""
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     from ..libraries.maimaidx_version_alias import resolve_version_alias, build_legacy_ds_map
     from ..libraries.maimaidx_b50_pipeline import DX2025_SNAPSHOT_DATE, dx2025_b50_pipeline
     version_name = resolve_version_alias("dx2025")
@@ -1521,7 +1527,7 @@ async def _(event: MessageEvent):
 async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'tag_analysis'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
 
     async def _gen():
         from ..libraries.maimaidx_datasource import get_user_b50
@@ -1541,7 +1547,7 @@ async def _(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
 async def _weakness_prescription(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'tag_analysis'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
 
     async def _gen():
         return await generate_weakness_prescription(qqid)
@@ -1554,7 +1560,7 @@ async def _weakness_prescription(event: MessageEvent, user_id: Optional[int] = D
 async def _b50_risk_warning(event: MessageEvent, user_id: Optional[int] = Depends(get_at_qq)):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
 
     async def _gen():
         return await generate_b50_risk_warning(qqid)
@@ -1605,7 +1611,7 @@ async def _rating_sandbox(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     arg = message.extract_plain_text().strip()
     if not arg:
         await rating_sandbox.finish('请指定目标 Rating，例如：目标rating 16000', reply_message=True)
@@ -1636,7 +1642,7 @@ async def _(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = user_id or event.user_id
+    qqid = resolve_score_qqid(event, user_id)
     args = message.extract_plain_text().strip()
     if not args:
         await minfo.finish('请输入曲目id或曲名', reply_message=True)
