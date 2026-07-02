@@ -606,8 +606,54 @@ def query_cost() -> int:
     return _config_int('query_cost', 1)
 
 
-def analysis_cost() -> int:
+_ANALYSIS_PEAK_WINDOWS_UTC8 = (
+    (9, 0, 12, 0),   # 09:00–12:00
+    (14, 0, 18, 0),  # 14:00–18:00
+)
+
+
+def is_analysis_peak_hour() -> bool:
+    """锐评峰时（UTC+8）：09:00–12:00、14:00–18:00，与 DeepSeek 峰谷策略对齐。"""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone(timedelta(hours=8)))
+    minutes = now.hour * 60 + now.minute
+    for h1, m1, h2, m2 in _ANALYSIS_PEAK_WINDOWS_UTC8:
+        start = h1 * 60 + m1
+        end = h2 * 60 + m2
+        if start <= minutes < end:
+            return True
+    return False
+
+
+def analysis_base_cost() -> int:
     return _config_int('analysis_cost', 3)
+
+
+def analysis_cost() -> int:
+    base = analysis_base_cost()
+    return base * 2 if is_analysis_peak_hour() else base
+
+
+def format_analysis_cost_line(*, charged: Optional[int] = None, balance: Optional[int] = None) -> str:
+    """锐评扣费说明（含峰时 ×2 标注）。"""
+    cost = charged if charged is not None else analysis_cost()
+    base = analysis_base_cost()
+    peak = is_analysis_peak_hour() and cost > base
+    if balance is None:
+        if peak:
+            return f'分析消耗 {cost} BREAK（峰时 ×2，基础 {base}）'
+        return f'分析消耗 {cost} BREAK'
+    if peak:
+        return f'💳 分析消耗 {cost} BREAK（峰时 ×2，基础 {base}） · 余额 {balance} BREAK'
+    return f'💳 分析消耗 {cost} BREAK · 余额 {balance} BREAK'
+
+
+def format_analysis_pricing_help() -> str:
+    base = analysis_base_cost()
+    return (
+        f'· 分析b50 / 锐评一下 — 每次成功消耗 {base} BREAK（峰时 09:00–12:00、14:00–18:00 双倍）\n'
+    )
 
 
 def ensure_query_affordable(qqid: Optional[int]) -> None:

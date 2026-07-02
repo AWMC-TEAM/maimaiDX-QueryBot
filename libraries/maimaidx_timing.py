@@ -75,6 +75,27 @@ def timing_text(total: float) -> str:
     return format_summary(total, get_fetch())
 
 
+def is_valid_image_result(result) -> bool:
+    """生成结果是否含有效图片（排除 None / 空串 / 无图 Message）。"""
+    if result is None:
+        return False
+    if isinstance(result, str):
+        return bool(result.strip())
+    from nonebot.adapters.onebot.v11 import Message, MessageSegment
+
+    def _seg_has_image(seg: MessageSegment) -> bool:
+        if seg.type != 'image':
+            return False
+        payload = seg.data.get('file') or seg.data.get('url') or ''
+        return bool(str(payload).strip())
+
+    if isinstance(result, MessageSegment):
+        return _seg_has_image(result)
+    if isinstance(result, Message):
+        return any(_seg_has_image(seg) for seg in result)
+    return True
+
+
 async def run_timed(coro: Awaitable[T], *, billing_qqid: Optional[int] = None) -> tuple[T, float]:
     """reset 后执行协程并返回 (结果, 总秒数)。billing_qqid 开启查分 BREAK 扣费上下文。"""
     reset()
@@ -100,6 +121,8 @@ def attach_timing(result: ImageResult, total: float, *, extra: str = '') -> Imag
     """给图片消息追加耗时 footer；字符串（错误提示）原样返回。"""
     if isinstance(result, str):
         return result
+    if result is None:
+        return ''
     from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
     footer = timing_text(total)
@@ -136,7 +159,14 @@ async def finish_timed(
         extra = f'{charge_text}\n{extra}' if extra else charge_text
     if isinstance(result, str):
         clear_fetch_meta()
+        if not result.strip():
+            await matcher.finish(reply_message=reply_message)
+            return
         await matcher.finish(result, reply_message=reply_message)
+        return
+    if not is_valid_image_result(result):
+        clear_fetch_meta()
+        await matcher.finish(reply_message=reply_message)
         return
     await matcher.finish(
         attach_timing(result, total, extra=extra),

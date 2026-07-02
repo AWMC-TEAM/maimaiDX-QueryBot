@@ -24,6 +24,8 @@ from ..libraries.maimaidx_break import (
     break_billing,
     break_db,
     ensure_analysis_affordable,
+    format_analysis_cost_line,
+    is_analysis_peak_hour,
     settle_analysis_charge,
     take_break_charge_footer,
 )
@@ -45,9 +47,9 @@ def set_peer_stats(stats):
 
 
 b50_analysis_cmd = on_command(
-    '分析b50',
-    aliases={'锐评一下', '分析B50', 'B50分析'},
-    priority=5,
+    '锐评一下',
+    aliases={'分析b50', '分析B50', 'B50分析'},
+    priority=4,
     block=True,
 )
 
@@ -70,7 +72,10 @@ async def _handle(matcher: Matcher, event: MessageEvent, args: Message = Command
         await matcher.finish('未配置 b50_assets_path，请在 .env 中填写分析素材目录', reply_message=True)
         return
 
-    await matcher.send('正在查询 B50，请稍候…', reply_message=True)
+    pending = '正在查询 B50，请稍候…'
+    if is_analysis_peak_hour():
+        pending += f'（峰时双倍计费，本次消耗 {analysis_cost()} BREAK）'
+    await matcher.send(pending, reply_message=True)
 
     if style:
         mod_result = check_user_input(style)
@@ -140,7 +145,7 @@ async def _handle(matcher: Matcher, event: MessageEvent, args: Message = Command
     footer_parts = []
     if query_footer:
         footer_parts.extend(query_footer)
-    footer_parts.append(f'💳 分析消耗 {cost} BREAK · 余额 {balance} BREAK')
+    footer_parts.append(format_analysis_cost_line(charged=cost, balance=balance))
     footer = '\n' + '\n'.join(footer_parts)
     await matcher.finish(
         MessageSegment.image(buf) + MessageSegment.text(footer),

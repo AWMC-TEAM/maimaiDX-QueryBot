@@ -9,6 +9,7 @@ from ..libraries.maimaidx_break import (
     DEFAULT_CONFIG,
     break_db,
     format_account_profile,
+    format_analysis_pricing_help,
     format_checkin_result,
     get_account_profile,
 )
@@ -36,8 +37,8 @@ async def _():
         '· AWMC签到 — 每日签到获取 BREAK（随机 1~5，含加成与连续奖励）\n'
         '· 我的AWMC — 查看账号状态与使用统计\n'
         '· 查分指令 — 每日首次实际请求查分器 API 免费，之后每次扣 1 BREAK（缓存命中不扣）\n'
-        '· 分析b50 — 每次成功消耗 3 BREAK（AI 锐评 + 分析长图）\n'
-        '· BREAK 不足时请先签到\n\n'
+        + format_analysis_pricing_help()
+        + '· BREAK 不足时请先签到\n\n'
         '【签到加成（加算）】\n'
         '· 指定群 1072033605 +50%\n'
         '· 周四 +100%\n'

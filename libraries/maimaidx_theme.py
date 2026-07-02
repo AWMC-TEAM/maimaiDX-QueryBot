@@ -150,21 +150,6 @@ def resolve_theme_path(maimaidir: Path, theme: str, filename: str) -> Path:
                 return q
     return r
 
-    # 2. 其他主题子目录
-    for t in Theme:
-        if t.value != theme:
-            q = maimaidir / t.value / mapped
-            if q.exists():
-                return q
-
-    # 3. 根目录原名
-    r = maimaidir / filename
-    if r.exists():
-        return r
-
-    # 都找不到，返回当前主题路径让调用方报明确错误
-    return p
-
 
 def get_user_theme(qqid: int) -> str:
     """获取用户主题偏好（从 DB），默认 prism_plus。"""

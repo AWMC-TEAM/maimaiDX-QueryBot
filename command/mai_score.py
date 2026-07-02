@@ -110,9 +110,16 @@ dx2025_b50   = on_command('dx2025b50', aliases={'DX2025b50'})
 dx2026_b35   = on_command('dx2026b35', aliases={'DX2026b35'})
 # 难度 B50：交给 DifficultyFilter 解析（支持：紫14+、13-14、master14.0 等）
 # 注意：排除纯 "b50/ab50"，避免与 on_command('b50/ab50') 冲突
-# 以及排除某些 b50 别名（如 名刀b50），避免被当作「任意筛选+b50」误解析
-difficulty_b50 = on_regex(r'^\s*(?!b50\s*$)(?!名刀\s*b50\s*$)(?!l\s*.+?代\s*b50\s*$)(.+?)\s*b50\s*$', flags=re.IGNORECASE)
-difficulty_ab50 = on_regex(r'^\s*(?!ab50\s*$)(.+?)\s*ab50\s*$', flags=re.IGNORECASE)
+# 以及排除某些 b50 别名（如 名刀b50、分析b50），避免被当作「任意筛选+b50」误解析
+# priority 低于各专用 on_command，防止误匹配后返回空图
+difficulty_b50 = on_regex(
+    r'^\s*(?!b50\s*$)(?!名刀\s*b50\s*$)(?!l\s*.+?代\s*b50\s*$)'
+    r'(?!分析\s*b50\s*$)(?!理想\s*b50\s*$)(?!拟合\s*b50\s*$)'
+    r'(.+?)\s*b50\s*$',
+    flags=re.IGNORECASE,
+    priority=15,
+)
+difficulty_ab50 = on_regex(r'^\s*(?!ab50\s*$)(?!理想\s*ab50\s*$)(?!拟合\s*.+ab50\s*$)(.+?)\s*ab50\s*$', flags=re.IGNORECASE, priority=15)
 # 理想 B50
 ideal_b50 = on_command('理想b50', aliases={'理想B50'})
 ideal_ab50 = on_command('理想ab50', aliases={'理想a50', '理想allb50'})
@@ -216,7 +223,7 @@ async def _finish_score(
     unsupported_feature: Optional[str] = None,
 ):
     """统一成绩图收尾：计时执行 coro，成功追加「数据源 + 耗时」文案，错误原样发送。"""
-    from ..libraries.maimaidx_timing import run_timed
+    from ..libraries.maimaidx_timing import is_valid_image_result, run_timed
     from ..libraries.maimaidx_player_cache import clear_fetch_meta
     from ..libraries.maimaidx_error import BreakInsufficientError
     try:
@@ -228,6 +235,10 @@ async def _finish_score(
     if isinstance(result, str):
         clear_fetch_meta()
         await matcher.finish(result, reply_message=True)
+        return
+    if not is_valid_image_result(result):
+        clear_fetch_meta()
+        await matcher.finish(reply_message=True)
         return
     footer = _build_footer(
         qqid, total,
@@ -293,7 +304,7 @@ async def _refresh_b50(
         return
     await _finish_score(
         refresh_b50,
-        generate(qqid, username),
+        generate(qqid, username, force_refresh=True),
         None if username else qqid,
         username=username or None,
         billing_qqid=event.user_id,

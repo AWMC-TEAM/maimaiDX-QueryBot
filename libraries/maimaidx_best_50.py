@@ -1991,7 +1991,10 @@ async def _difficulty_b50_common(
         log.debug(f"[_difficulty_b50_common] 解析成功: {diff_filter}")
     except ValueError as e:
         log.debug(f"[_difficulty_b50_common] 解析失败: {e}")
-        return None
+        return (
+            f'无法识别难度「{difficulty}」，请使用如：紫b50、13b50、Master b50\n'
+            f'（AI 锐评请发送：锐评一下 / 分析b50）'
+        )
 
     result = await b50_pipeline(
         qqid=qqid,
@@ -2310,7 +2313,12 @@ async def generate_coop_all_b50(
         return format_command_error(e)
 
 
-async def generate(qqid: Optional[int] = None, username: Optional[str] = None) -> Union[MessageSegment, str]:
+async def generate(
+    qqid: Optional[int] = None,
+    username: Optional[str] = None,
+    *,
+    force_refresh: bool = False,
+) -> Union[MessageSegment, str]:
     """
     生成b50
     
@@ -2325,7 +2333,7 @@ async def generate(qqid: Optional[int] = None, username: Optional[str] = None) -
         if username:
             qqid = None
         from .maimaidx_datasource import get_user_b50
-        userinfo = await get_user_b50(qqid=qqid, username=username)
+        userinfo = await get_user_b50(qqid=qqid, username=username, force_refresh=force_refresh)
 
         # 尝试加载 PC 数据
         play_counts: dict[tuple[int, int], int] = {}

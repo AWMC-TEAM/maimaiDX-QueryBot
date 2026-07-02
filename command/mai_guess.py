@@ -9,6 +9,7 @@ from nonebot.adapters.onebot.v11 import Bot, GROUP_ADMIN, GROUP_OWNER, GroupMess
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg, Depends, RegexMatched
 from nonebot.permission import SUPERUSER
+from nonebot.rule import Rule, not_command
 
 from ..libraries.maimaidx_guess_boost_card import (
     DEFAULT_CARD_HOURS,
@@ -40,8 +41,12 @@ guess_music_audio   = on_command('猜曲子')
 update_guess_audio  = on_regex(r'^更新猜曲音频(?:\s+(-full))?\s*$', permission=SUPERUSER)
 guess_boost_grant   = on_command('发加倍卡', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
 guess_boost_query   = on_command('查加倍卡')
-guess_music_solve   = on_message(rule=is_now_playing_guess_music)
-guess_music_reset   = on_command('重置猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
+guess_music_solve   = on_message(
+    rule=Rule(is_now_playing_guess_music, not_command()),
+    priority=10,
+    block=False,
+)
+guess_music_reset   = on_command('重置猜歌', priority=4, block=True)
 guess_music_enable  = on_command('开启mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
 guess_music_disable = on_command('关闭mai猜歌', permission=SUPERUSER | GROUP_OWNER | GROUP_ADMIN)
 guess_score_rank    = on_command('猜歌积分排行')
@@ -112,6 +117,24 @@ _GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘或猜曲子'
 _GUESS_SEND_FAIL_MSG = '游戏数据获取失败，本游戏已结束。'
 GUESS_SEND_TIMEOUT_TEXT = 15
 GUESS_SEND_TIMEOUT_MEDIA = 60
+
+
+def _guess_loop_should_stop(gid: int) -> bool:
+    """猜歌主循环是否应退出（被重置、关闭或正常结束）。"""
+    if gid not in guess.Group:
+        return True
+    if gid not in guess.switch.enable:
+        return True
+    return bool(guess.Group[gid].end)
+
+
+async def _guess_sleep(gid: int, seconds: float) -> None:
+    """可中断的 sleep：重置猜歌后尽快退出主循环。"""
+    remaining = max(0.0, float(seconds))
+    while remaining > 0 and not _guess_loop_should_stop(gid):
+        step = min(1.0, remaining)
+        await asyncio.sleep(step)
+        remaining -= step
 
 
 class GuessSendAborted(Exception):
@@ -418,9 +441,9 @@ async def _(event: GroupMessageEvent):
             '''),
             gid,
         )
-        await asyncio.sleep(4)
+        await _guess_sleep(gid, 4)
         for cycle in range(7):
-            if event.group_id not in guess.switch.enable or gid not in guess.Group or guess.Group[gid].end:
+            if _guess_loop_should_stop(gid):
                 break
             if cycle < 6:
                 await _safe_matcher_send(
@@ -429,7 +452,7 @@ async def _(event: GroupMessageEvent):
                     gid,
                 )
                 guess.Group[gid].hint_step = cycle + 1
-                await asyncio.sleep(8)
+                await _guess_sleep(gid, 8)
             else:
                 await _safe_matcher_send(
                     guess_music_start, event,
@@ -441,12 +464,11 @@ async def _(event: GroupMessageEvent):
                 )
                 guess.Group[gid].hint_step = 7
                 for _ in range(30):
-                    await asyncio.sleep(1)
-                    if gid in guess.Group:
-                        if event.group_id not in guess.switch.enable or guess.Group[gid].end:
-                            await guess_music_start.finish()
-                    else:
+                    await _guess_sleep(gid, 1)
+                    if _guess_loop_should_stop(gid):
                         await guess_music_start.finish()
+                if _guess_loop_should_stop(gid):
+                    await guess_music_start.finish()
                 guess.Group[gid].end = True
                 await guess_score.reset_all_streaks(gid)
                 answer = (
@@ -492,16 +514,16 @@ async def _(event: GroupMessageEvent):
         total_duration = clear_at + timeout_after_clear
 
         for elapsed in range(1, total_duration + 1):
-            await asyncio.sleep(1)
-            if gid not in guess.Group:
+            await _guess_sleep(gid, 1)
+            if _guess_loop_should_stop(gid):
                 await guess_music_pic.finish()
-            data = guess.Group[gid]
-            if gid not in guess.switch.enable or data.end:
+            if gid not in guess.Group:
                 await guess_music_pic.finish()
 
             if elapsed % hint_interval != 0:
                 continue
 
+            data = guess.Group[gid]
             step = elapsed // hint_interval
             if step <= data.expansion_count:
                 guess.expand_pic_crop(data)
@@ -534,6 +556,9 @@ async def _(event: GroupMessageEvent):
                 )
                 data.hint_step += 1
 
+        if _guess_loop_should_stop(gid):
+            await guess_music_pic.finish()
+        data = guess.Group[gid]
         data.end = True
         await guess_score.reset_all_streaks(gid)
         guess.end(gid)
@@ -598,11 +623,9 @@ async def _(event: GroupMessageEvent):
         )
 
         for stage_idx in range(stage_count):
-            if gid not in guess.Group:
+            if _guess_loop_should_stop(gid):
                 await guess_music_audio.finish()
             cur = guess.Group[gid]
-            if gid not in guess.switch.enable or cur.end:
-                await guess_music_audio.finish()
 
             label = STAGE_LABELS[stage_idx] if stage_idx < len(STAGE_LABELS) else '更多乐器'
             stage_path = Path(cur.stage_paths[stage_idx]).resolve()
@@ -628,21 +651,18 @@ async def _(event: GroupMessageEvent):
 
             if stage_idx < stage_count - 1:
                 for _ in range(STAGE_INTERVAL):
-                    await asyncio.sleep(1)
-                    if gid not in guess.Group:
-                        await guess_music_audio.finish()
-                    cur = guess.Group[gid]
-                    if gid not in guess.switch.enable or cur.end:
+                    await _guess_sleep(gid, 1)
+                    if _guess_loop_should_stop(gid):
                         await guess_music_audio.finish()
 
         for _ in range(STAGE_FINAL_GRACE):
-            await asyncio.sleep(1)
-            if gid not in guess.Group:
-                await guess_music_audio.finish()
-            cur = guess.Group[gid]
-            if gid not in guess.switch.enable or cur.end:
+            await _guess_sleep(gid, 1)
+            if _guess_loop_should_stop(gid):
                 await guess_music_audio.finish()
 
+        if _guess_loop_should_stop(gid):
+            await guess_music_audio.finish()
+        cur = guess.Group[gid]
         cur.end = True
         await guess_score.reset_all_streaks(gid)
         guess.end(gid)
@@ -709,6 +729,10 @@ async def _(event: GroupMessageEvent):
 @guess_music_reset.handle()
 async def _(event: GroupMessageEvent):
     gid = event.group_id
+    if gid in guess.Preparing:
+        guess.end_prepare(gid)
+        await guess_music_reset.finish('已取消猜曲子准备，本局未开始。', reply_message=True)
+        return
     if gid not in guess.Group:
         await guess_music_reset.finish('该群未处在猜歌状态', reply_message=True)
         return

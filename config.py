@@ -428,5 +428,6 @@ category: Dict[str, str] = {
     '東方Project': 'touhou',
     'ゲームバラエティ': 'game',
     'オンゲキCHUNITHM': 'ongeki',
-    '宴会場': '宴会场'
+    '宴会場': '宴会场',
+    '宴会场': '宴会场',
 }

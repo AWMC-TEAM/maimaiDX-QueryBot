@@ -378,6 +378,19 @@ def newbestscore(song_id: str, lv: int, value: int, bestlist: List[ChartInfo]) -
     return value - bestlist[-1].ra
 
 
+def _resolve_play_info_cover_overlay(theme: str, genre: str) -> Path:
+    """解析 play_info 曲绘框图：共享 genre 图优先，宴会场等无共享图时用主题 info_bg.png。"""
+    from ..config import category, maimaidir
+    from .maimaidx_theme import pic as _pic, resolve_theme_path as _rtp
+
+    cat = category.get(genre)
+    if cat:
+        overlay = _pic(f'info_{cat}.png', theme)
+        if overlay.exists():
+            return overlay
+    return _rtp(maimaidir, theme, 'info_bg.png')
+
+
 async def draw_music_info(
     music: Music, 
     qqid: Optional[int] = None, 
@@ -551,7 +564,10 @@ async def draw_music_play_data(qqid: int, music_id: str) -> Union[str, MessageSe
         im.alpha_composite(Image.open(_rtp(maimaidir, _theme, 'logo.png')).resize((249, 120)), (42, 34))
         cover = Image.open(music_picture(music_id))
         im.alpha_composite(cover.resize((300, 300)), (100, 260))
-        im.alpha_composite(Image.open(pic(f'info_{category[music.basic_info.genre]}.png')), (100, 260))
+        im.alpha_composite(
+            Image.open(_resolve_play_info_cover_overlay(_theme, music.basic_info.genre)),
+            (100, 260),
+        )
         im.alpha_composite(Image.open(pic(f'{music.basic_info.version}.png')).resize((183, 90)), (295, 205))
         im.alpha_composite(Image.open(pic(f'{music.type}.png')).resize((55, 20)), (350, 560))
         
