@@ -78,8 +78,12 @@ async def _group_manager_or_plugin_admin(
 GUESS_GROUP_MANAGER = Permission(_group_manager_or_plugin_admin)
 
 
-async def _plugin_admin_only(event, **kwargs) -> bool:
-    return is_plugin_admin(event.get_user_id()) or await SUPERUSER(event)
+async def _plugin_admin_only(
+    event,
+    *,
+    _superuser=SUPERUSER,
+) -> bool:
+    return is_plugin_admin(event.get_user_id()) or await _superuser(event)
 
 
 # 仅插件管理员（含 env 与 superuser）
