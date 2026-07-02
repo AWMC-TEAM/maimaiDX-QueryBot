@@ -147,12 +147,14 @@ async def finish_timed(
     from .maimaidx_break import take_break_charge_footer
     from .maimaidx_error import BreakInsufficientError
     from .maimaidx_player_cache import clear_fetch_meta
+    from .maimaidx_platform import plugin_finish, resolve_reply_message
 
+    reply = resolve_reply_message(event, reply_message=reply_message)
     try:
         result, total = await run_timed(coro, billing_qqid=billing_qqid)
     except BreakInsufficientError as e:
         clear_fetch_meta()
-        await matcher.finish(str(e), reply_message=reply_message)
+        await plugin_finish(matcher, str(e), event=event, reply_message=reply_message)
         return
     charge = take_break_charge_footer()
     if charge:
@@ -161,22 +163,23 @@ async def finish_timed(
     if isinstance(result, str):
         clear_fetch_meta()
         if not result.strip():
-            await matcher.finish(reply_message=reply_message)
+            await matcher.finish(reply_message=reply)
             return
-        from .maimaidx_platform import adapt_reply_payload
-        await matcher.finish(adapt_reply_payload(result, event=event), reply_message=reply_message)
+        await plugin_finish(matcher, result, event=event, reply_message=reply_message)
         return
     if not is_valid_image_result(result):
         clear_fetch_meta()
-        from .maimaidx_platform import adapt_reply_payload
-        await matcher.finish(
-            adapt_reply_payload('成绩图生成失败，请稍后重试或联系管理员。', event=event),
+        await plugin_finish(
+            matcher,
+            '成绩图生成失败，请稍后重试或联系管理员。',
+            event=event,
             reply_message=reply_message,
         )
         return
-    from .maimaidx_platform import adapt_reply_payload
-    await matcher.finish(
-        adapt_reply_payload(attach_timing(result, total, extra=extra), event=event),
+    await plugin_finish(
+        matcher,
+        attach_timing(result, total, extra=extra),
+        event=event,
         reply_message=reply_message,
     )
 

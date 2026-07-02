@@ -43,10 +43,13 @@ dependencies = [
 [tool.setuptools.package-dir]
 "nonebot_plugin_maimaidx" = "."
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["command*", "libraries*"]
-exclude = ["data*", "static*", "scripts*", "tests*", "build*", "dist*"]
+[tool.setuptools]
+packages = [
+    "nonebot_plugin_maimaidx",
+    "nonebot_plugin_maimaidx.command",
+    "nonebot_plugin_maimaidx.libraries",
+    "nonebot_plugin_maimaidx.libraries.b50_analysis",
+]
 
 [tool.setuptools.package-data]
 "nonebot_plugin_maimaidx" = ["maimaidxhelp.png"]

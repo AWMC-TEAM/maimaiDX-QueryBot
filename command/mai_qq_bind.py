@@ -8,7 +8,7 @@ from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.params import CommandArg
 
 from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY, is_plugin_admin
-from ..libraries.maimaidx_platform import is_qq_event, platform_user_id, use_qq_mode
+from ..libraries.maimaidx_platform import is_qq_event, platform_user_id, plugin_finish, use_qq_mode
 from ..libraries.maimaidx_qq_bind import qq_bind_db
 from ..libraries.maimaidx_qq_member_registry import qq_member_registry, record_from_event
 
@@ -51,57 +51,63 @@ def _parse_qq_arg(text: str) -> Optional[int]:
 @qbind_cmd.handle()
 async def _(event: MessageEvent, args: Message = CommandArg()):
     if not use_qq_mode(event):
-        await qbind_cmd.finish(
+        await plugin_finish(
+            qbind_cmd,
             '当前为 OneBot 模式，消息 QQ 即查分 QQ，无需 qbind。\n'
-            '切换官方 QQ 机器人请在 .env 设置 MAIMAIDX_PLATFORM=qq_official',
-            reply_message=True,
+            '官方 QQ 群直接发送 qbind 即可绑定。',
+            event=event,
         )
     qq = _parse_qq_arg(args.extract_plain_text())
     if qq is None:
-        await qbind_cmd.finish(
+        await plugin_finish(
+            qbind_cmd,
             '用法：qbind 你的QQ号\n'
             '示例：qbind 123456789\n'
             '请填写水鱼查分器绑定的 QQ 号。',
-            reply_message=True,
+            event=event,
         )
     pid = platform_user_id(event)
     existing = qq_bind_db.get_legacy_qq(pid)
     qq_bind_db.bind(pid, qq)
     if existing and existing != qq:
-        await qbind_cmd.finish(
+        await plugin_finish(
+            qbind_cmd,
             f'已更新绑定：查分 QQ {existing} → {qq}',
-            reply_message=True,
+            event=event,
         )
-    await qbind_cmd.finish(f'绑定成功！查分将使用 QQ {qq}', reply_message=True)
+    await plugin_finish(qbind_cmd, f'绑定成功！查分将使用 QQ {qq}', event=event)
 
 
 @qunbind_cmd.handle()
 async def _(event: MessageEvent):
     if not use_qq_mode(event):
-        await qunbind_cmd.finish('OneBot 模式无需解绑。', reply_message=True)
+        await plugin_finish(qunbind_cmd, 'OneBot 模式无需解绑。', event=event)
     pid = platform_user_id(event)
     if not qq_bind_db.unbind(pid):
-        await qunbind_cmd.finish('你尚未绑定查分 QQ。', reply_message=True)
-    await qunbind_cmd.finish('已解绑查分 QQ。', reply_message=True)
+        await plugin_finish(qunbind_cmd, '你尚未绑定查分 QQ。', event=event)
+    await plugin_finish(qunbind_cmd, '已解绑查分 QQ。', event=event)
 
 
 @qbind_status.handle()
 async def _(event: MessageEvent):
     if not use_qq_mode(event):
-        await qbind_status.finish(
+        await plugin_finish(
+            qbind_status,
             f'OneBot 模式，当前查分 QQ：{event.get_user_id()}',
-            reply_message=True,
+            event=event,
         )
     pid = platform_user_id(event)
     legacy = qq_bind_db.get_legacy_qq(pid)
     if legacy is None:
-        await qbind_status.finish(
+        await plugin_finish(
+            qbind_status,
             '未绑定查分 QQ。发送 qbind 你的QQ号 进行绑定。',
-            reply_message=True,
+            event=event,
         )
-    await qbind_status.finish(
+    await plugin_finish(
+        qbind_status,
         f'平台 ID：{pid}\n查分 QQ：{legacy}',
-        reply_message=True,
+        event=event,
     )
 
 
@@ -123,32 +129,35 @@ async def _(event: MessageEvent):
             '\n\n管理员可在 .env 配置：\n'
             f'MAIMAIDX_BOT_ADMINS={pid}'
         )
-    await my_platform_id.finish(
+    await plugin_finish(
+        my_platform_id,
         f'你的平台 ID：{pid}{role}{admin_hint}',
-        reply_message=True,
+        event=event,
     )
 
 
 @group_member_list.handle()
 async def _(event: MessageEvent):
     if not use_qq_mode(event):
-        await group_member_list.finish(
+        await plugin_finish(
+            group_member_list,
             '群成员记录仅用于官方 QQ 模式（无全量拉群成员 API，仅统计机器人见过的成员）。',
-            reply_message=True,
+            event=event,
         )
     gid = _event_group_id(event)
     if not gid:
-        await group_member_list.finish('请在群内使用本命令。', reply_message=True)
+        await plugin_finish(group_member_list, '请在群内使用本命令。', event=event)
     total = qq_member_registry.count_group(gid)
     rows = qq_member_registry.list_group(gid, limit=30)
     if not rows:
-        await group_member_list.finish(
+        await plugin_finish(
+            group_member_list,
             '本群尚无记录。成员发言后机器人会自动登记 member_openid。',
-            reply_message=True,
+            event=event,
         )
     lines = [f'本群已记录 {total} 人（展示最近 30）：']
     for r in rows:
         ts = time.strftime('%m-%d %H:%M', time.localtime(r['last_seen']))
         lines.append(f"{r['member_id']} | {r['member_role']} | 最近 {ts} | ×{r['seen_count']}")
     lines.append('\n说明：官方 QQ 公域群无法一次性拉取全员，只能积累事件中的 openid。')
-    await group_member_list.finish('\n'.join(lines), reply_message=True)
+    await plugin_finish(group_member_list, '\n'.join(lines), event=event)

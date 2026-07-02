@@ -41,6 +41,7 @@ from ..libraries.maimaidx_platform import (
     parse_at_target_id,
     platform_user_id,
     resolve_event_bot,
+    resolve_reply_message,
     use_qq_mode,
 )
 from ..libraries.maimaidx_qq_member_registry import qq_member_registry
@@ -188,7 +189,10 @@ async def _guess_notify(
     """尽力发送通知，不修改游戏状态。"""
     try:
         await asyncio.wait_for(
-            matcher.send(adapt_guess_outbound(message, event=event), reply_message=reply),
+            matcher.send(
+                adapt_guess_outbound(message, event=event),
+                reply_message=resolve_reply_message(event, reply_message=reply),
+            ),
             timeout=timeout,
         )
     except Exception as e:
@@ -213,7 +217,10 @@ async def _safe_matcher_send(
         timeout = GUESS_SEND_TIMEOUT_MEDIA if media else GUESS_SEND_TIMEOUT_TEXT
     try:
         await asyncio.wait_for(
-            matcher.send(adapt_guess_outbound(message, event=event), reply_message=reply),
+            matcher.send(
+                adapt_guess_outbound(message, event=event),
+                reply_message=resolve_reply_message(event, reply_message=reply),
+            ),
             timeout=timeout,
         )
     except Exception as e:

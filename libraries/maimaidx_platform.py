@@ -155,6 +155,32 @@ def build_mention_message(target: UserId, text: str = '', *, event=None) -> Any:
     return msg
 
 
+def resolve_reply_message(event=None, *, reply_message: bool = True) -> bool:
+    """
+    官方 QQ 被动回复由 adapter.send(event) 自动附带 msg_id；
+    勿传 reply_message，避免触发不支持的引用 API。
+    """
+    if not reply_message:
+        return False
+    return not use_qq_mode(event)
+
+
+def _ensure_qq_media_text(parts: List[Any]) -> List[Any]:
+    """官方 QQ 发图/音频时 API 要求 content 非空，补一个空格文本段。"""
+    if not parts:
+        return parts
+    from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+    has_media = any(
+        getattr(p, 'type', None) in ('file_image', 'file_audio', 'file_video', 'file_file')
+        for p in parts
+    )
+    has_text = any(getattr(p, 'type', None) == 'text' for p in parts)
+    if has_media and not has_text:
+        return [QQSeg.text(' ')] + parts
+    return parts
+
+
 def resolve_event_bot(event):
     from nonebot import get_bot
 
@@ -307,6 +333,7 @@ def adapt_reply_payload(result: Any, *, footer: str = '', event=None) -> Any:
                 parts.append(QQSeg.text(text))
     if footer:
         parts.append(QQSeg.text(footer))
+    parts = _ensure_qq_media_text(parts)
     if not parts:
         return QQMessage([QQSeg.text('成绩图发送失败，请联系管理员。')])
     return QQMessage(parts)
@@ -334,15 +361,13 @@ def build_image_message(image: Union[bytes, BytesIO, str, Any], *, event=None) -
 
 async def finish_reply(matcher, payload: Any, *, reply: bool = True, event=None) -> None:
     """统一 finish：官方 QQ 自动转换消息段。"""
-    adapted = adapt_reply_payload(payload, event=event)
-    log.debug(f'[platform] finish_reply qq={use_qq_mode(event)} payload_type={type(adapted).__name__}')
-    await matcher.finish(adapted, reply_message=reply)
+    await plugin_finish(matcher, payload, event=event, reply_message=reply)
 
 
 async def finish_with_image(matcher, image_msg, *, footer: str = '', reply: bool = True, event=None) -> None:
     """统一 finish：可选 QQ 卡片形态（当前为图片 + 文本）。"""
     payload = adapt_reply_payload(image_msg, footer=footer, event=event)
-    await matcher.finish(payload, reply_message=reply)
+    await plugin_finish(matcher, payload, event=event, reply_message=reply)
 
 
 def adapt_guess_outbound(message: Any, *, event=None) -> Any:
@@ -394,4 +419,29 @@ def adapt_guess_outbound(message: Any, *, event=None) -> Any:
 
     if not parts:
         return QQMessage([QQSeg.text('（消息发送失败）')])
+    parts = _ensure_qq_media_text(parts)
     return QQMessage(parts)
+
+
+async def plugin_send(matcher, message: Any, *, event=None, reply_message: bool = True) -> Any:
+    reply = resolve_reply_message(event, reply_message=reply_message)
+    payload = adapt_reply_payload(message, event=event)
+    return await matcher.send(payload, reply_message=reply)
+
+
+async def plugin_finish(
+    matcher,
+    message: Any = None,
+    *,
+    footer: str = '',
+    event=None,
+    reply_message: bool = True,
+) -> None:
+    reply = resolve_reply_message(event, reply_message=reply_message)
+    if message is None:
+        await matcher.finish(reply_message=reply)
+        return
+    await matcher.finish(
+        adapt_reply_payload(message, footer=footer, event=event),
+        reply_message=reply,
+    )
