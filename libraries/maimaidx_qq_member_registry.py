@@ -81,10 +81,10 @@ qq_member_registry = QqMemberRegistry()
 
 def record_from_event(event) -> None:
     """从群消息事件记录 member_openid（官方 QQ）。"""
-    from .maimaidx_platform import is_qq_official
+    from .maimaidx_platform import is_qq_event, use_qq_mode
     from .maimaidx_bot_admin import _qq_group_role
 
-    if not is_qq_official():
+    if not is_qq_event(event) and not use_qq_mode(event):
         return
     gid = getattr(event, 'group_id', None) or getattr(event, 'group_openid', None)
     if gid is None:

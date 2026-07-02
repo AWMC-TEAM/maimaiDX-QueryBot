@@ -141,6 +141,7 @@ async def finish_timed(
     extra: str = '',
     reply_message: bool = True,
     billing_qqid: Optional[int] = None,
+    event=None,
 ) -> None:
     """计时执行生成协程，成功时追加 ⏱️ 耗时后 finish。"""
     from .maimaidx_break import take_break_charge_footer
@@ -163,19 +164,19 @@ async def finish_timed(
             await matcher.finish(reply_message=reply_message)
             return
         from .maimaidx_platform import adapt_reply_payload
-        await matcher.finish(adapt_reply_payload(result), reply_message=reply_message)
+        await matcher.finish(adapt_reply_payload(result, event=event), reply_message=reply_message)
         return
     if not is_valid_image_result(result):
         clear_fetch_meta()
         from .maimaidx_platform import adapt_reply_payload
         await matcher.finish(
-            adapt_reply_payload('成绩图生成失败，请稍后重试或联系管理员。'),
+            adapt_reply_payload('成绩图生成失败，请稍后重试或联系管理员。', event=event),
             reply_message=reply_message,
         )
         return
     from .maimaidx_platform import adapt_reply_payload
     await matcher.finish(
-        adapt_reply_payload(attach_timing(result, total, extra=extra)),
+        adapt_reply_payload(attach_timing(result, total, extra=extra), event=event),
         reply_message=reply_message,
     )
 

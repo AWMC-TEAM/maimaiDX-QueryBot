@@ -8,11 +8,11 @@ from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.params import CommandArg
 
 from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY, is_plugin_admin
-from ..libraries.maimaidx_platform import is_qq_official, platform_user_id
+from ..libraries.maimaidx_platform import is_qq_event, platform_user_id, use_qq_mode
 from ..libraries.maimaidx_qq_bind import qq_bind_db
 from ..libraries.maimaidx_qq_member_registry import qq_member_registry, record_from_event
 
-qbind_cmd = on_command('qbind', aliases={'绑定qq', 'QQ绑定', '/qbind'})
+qbind_cmd = on_command('qbind', aliases={'绑定qq', 'QQ绑定', '/qbind', 'mai绑定qq', 'maiqbind'})
 qunbind_cmd = on_command('qunbind', aliases={'解绑qq', 'QQ解绑'})
 qbind_status = on_command('qbind状态', aliases={'查绑定qq', '我的qbind'})
 my_platform_id = on_command('我的id', aliases={'platformid', '平台id', '我的openid'})
@@ -29,7 +29,7 @@ def _event_group_id(event) -> Optional[str]:
 
 @_qq_member_recorder.handle()
 async def _record_qq_group_member(event: MessageEvent):
-    if not is_qq_official():
+    if not is_qq_event(event):
         return
     if _event_group_id(event) is None:
         return
@@ -50,7 +50,7 @@ def _parse_qq_arg(text: str) -> Optional[int]:
 
 @qbind_cmd.handle()
 async def _(event: MessageEvent, args: Message = CommandArg()):
-    if not is_qq_official():
+    if not use_qq_mode(event):
         await qbind_cmd.finish(
             '当前为 OneBot 模式，消息 QQ 即查分 QQ，无需 qbind。\n'
             '切换官方 QQ 机器人请在 .env 设置 MAIMAIDX_PLATFORM=qq_official',
@@ -77,7 +77,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
 
 @qunbind_cmd.handle()
 async def _(event: MessageEvent):
-    if not is_qq_official():
+    if not use_qq_mode(event):
         await qunbind_cmd.finish('OneBot 模式无需解绑。', reply_message=True)
     pid = platform_user_id(event)
     if not qq_bind_db.unbind(pid):
@@ -87,7 +87,7 @@ async def _(event: MessageEvent):
 
 @qbind_status.handle()
 async def _(event: MessageEvent):
-    if not is_qq_official():
+    if not use_qq_mode(event):
         await qbind_status.finish(
             f'OneBot 模式，当前查分 QQ：{event.get_user_id()}',
             reply_message=True,
@@ -110,7 +110,7 @@ async def _(event: MessageEvent):
     pid = platform_user_id(event)
     gid = _event_group_id(event)
     role = ''
-    if is_qq_official() and gid:
+    if use_qq_mode(event) and gid:
         from ..libraries.maimaidx_bot_admin import _qq_group_role
         r = _qq_group_role(event)
         if r:
@@ -131,7 +131,7 @@ async def _(event: MessageEvent):
 
 @group_member_list.handle()
 async def _(event: MessageEvent):
-    if not is_qq_official():
+    if not use_qq_mode(event):
         await group_member_list.finish(
             '群成员记录仅用于官方 QQ 模式（无全量拉群成员 API，仅统计机器人见过的成员）。',
             reply_message=True,

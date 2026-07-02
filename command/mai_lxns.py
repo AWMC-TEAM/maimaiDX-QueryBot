@@ -76,7 +76,7 @@ async def _get_valid_access_token(qqid: int) -> Optional[str]:
 
 # ─────────────────────────── lxbind ───────────────────────────
 
-lxbind = on_command('lxbind', aliases={'绑定落雪', '绑定lx'})
+lxbind = on_command('lxbind', aliases={'绑定落雪', '绑定lx', 'mai绑定落雪'})
 
 
 @lxbind.handle()
@@ -129,6 +129,8 @@ async def _lxbind_got(matcher: Matcher, event: MessageEvent, code_msg: Message =
             )
         await lxbind.reject(
             f'授权码格式错误，应为 XXXX-XXXX-XXXX，请重新发送。（{retry}/3）\n'
+            f'若你发的是 QQ 号，请先发送：qbind 你的QQ号\n'
+            f'落雪 OAuth 码需先发送 lxbind 获取授权链接。\n'
             f'发送「取消」可退出绑定。',
             reply_message=True,
         )

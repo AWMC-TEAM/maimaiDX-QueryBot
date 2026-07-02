@@ -244,12 +244,12 @@ async def _finish_score(
         return
     if isinstance(result, str):
         clear_fetch_meta()
-        await matcher.finish(adapt_reply_payload(result), reply_message=True)
+        await matcher.finish(adapt_reply_payload(result, event=billing_event), reply_message=True)
         return
     if not is_valid_image_result(result):
         clear_fetch_meta()
         await matcher.finish(
-            adapt_reply_payload('成绩图生成失败，请稍后重试或联系管理员。'),
+            adapt_reply_payload('成绩图生成失败，请稍后重试或联系管理员。', event=billing_event),
             reply_message=True,
         )
         return
@@ -258,7 +258,7 @@ async def _finish_score(
         forced_source=forced_source,
         unsupported_feature=unsupported_feature,
     )
-    await matcher.finish(adapt_reply_payload(result, footer=footer), reply_message=True)
+    await matcher.finish(adapt_reply_payload(result, footer=footer, event=billing_event), reply_message=True)
 
 
 @best50.handle()
@@ -272,7 +272,7 @@ async def _(
     try:
         qqid = resolve_score_qqid(event, user_id)
     except QBindRequiredError as e:
-        await best50.finish(adapt_reply_payload(str(e)), reply_message=True)
+        await best50.finish(adapt_reply_payload(str(e), event=event), reply_message=True)
         return
     username = message.extract_plain_text().strip()
     await _finish_score(
