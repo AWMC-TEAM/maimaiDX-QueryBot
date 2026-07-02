@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from io import BytesIO
-from typing import Any, Optional, Union
+from pathlib import Path
+from typing import Any, Iterable, List, Optional, Union
 
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
@@ -57,33 +59,111 @@ def platform_user_id(event) -> str:
     return str(event.get_user_id())
 
 
+def billing_user_id(event) -> int:
+    """BREAK 扣费主体：官方 QQ 优先用 qbind 的 legacy QQ，否则 openid 稳定哈希。"""
+    if is_qq_official():
+        pid = platform_user_id(event)
+        bound = qq_bind_db.get_legacy_qq(pid)
+        if bound is not None:
+            return bound
+        digest = hashlib.sha256(pid.encode()).hexdigest()[:15]
+        return int(digest, 16)
+    return int(event.get_user_id())
+
+
+def _onebot_image_bytes(seg: MessageSegment) -> Optional[bytes]:
+    if seg.type != 'image':
+        return None
+    raw = seg.data.get('file') or seg.data.get('url') or ''
+    if not raw:
+        return None
+    s = str(raw)
+    if s.startswith('base64://'):
+        return base64.b64decode(s[9:])
+    if s.startswith('file://'):
+        return Path(s[7:]).read_bytes()
+    return None
+
+
+def _iter_onebot_segments(result: Any) -> Iterable[MessageSegment]:
+    if isinstance(result, MessageSegment):
+        yield result
+    elif isinstance(result, Message):
+        yield from result
+
+
+def adapt_reply_payload(result: Any, *, footer: str = '') -> Any:
+    """
+    将插件内 OneBot 消息段转为当前平台可发送的形态。
+    官方 QQ 需 file_image(bytes)，不能发 base64:// 的 OneBot 图。
+    """
+    if isinstance(result, str):
+        if not is_qq_official():
+            return result
+        from nonebot.adapters.qq.message import Message as QQMessage
+        from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+        parts: List[Any] = []
+        if result.strip():
+            parts.append(QQSeg.text(result))
+        if footer:
+            parts.append(QQSeg.text(footer))
+        return QQMessage(parts) if parts else QQMessage([QQSeg.text('（无内容）')])
+
+    if not is_qq_official():
+        if footer:
+            return result + MessageSegment.text(footer)
+        return result
+
+    from nonebot.adapters.qq.message import Message as QQMessage
+    from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+    parts: List[Any] = []
+    for seg in _iter_onebot_segments(result):
+        if seg.type == 'image':
+            data = _onebot_image_bytes(seg)
+            if data:
+                parts.append(QQSeg.file_image(data))
+        elif seg.type == 'text':
+            text = str(seg.data.get('text') or '')
+            if text:
+                parts.append(QQSeg.text(text))
+    if footer:
+        parts.append(QQSeg.text(footer))
+    if not parts:
+        return QQMessage([QQSeg.text('成绩图发送失败，请联系管理员。')])
+    return QQMessage(parts)
+
+
 def build_image_message(image: Union[bytes, BytesIO, str, Any]) -> Any:
     """按平台与配置构建图片消息。"""
     if isinstance(image, BytesIO):
         image = image.getvalue()
+    if is_qq_official() and isinstance(image, bytes):
+        from nonebot.adapters.qq.message import MessageSegment as QQSeg
+        return QQSeg.file_image(image)
     if isinstance(image, bytes):
         b64 = 'base64://' + base64.b64encode(image).decode()
         return MessageSegment.image(b64)
     if isinstance(image, str) and image.startswith('base64://'):
+        if is_qq_official():
+            from nonebot.adapters.qq.message import MessageSegment as QQSeg
+            return QQSeg.file_image(base64.b64decode(image[9:]))
         return MessageSegment.image(image)
     if isinstance(image, MessageSegment):
         return image
     return MessageSegment.image(image)
 
 
+async def finish_reply(matcher, payload: Any, *, reply: bool = True) -> None:
+    """统一 finish：官方 QQ 自动转换消息段。"""
+    if isinstance(payload, str):
+        await matcher.finish(adapt_reply_payload(payload), reply_message=reply)
+        return
+    await matcher.finish(payload if not is_qq_official() else adapt_reply_payload(payload), reply_message=reply)
+
+
 async def finish_with_image(matcher, image_msg, *, footer: str = '', reply: bool = True) -> None:
     """统一 finish：可选 QQ 卡片模式（当前为图片 + 文本，卡片预留）。"""
-    if footer:
-        payload = image_msg + MessageSegment.text(footer)
-    else:
-        payload = image_msg
-    if use_qq_card_message():
-        try:
-            from nonebot.adapters.qq.message import MessageSegment as QQMsg  # type: ignore
-            # 官方适配器暂无统一 Ark 封装，先走图片消息；后续可在此接 markdown/ark
-            if isinstance(payload, Message):
-                await matcher.finish(payload, reply_message=reply)
-                return
-        except ImportError:
-            pass
+    payload = adapt_reply_payload(image_msg, footer=footer)
     await matcher.finish(payload, reply_message=reply)

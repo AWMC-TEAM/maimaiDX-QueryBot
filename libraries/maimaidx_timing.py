@@ -162,14 +162,20 @@ async def finish_timed(
         if not result.strip():
             await matcher.finish(reply_message=reply_message)
             return
-        await matcher.finish(result, reply_message=reply_message)
+        from .maimaidx_platform import adapt_reply_payload
+        await matcher.finish(adapt_reply_payload(result), reply_message=reply_message)
         return
     if not is_valid_image_result(result):
         clear_fetch_meta()
-        await matcher.finish(reply_message=reply_message)
+        from .maimaidx_platform import adapt_reply_payload
+        await matcher.finish(
+            adapt_reply_payload('成绩图生成失败，请稍后重试或联系管理员。'),
+            reply_message=reply_message,
+        )
         return
+    from .maimaidx_platform import adapt_reply_payload
     await matcher.finish(
-        attach_timing(result, total, extra=extra),
+        adapt_reply_payload(attach_timing(result, total, extra=extra)),
         reply_message=reply_message,
     )
 

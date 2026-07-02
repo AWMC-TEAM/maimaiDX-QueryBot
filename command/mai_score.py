@@ -14,7 +14,7 @@ from ..libraries.maimaidx_error import (
     UserNotFoundError,
     UserNotExistsError,
 )
-from ..libraries.maimaidx_platform import resolve_score_qqid
+from ..libraries.maimaidx_platform import adapt_reply_payload, billing_user_id, resolve_score_qqid
 from ..libraries.maimaidx_group_rating import (
     group_weak_rank,
     group_rating_ranking,
@@ -219,7 +219,8 @@ async def _finish_score(
     coro,
     qqid: Optional[int],
     *,
-    billing_qqid: int,
+    billing_qqid: Optional[int] = None,
+    billing_event: Optional[MessageEvent] = None,
     username: Optional[str] = None,
     forced_source: Optional[str] = None,
     unsupported_feature: Optional[str] = None,
@@ -228,8 +229,11 @@ async def _finish_score(
     from ..libraries.maimaidx_timing import is_valid_image_result, run_timed
     from ..libraries.maimaidx_player_cache import clear_fetch_meta
     from ..libraries.maimaidx_error import BreakInsufficientError
+    payer = billing_qqid
+    if payer is None and billing_event is not None:
+        payer = billing_user_id(billing_event)
     try:
-        result, total = await run_timed(coro, billing_qqid=billing_qqid)
+        result, total = await run_timed(coro, billing_qqid=payer)
     except BreakInsufficientError as e:
         clear_fetch_meta()
         await matcher.finish(str(e), reply_message=True)
@@ -240,18 +244,21 @@ async def _finish_score(
         return
     if isinstance(result, str):
         clear_fetch_meta()
-        await matcher.finish(result, reply_message=True)
+        await matcher.finish(adapt_reply_payload(result), reply_message=True)
         return
     if not is_valid_image_result(result):
         clear_fetch_meta()
-        await matcher.finish(reply_message=True)
+        await matcher.finish(
+            adapt_reply_payload('成绩图生成失败，请稍后重试或联系管理员。'),
+            reply_message=True,
+        )
         return
     footer = _build_footer(
         qqid, total,
         forced_source=forced_source,
         unsupported_feature=unsupported_feature,
     )
-    await matcher.finish(result + MessageSegment.text(footer), reply_message=True)
+    await matcher.finish(adapt_reply_payload(result, footer=footer), reply_message=True)
 
 
 @best50.handle()
@@ -262,13 +269,15 @@ async def _(
 ):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = resolve_score_qqid(event, user_id)
+    try:
+        qqid = resolve_score_qqid(event, user_id)
+    except QBindRequiredError as e:
+        await best50.finish(adapt_reply_payload(str(e)), reply_message=True)
+        return
     username = message.extract_plain_text().strip()
-    # 数据源路由统一由 libraries.maimaidx_datasource.get_user_b50 处理
-    # username 查询强制水鱼；qqid 查询按用户偏好（自己/@的人均生效）
     await _finish_score(
         best50, generate(qqid, username), None if username else qqid, username=username or None,
-        billing_qqid=event.user_id,
+        billing_event=event,
     )
 
 
