@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from typing import Set, Union
 
-from nonebot.adapters.onebot.v11 import GROUP_ADMIN, GROUP_OWNER, GroupMessageEvent
-from nonebot.permission import Permission, SUPERUSER
+from nonebot.adapters.onebot.v11 import GroupMessageEvent
+from nonebot.permission import Permission
 
 from ..config import maiconfig
 
@@ -52,39 +52,29 @@ def is_qq_group_manager(event) -> bool:
     return _qq_group_role(event) in ('owner', 'admin')
 
 
-async def _group_manager_or_plugin_admin(
-    event,
-    *,
-    _group_owner=GROUP_OWNER,
-    _group_admin=GROUP_ADMIN,
-    _superuser=SUPERUSER,
-) -> bool:
-    uid = str(event.get_user_id())
-    if is_plugin_admin(uid):
+def _onebot_group_manager(event) -> bool:
+    if not isinstance(event, GroupMessageEvent):
+        return False
+    role = getattr(getattr(event, 'sender', None), 'role', None)
+    return role in ('owner', 'admin')
+
+
+async def _group_manager_or_plugin_admin(event) -> bool:
+    if is_plugin_admin(event.get_user_id()):
         return True
-    if isinstance(event, GroupMessageEvent):
-        if await _group_owner(event):
-            return True
-        if await _group_admin(event):
-            return True
+    if _onebot_group_manager(event):
+        return True
     if is_qq_group_manager(event):
-        return True
-    if await _superuser(event):
         return True
     return False
 
 
+async def _plugin_admin_only(event) -> bool:
+    return is_plugin_admin(event.get_user_id())
+
+
 # 猜歌群管 / 插件管理员（兼容 OneBot 群管 + 官方 QQ owner/admin）
 GUESS_GROUP_MANAGER = Permission(_group_manager_or_plugin_admin)
-
-
-async def _plugin_admin_only(
-    event,
-    *,
-    _superuser=SUPERUSER,
-) -> bool:
-    return is_plugin_admin(event.get_user_id()) or await _superuser(event)
-
 
 # 仅插件管理员（含 env 与 superuser）
 PLUGIN_ADMIN_ONLY = Permission(_plugin_admin_only)
