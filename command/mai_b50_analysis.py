@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 
+from loguru import logger as log
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Message, MessageEvent, MessageSegment
 from nonebot.matcher import Matcher
@@ -29,7 +30,7 @@ from ..libraries.maimaidx_break import (
     settle_analysis_charge,
     take_break_charge_footer,
 )
-from ..libraries.maimaidx_error import BreakInsufficientError
+from ..libraries.maimaidx_error import BreakInsufficientError, format_command_error
 
 _peer_stats = None
 
@@ -95,8 +96,9 @@ async def _handle(matcher: Matcher, event: MessageEvent, args: Message = Command
     except ValueError as e:
         await matcher.finish(str(e), reply_message=True)
         return
-    except Exception:
-        await matcher.finish('查询失败，请稍后重试', reply_message=True)
+    except Exception as e:
+        log.warning(f'[b50_analysis] 拉取 B50 失败 qq={qq}: {type(e).__name__}: {e}')
+        await matcher.finish(format_command_error(e), reply_message=True)
         return
 
     peer_stats = get_peer_stats()
