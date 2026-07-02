@@ -10,6 +10,9 @@ from typing import Any, Iterable, List, Optional, Union
 
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 
+GroupId = Union[int, str]
+UserId = Union[int, str]
+
 from ..config import log, maiconfig
 from .maimaidx_qq_bind import qq_bind_db
 
@@ -50,6 +53,133 @@ def use_qq_mode(event=None) -> bool:
 
 def use_qq_card_message(event=None) -> bool:
     return bool(getattr(maiconfig, 'maimaidx_use_qq_card', False)) and use_qq_mode(event)
+
+
+def get_event_group_id(event) -> Optional[GroupId]:
+    """OneBot group_id 或官方 QQ group_openid。"""
+    if event is None:
+        return None
+    gid = getattr(event, 'group_id', None)
+    if gid is not None:
+        return gid
+    openid = getattr(event, 'group_openid', None)
+    if openid is not None:
+        return str(openid)
+    return None
+
+
+def is_group_message_event(event) -> bool:
+    return get_event_group_id(event) is not None
+
+
+def is_likely_qq_group_id(gid: GroupId) -> bool:
+    """官方 QQ 群 openid 为非纯数字字符串。"""
+    return isinstance(gid, str) and not gid.isdigit()
+
+
+def get_sender_display_name(event) -> str:
+    if is_qq_event(event):
+        author = getattr(event, 'author', None)
+        if author is not None:
+            name = getattr(author, 'username', None) or getattr(author, 'nickname', None)
+            if name:
+                return str(name)
+            if isinstance(author, dict):
+                n = author.get('username') or author.get('nickname')
+                if n:
+                    return str(n)
+    sender = getattr(event, 'sender', None)
+    if sender is not None:
+        card = getattr(sender, 'card', None) or ''
+        nick = getattr(sender, 'nickname', None) or ''
+        if card or nick:
+            return str(card or nick)
+        if isinstance(sender, dict):
+            c = sender.get('card') or sender.get('nickname')
+            if c:
+                return str(c)
+    return str(event.get_user_id())
+
+
+def iter_message_segments(event) -> Iterable[Any]:
+    msg = getattr(event, 'message', None)
+    if msg is None:
+        return
+    if isinstance(msg, str):
+        yield MessageSegment.text(msg)
+        return
+    for seg in msg:
+        yield seg
+
+
+def parse_at_target_id(event) -> Optional[str]:
+    for seg in iter_message_segments(event):
+        seg_type = getattr(seg, 'type', None)
+        data = getattr(seg, 'data', None) or {}
+        if seg_type == 'at':
+            qq = data.get('qq')
+            if qq and str(qq) != 'all':
+                return str(qq)
+        elif seg_type == 'mention_user':
+            uid = data.get('user_id')
+            if uid:
+                return str(uid)
+    return None
+
+
+def is_at_all_message(event) -> bool:
+    for seg in iter_message_segments(event):
+        seg_type = getattr(seg, 'type', None)
+        data = getattr(seg, 'data', None) or {}
+        if seg_type == 'at' and str(data.get('qq')) == 'all':
+            return True
+        if seg_type == 'mention_everyone':
+            return True
+    return False
+
+
+def build_mention_message(target: UserId, text: str = '', *, event=None) -> Any:
+    """按平台构建 @用户 + 可选正文。"""
+    tid = str(target)
+    if use_qq_mode(event):
+        from nonebot.adapters.qq.message import Message as QQMessage
+        from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+        parts: List[Any] = [QQSeg.mention_user(tid)]
+        if text:
+            parts.append(QQSeg.text(text))
+        return QQMessage(parts)
+    msg = MessageSegment.at(int(tid)) if tid.isdigit() else MessageSegment.at(tid)
+    if text:
+        return msg + MessageSegment.text(text)
+    return msg
+
+
+def resolve_event_bot(event):
+    from nonebot import get_bot
+
+    try:
+        return get_bot(str(event.self_id))
+    except Exception:
+        return get_bot()
+
+
+def format_forward_nodes_as_text(title: str, nodes: List[dict]) -> str:
+    lines = [title]
+    for node in nodes:
+        data = node.get('data') or {}
+        content = data.get('content')
+        if content:
+            lines.append(str(content))
+    return '\n'.join(lines)
+
+
+async def send_group_plain_text(bot, gid: GroupId, text: str) -> None:
+    """向群发送纯文本（OneBot / 官方 QQ）。"""
+    if is_likely_qq_group_id(gid):
+        await bot.send_to_group(group_openid=str(gid), message=text)
+    else:
+        await bot.send_group_msg(group_id=int(gid), message=text)
 
 
 def resolve_query_qqid(
@@ -101,6 +231,19 @@ def billing_user_id(event) -> int:
         digest = hashlib.sha256(pid.encode()).hexdigest()[:15]
         return int(digest, 16)
     return int(event.get_user_id())
+
+
+def _onebot_record_path(seg: MessageSegment) -> Optional[Path]:
+    if seg.type != 'record':
+        return None
+    raw = seg.data.get('file') or seg.data.get('url') or ''
+    if not raw:
+        return None
+    s = str(raw)
+    if s.startswith('file://'):
+        return Path(s[7:])
+    p = Path(s)
+    return p if p.is_file() else None
 
 
 def _onebot_image_bytes(seg: MessageSegment) -> Optional[bytes]:
@@ -200,3 +343,55 @@ async def finish_with_image(matcher, image_msg, *, footer: str = '', reply: bool
     """统一 finish：可选 QQ 卡片形态（当前为图片 + 文本）。"""
     payload = adapt_reply_payload(image_msg, footer=footer, event=event)
     await matcher.finish(payload, reply_message=reply)
+
+
+def adapt_guess_outbound(message: Any, *, event=None) -> Any:
+    """
+    猜歌出站消息：OneBot 图/音/文 → 当前平台可发送形态。
+    官方 QQ 将 image/record 转为 file_image/file_audio。
+    """
+    if not use_qq_mode(event):
+        return message
+
+    mod = type(message).__module__
+    if 'adapters.qq' in mod:
+        return message
+
+    from nonebot.adapters.qq.message import Message as QQMessage
+    from nonebot.adapters.qq.message import MessageSegment as QQSeg
+
+    if isinstance(message, str):
+        return QQMessage([QQSeg.text(message)]) if message else QQMessage([QQSeg.text(' ')])
+
+    segments: List[MessageSegment] = []
+    if isinstance(message, MessageSegment):
+        segments = [message]
+    elif isinstance(message, Message):
+        segments = list(message)
+    else:
+        return message
+
+    parts: List[Any] = []
+    for seg in segments:
+        if seg.type == 'text':
+            text = str(seg.data.get('text') or '')
+            if text:
+                parts.append(QQSeg.text(text))
+        elif seg.type == 'image':
+            data = _onebot_image_bytes(seg)
+            if data:
+                parts.append(QQSeg.file_image(data))
+        elif seg.type == 'record':
+            audio_path = _onebot_record_path(seg)
+            if audio_path:
+                parts.append(QQSeg.file_audio(audio_path))
+        elif seg.type == 'at':
+            qq = seg.data.get('qq')
+            if str(qq) == 'all':
+                parts.append(QQSeg.mention_everyone())
+            elif qq:
+                parts.append(QQSeg.mention_user(str(qq)))
+
+    if not parts:
+        return QQMessage([QQSeg.text('（消息发送失败）')])
+    return QQMessage(parts)

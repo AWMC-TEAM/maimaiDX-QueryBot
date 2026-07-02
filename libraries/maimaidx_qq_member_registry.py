@@ -76,6 +76,16 @@ class QqMemberRegistry:
         return int(row['c']) if row else 0
 
 
+    def list_member_ids(self, group_id: str) -> List[str]:
+        gid = str(group_id).strip()
+        with self._lock:
+            rows = self._conn.execute(
+                'SELECT member_id FROM qq_group_member WHERE group_id = ?',
+                (gid,),
+            ).fetchall()
+        return [str(r['member_id']) for r in rows]
+
+
 qq_member_registry = QqMemberRegistry()
 
 

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field
 
 from ..config import guess_boost_card_file
+from .maimaidx_platform import GroupId, UserId
 from .tool import writefile
 
 DEFAULT_CARD_HOURS = 24
@@ -43,18 +44,18 @@ class GuessBoostCardManager:
             self.store = BoostCardStore()
 
     @staticmethod
-    def _gid_key(gid: int) -> str:
+    def _gid_key(gid: GroupId) -> str:
         return str(gid)
 
     @staticmethod
-    def _uid_key(uid: int) -> str:
+    def _uid_key(uid: UserId) -> str:
         return str(uid)
 
     def _purge_expired(self, user: UserBoostCards, *, now: Optional[float] = None) -> None:
         ts = now if now is not None else time.time()
         user.cards = [c for c in user.cards if c.expires_at > ts]
 
-    def _get_user(self, gid: int, uid: int) -> UserBoostCards:
+    def _get_user(self, gid: GroupId, uid: UserId) -> UserBoostCards:
         gk = self._gid_key(gid)
         uk = self._uid_key(uid)
         if gk not in self.store.groups:
@@ -69,10 +70,10 @@ class GuessBoostCardManager:
     async def _save(self) -> None:
         await writefile(guess_boost_card_file, self.store.model_dump())
 
-    def active_count(self, gid: int, uid: int) -> int:
+    def active_count(self, gid: GroupId, uid: UserId) -> int:
         return len(self._get_user(gid, uid).cards)
 
-    def nearest_expiry_hours(self, gid: int, uid: int) -> Optional[float]:
+    def nearest_expiry_hours(self, gid: GroupId, uid: UserId) -> Optional[float]:
         user = self._get_user(gid, uid)
         if not user.cards:
             return None
@@ -81,12 +82,12 @@ class GuessBoostCardManager:
 
     async def grant(
         self,
-        gid: int,
-        uid: int,
+        gid: GroupId,
+        uid: UserId,
         *,
         count: int = 1,
         hours: float = DEFAULT_CARD_HOURS,
-        issuer_uid: int,
+        issuer_uid: UserId,
     ) -> Tuple[int, float]:
         count = max(1, min(int(count), MAX_CARDS_PER_GRANT))
         hours = max(1.0, float(hours))
@@ -104,12 +105,12 @@ class GuessBoostCardManager:
 
     async def grant_many(
         self,
-        gid: int,
-        uids: list[int],
+        gid: GroupId,
+        uids: list[UserId],
         *,
         count: int = 1,
         hours: float = DEFAULT_CARD_HOURS,
-        issuer_uid: int,
+        issuer_uid: UserId,
     ) -> tuple[int, float]:
         """向多人各发放若干张卡，仅持久化一次。"""
         count = max(1, min(int(count), MAX_CARDS_PER_GRANT))
@@ -128,7 +129,7 @@ class GuessBoostCardManager:
         await self._save()
         return len(uids), hours
 
-    async def consume_one(self, gid: int, uid: int) -> bool:
+    async def consume_one(self, gid: GroupId, uid: UserId) -> bool:
         user = self._get_user(gid, uid)
         if not user.cards:
             return False

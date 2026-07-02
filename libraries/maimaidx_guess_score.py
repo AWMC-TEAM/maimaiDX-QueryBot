@@ -1,12 +1,13 @@
 import json
 from datetime import date, datetime, timedelta
-from typing import Dict, List, NamedTuple, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple, Union
 
 from loguru import logger as log
 from pydantic import BaseModel, Field
 
 from ..config import guess_score_file, guess_score_history_file
 from .maimaidx_group_rating import build_forward_node
+from .maimaidx_platform import GroupId, UserId, format_forward_nodes_as_text, is_likely_qq_group_id, send_group_plain_text
 from .tool import writefile
 
 
@@ -116,11 +117,11 @@ class GuessScoreManager:
             self.history_store = GuessScoreHistoryStore()
 
     @staticmethod
-    def _gid_key(gid: int) -> str:
+    def _gid_key(gid: GroupId) -> str:
         return str(gid)
 
     @staticmethod
-    def _uid_key(uid: int) -> str:
+    def _uid_key(uid: UserId) -> str:
         return str(uid)
 
     @staticmethod
@@ -200,22 +201,22 @@ class GuessScoreManager:
             result.append(('yearly', self.current_year_key()))
         return result
 
-    def _is_period_archived(self, gid: int, period: str, period_key: str) -> bool:
+    def _is_period_archived(self, gid: GroupId, period: str, period_key: str) -> bool:
         group = self.store.groups.get(self._gid_key(gid))
         if not group:
             return False
         return group.archived_periods.get(period) == period_key
 
-    def _mark_period_archived(self, gid: int, period: str, period_key: str) -> None:
+    def _mark_period_archived(self, gid: GroupId, period: str, period_key: str) -> None:
         group = self._get_group(gid)
         group.archived_periods[period] = period_key
 
     def _append_history(
         self,
-        gid: int,
+        gid: GroupId,
         period: str,
         period_key: str,
-        ranking: List[Tuple[int, str, int]],
+        ranking: List[Tuple[str, str, int]],
     ) -> None:
         gk = self._gid_key(gid)
         if gk not in self.history_store.groups:
@@ -244,18 +245,18 @@ class GuessScoreManager:
 
     def get_history_ranking(
         self,
-        gid: int,
+        gid: GroupId,
         period: str,
         period_key: str,
         top_n: Optional[int] = None,
-    ) -> List[Tuple[int, str, int]]:
+    ) -> List[Tuple[str, str, int]]:
         group = self.history_store.groups.get(self._gid_key(gid))
         if not group:
             return []
         for record in reversed(group.records):
             if record.period == period and record.period_key == period_key:
                 items = [
-                    (int(entry.uid), entry.name or entry.uid, entry.score)
+                    (entry.uid, entry.name or entry.uid, entry.score)
                     for entry in record.ranking
                     if entry.score > 0
                 ]
@@ -265,7 +266,7 @@ class GuessScoreManager:
                 return items
         return []
 
-    def list_history_keys(self, gid: int, period: str, limit: int = 8) -> List[str]:
+    def list_history_keys(self, gid: GroupId, period: str, limit: int = 8) -> List[str]:
         group = self.history_store.groups.get(self._gid_key(gid))
         if not group:
             return []
@@ -277,7 +278,7 @@ class GuessScoreManager:
 
     def _build_forward_from_ranking(
         self,
-        ranking: List[Tuple[int, str, int]],
+        ranking: List[Tuple[str, str, int]],
         self_id: int,
         title: str,
         top_n: int = 20,
@@ -298,15 +299,32 @@ class GuessScoreManager:
     async def archive_and_broadcast_period(
         self,
         bot,
-        group_ids: List[int],
+        group_ids: List[GroupId],
         period: str,
         period_key: str,
         top_n: int = 20,
     ) -> None:
+        from nonebot import get_bots
+
         spec = self.PERIODS[period]
-        self_id = int(bot.self_id)
         score_changed = False
         history_changed = False
+        bots = get_bots()
+        qq_bot = None
+        onebot_bot = None
+        for candidate in bots.values():
+            mod = type(candidate.adapter).__module__
+            if 'adapters.qq' in mod:
+                qq_bot = candidate
+            elif 'adapters.onebot' in mod:
+                onebot_bot = candidate
+        if bot is not None and onebot_bot is None and qq_bot is None:
+            mod = type(getattr(bot, 'adapter', bot)).__module__
+            if 'adapters.qq' in mod:
+                qq_bot = bot
+            else:
+                onebot_bot = bot
+
         for gid in group_ids:
             if self._is_period_archived(gid, period, period_key):
                 continue
@@ -320,33 +338,48 @@ class GuessScoreManager:
                     f'猜歌积分{spec.board_title}结算'
                     f'（{period_key}，前 {min(top_n, len(ranking))} 名）'
                 )
+                self_id = int((onebot_bot or qq_bot or bot).self_id)
                 _, nodes = self._build_forward_from_ranking(
                     ranking, self_id, title, top_n=top_n,
                 )
                 try:
-                    title_node = build_forward_node(str(self_id), '猜歌榜结算', title)
-                    messages = json.loads(
-                        json.dumps([title_node] + nodes, ensure_ascii=False),
-                    )
-                    await bot.call_api(
-                        'send_group_forward_msg',
-                        group_id=gid,
-                        messages=messages,
-                    )
+                    if is_likely_qq_group_id(gid):
+                        if qq_bot is None:
+                            raise RuntimeError('未找到官方 QQ Bot')
+                        await send_group_plain_text(
+                            qq_bot,
+                            gid,
+                            format_forward_nodes_as_text(title, nodes),
+                        )
+                    else:
+                        target_bot = onebot_bot or bot
+                        title_node = build_forward_node(str(self_id), '猜歌榜结算', title)
+                        messages = json.loads(
+                            json.dumps([title_node] + nodes, ensure_ascii=False),
+                        )
+                        await target_bot.call_api(
+                            'send_group_forward_msg',
+                            group_id=int(gid),
+                            messages=messages,
+                        )
                 except Exception as e:
                     log.warning(
                         f'[maimai] 猜歌{spec.board_title}结算推送失败 '
                         f'({gid}, {period_key}): {type(e).__name__}: {e}'
                     )
             else:
+                empty_msg = (
+                    f'猜歌积分{spec.board_title}结算（{period_key}）\n'
+                    f'本群该周期无人上榜。'
+                )
                 try:
-                    await bot.send_group_msg(
-                        group_id=gid,
-                        message=(
-                            f'猜歌积分{spec.board_title}结算（{period_key}）\n'
-                            f'本群该周期无人上榜。'
-                        ),
-                    )
+                    if is_likely_qq_group_id(gid):
+                        if qq_bot is None:
+                            raise RuntimeError('未找到官方 QQ Bot')
+                        await send_group_plain_text(qq_bot, gid, empty_msg)
+                    else:
+                        target_bot = onebot_bot or bot
+                        await target_bot.send_group_msg(group_id=int(gid), message=empty_msg)
                 except Exception as e:
                     log.warning(
                         f'[maimai] 猜歌{spec.board_title}空榜推送失败 '
@@ -370,14 +403,14 @@ class GuessScoreManager:
 
     def get_ranking(
         self,
-        gid: int,
+        gid: GroupId,
         top_n: Optional[int] = None,
-    ) -> List[Tuple[int, str, int]]:
+    ) -> List[Tuple[str, str, int]]:
         group = self.store.groups.get(self._gid_key(gid))
         if not group:
             return []
         items = [
-            (int(uid), member.name or uid, member.score)
+            (uid, member.name or uid, member.score)
             for uid, member in group.members.items()
             if member.score > 0
         ]
@@ -388,17 +421,17 @@ class GuessScoreManager:
 
     def get_period_ranking(
         self,
-        gid: int,
+        gid: GroupId,
         period: str,
         top_n: Optional[int] = None,
-    ) -> List[Tuple[int, str, int]]:
+    ) -> List[Tuple[str, str, int]]:
         spec = self.PERIODS[period]
         group = self.store.groups.get(self._gid_key(gid))
         if not group:
             return []
         current_key = self.period_key(period)
         items = [
-            (int(uid), member.name or uid, getattr(member, spec.score_attr))
+            (uid, member.name or uid, getattr(member, spec.score_attr))
             for uid, member in group.members.items()
             if getattr(member, spec.key_attr) == current_key
             and getattr(member, spec.score_attr) > 0
@@ -408,21 +441,23 @@ class GuessScoreManager:
             return items[:top_n]
         return items
 
-    def get_rank(self, gid: int, uid: int) -> int:
+    def get_rank(self, gid: GroupId, uid: UserId) -> int:
         ranking = self.get_ranking(gid)
+        uk = self._uid_key(uid)
         for index, (member_uid, _, _) in enumerate(ranking, start=1):
-            if member_uid == uid:
+            if member_uid == uk:
                 return index
         return len(ranking) + 1
 
-    def get_period_rank(self, gid: int, uid: int, period: str) -> int:
+    def get_period_rank(self, gid: GroupId, uid: UserId, period: str) -> int:
         ranking = self.get_period_ranking(gid, period)
+        uk = self._uid_key(uid)
         for index, (member_uid, _, _) in enumerate(ranking, start=1):
-            if member_uid == uid:
+            if member_uid == uk:
                 return index
         return len(ranking) + 1
 
-    def get_period_snapshot(self, gid: int, uid: int) -> Dict[str, Tuple[int, int]]:
+    def get_period_snapshot(self, gid: GroupId, uid: UserId) -> Dict[str, Tuple[int, int]]:
         member = self.store.groups.get(self._gid_key(gid), GuessGroupScores()).members.get(self._uid_key(uid))
         snapshot: Dict[str, Tuple[int, int]] = {}
         for period, spec in self.PERIODS.items():
@@ -451,20 +486,20 @@ class GuessScoreManager:
             tags.append('首答×2')
         return multiplier, tags
 
-    def _get_group(self, gid: int) -> GuessGroupScores:
+    def _get_group(self, gid: GroupId) -> GuessGroupScores:
         gk = self._gid_key(gid)
         if gk not in self.store.groups:
             self.store.groups[gk] = GuessGroupScores()
         return self.store.groups[gk]
 
-    def _get_member(self, gid: int, uid: int) -> GuessMemberScore:
+    def _get_member(self, gid: GroupId, uid: UserId) -> GuessMemberScore:
         group = self._get_group(gid)
         uk = self._uid_key(uid)
         if uk not in group.members:
             group.members[uk] = GuessMemberScore()
         return group.members[uk]
 
-    async def reset_all_streaks(self, gid: int) -> None:
+    async def reset_all_streaks(self, gid: GroupId) -> None:
         group = self.store.groups.get(self._gid_key(gid))
         if not group:
             return
@@ -474,8 +509,8 @@ class GuessScoreManager:
 
     async def award_correct_guess(
         self,
-        gid: int,
-        uid: int,
+        gid: GroupId,
+        uid: UserId,
         name: str,
         raw_base: int,
         multiplier: int,
@@ -548,7 +583,7 @@ class GuessScoreManager:
 
     def build_ranking_forward(
         self,
-        gid: int,
+        gid: GroupId,
         self_id: int,
         *,
         period: str = 'total',

@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "nonebot-plugin-maimaidx"
 version = "2.1.11"
@@ -36,5 +40,13 @@ dependencies = [
 "Homepage" = "https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx"
 "Bug Tracker" = "https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx/issues"
 
+[tool.setuptools.package-dir]
+"nonebot_plugin_maimaidx" = "."
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["command*", "libraries*"]
+exclude = ["data*", "static*", "scripts*", "tests*", "build*", "dist*"]
+
 [tool.setuptools.package-data]
-"*" = ["maimaidxhelp.png"]
+"nonebot_plugin_maimaidx" = ["maimaidxhelp.png"]

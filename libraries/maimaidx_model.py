@@ -152,8 +152,8 @@ class GuessAudioData(GuessData):
 
 class Switch(BaseModel):
 
-    enable: List[int] = []
-    disable: List[int] = []
+    enable: List[Union[int, str]] = []
+    disable: List[Union[int, str]] = []
 
 
 class GuessSwitch(Switch): ...

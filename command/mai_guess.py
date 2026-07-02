@@ -4,10 +4,11 @@ from pathlib import Path
 from typing import Literal, Optional, Union
 
 from loguru import logger as log
-from nonebot import get_bot, on_command, on_message, on_regex
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment, PrivateMessageEvent
+from nonebot import on_command, on_message, on_regex
+from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment, PrivateMessageEvent
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg, RegexMatched
+from nonebot.rule import Rule
 
 from ..libraries.maimaidx_bot_admin import GUESS_GROUP_MANAGER, PLUGIN_ADMIN_ONLY
 from ..libraries.maimaidx_guess_boost_card import (
@@ -28,42 +29,65 @@ from ..libraries.maimaidx_guess_audio import (
 from ..libraries.maimaidx_music import guess
 from ..libraries.maimaidx_model import GuessAudioData, GuessData, GuessDefaultData, GuessPicData
 from ..libraries.maimaidx_music_info import *
+from ..libraries.maimaidx_platform import (
+    GroupId,
+    adapt_guess_outbound,
+    build_mention_message,
+    format_forward_nodes_as_text,
+    get_event_group_id,
+    get_sender_display_name,
+    is_at_all_message,
+    is_group_message_event,
+    parse_at_target_id,
+    platform_user_id,
+    resolve_event_bot,
+    use_qq_mode,
+)
+from ..libraries.maimaidx_qq_member_registry import qq_member_registry
 from ..libraries.maimaidx_update_plate import *
 
 
-def is_now_playing_guess_music(event: GroupMessageEvent) -> bool:
-    return event.group_id in guess.Group
+def _is_group_message(event) -> bool:
+    return is_group_message_event(event)
 
 
-guess_music_start   = on_command('猜歌')
-guess_music_pic     = on_command('猜曲绘')
-guess_music_audio   = on_command('猜曲子')
+GROUP_MESSAGE = Rule(_is_group_message)
+
+
+def is_now_playing_guess_music(event) -> bool:
+    gid = get_event_group_id(event)
+    return gid is not None and gid in guess.Group
+
+
+guess_music_start   = on_command('猜歌', rule=GROUP_MESSAGE)
+guess_music_pic     = on_command('猜曲绘', rule=GROUP_MESSAGE)
+guess_music_audio   = on_command('猜曲子', rule=GROUP_MESSAGE)
 update_guess_audio  = on_regex(r'^更新猜曲音频(?:\s+(-full))?\s*$', permission=PLUGIN_ADMIN_ONLY)
-guess_boost_grant   = on_command('发加倍卡', permission=GUESS_GROUP_MANAGER)
-guess_boost_query   = on_command('查加倍卡')
+guess_boost_grant   = on_command('发加倍卡', permission=GUESS_GROUP_MANAGER, rule=GROUP_MESSAGE)
+guess_boost_query   = on_command('查加倍卡', rule=GROUP_MESSAGE)
 guess_music_solve   = on_message(
     rule=is_now_playing_guess_music,
     priority=10,
     block=False,
 )
-guess_music_reset   = on_command('重置猜歌', priority=4, block=True)
-guess_music_enable  = on_command('开启mai猜歌', permission=GUESS_GROUP_MANAGER)
-guess_music_disable = on_command('关闭mai猜歌', permission=GUESS_GROUP_MANAGER)
-guess_score_rank    = on_command('猜歌积分排行')
-guess_score_daily   = on_command('猜歌积分日榜')
-guess_score_weekly  = on_command('猜歌积分周榜')
-guess_score_monthly = on_command('猜歌积分月榜')
-guess_score_yearly  = on_command('猜歌积分年榜')
-guess_score_season  = on_command('猜歌积分赛季榜')
-guess_score_hist_daily   = on_command('猜歌历史日榜')
-guess_score_hist_weekly  = on_command('猜歌历史周榜')
-guess_score_hist_monthly = on_command('猜歌历史月榜')
-guess_score_hist_yearly  = on_command('猜歌历史年榜')
-guess_score_hist_season  = on_command('猜歌历史赛季榜')
+guess_music_reset   = on_command('重置猜歌', priority=4, block=True, rule=GROUP_MESSAGE)
+guess_music_enable  = on_command('开启mai猜歌', permission=GUESS_GROUP_MANAGER, rule=GROUP_MESSAGE)
+guess_music_disable = on_command('关闭mai猜歌', permission=GUESS_GROUP_MANAGER, rule=GROUP_MESSAGE)
+guess_score_rank    = on_command('猜歌积分排行', rule=GROUP_MESSAGE)
+guess_score_daily   = on_command('猜歌积分日榜', rule=GROUP_MESSAGE)
+guess_score_weekly  = on_command('猜歌积分周榜', rule=GROUP_MESSAGE)
+guess_score_monthly = on_command('猜歌积分月榜', rule=GROUP_MESSAGE)
+guess_score_yearly  = on_command('猜歌积分年榜', rule=GROUP_MESSAGE)
+guess_score_season  = on_command('猜歌积分赛季榜', rule=GROUP_MESSAGE)
+guess_score_hist_daily   = on_command('猜歌历史日榜', rule=GROUP_MESSAGE)
+guess_score_hist_weekly  = on_command('猜歌历史周榜', rule=GROUP_MESSAGE)
+guess_score_hist_monthly = on_command('猜歌历史月榜', rule=GROUP_MESSAGE)
+guess_score_hist_yearly  = on_command('猜歌历史年榜', rule=GROUP_MESSAGE)
+guess_score_hist_season  = on_command('猜歌历史赛季榜', rule=GROUP_MESSAGE)
 
 
-def _sender_name(event: GroupMessageEvent) -> str:
-    return event.sender.card or event.sender.nickname or str(event.user_id)
+def _sender_name(event: MessageEvent) -> str:
+    return get_sender_display_name(event)
 
 
 def _guess_first_stage(data: GuessData) -> bool:
@@ -74,7 +98,8 @@ def _guess_first_stage(data: GuessData) -> bool:
 
 
 async def _award_guess_points(
-    event: GroupMessageEvent,
+    event: MessageEvent,
+    gid: GroupId,
     data: GuessData,
     *,
     first_stage: bool,
@@ -95,14 +120,15 @@ async def _award_guess_points(
     if isinstance(data, GuessAudioData) and guess_score.audio_season_double_active():
         multiplier *= 2
         multiplier_tags.append('赛季限时双倍得分')
-    if await guess_boost_card.consume_one(event.group_id, event.user_id):
+    uid = platform_user_id(event)
+    if await guess_boost_card.consume_one(gid, uid):
         multiplier *= 2
         multiplier_tags.append('限时加倍卡×2')
     (
         added, raw_base, combo, streak, total, rank, period_snapshot,
     ) = await guess_score.award_correct_guess(
-        event.group_id,
-        event.user_id,
+        gid,
+        uid,
         _sender_name(event),
         raw_base,
         multiplier,
@@ -119,7 +145,7 @@ GUESS_SEND_TIMEOUT_TEXT = 15
 GUESS_SEND_TIMEOUT_MEDIA = 60
 
 
-def _guess_loop_should_stop(gid: int) -> bool:
+def _guess_loop_should_stop(gid: GroupId) -> bool:
     """猜歌主循环是否应退出（被重置、关闭或正常结束）。"""
     if gid not in guess.Group:
         return True
@@ -128,7 +154,7 @@ def _guess_loop_should_stop(gid: int) -> bool:
     return bool(guess.Group[gid].end)
 
 
-async def _guess_sleep(gid: int, seconds: float) -> None:
+async def _guess_sleep(gid: GroupId, seconds: float) -> None:
     """可中断的 sleep：重置猜歌后尽快退出主循环。"""
     remaining = max(0.0, float(seconds))
     while remaining > 0 and not _guess_loop_should_stop(gid):
@@ -141,7 +167,7 @@ class GuessSendAborted(Exception):
     """猜歌局内消息发送失败，本局已强制结束。"""
 
 
-async def _force_end_guess_round(gid: int) -> None:
+async def _force_end_guess_round(gid: GroupId) -> None:
     """强制结束本群猜歌局（可重复调用）。"""
     guess.Preparing.discard(gid)
     if gid not in guess.Group:
@@ -153,7 +179,7 @@ async def _force_end_guess_round(gid: int) -> None:
 
 async def _guess_notify(
     matcher: Matcher,
-    event: GroupMessageEvent,
+    event: MessageEvent,
     message,
     *,
     reply: bool = False,
@@ -162,20 +188,21 @@ async def _guess_notify(
     """尽力发送通知，不修改游戏状态。"""
     try:
         await asyncio.wait_for(
-            matcher.send(message, reply_message=reply),
+            matcher.send(adapt_guess_outbound(message, event=event), reply_message=reply),
             timeout=timeout,
         )
     except Exception as e:
+        gid = get_event_group_id(event)
         log.warning(
-            f'[maimai] 猜歌通知发送失败 gid={event.group_id}: {type(e).__name__}: {e}'
+            f'[maimai] 猜歌通知发送失败 gid={gid}: {type(e).__name__}: {e}'
         )
 
 
 async def _safe_matcher_send(
     matcher: Matcher,
-    event: GroupMessageEvent,
+    event: MessageEvent,
     message,
-    gid: int,
+    gid: GroupId,
     *,
     reply: bool = False,
     media: bool = False,
@@ -186,7 +213,7 @@ async def _safe_matcher_send(
         timeout = GUESS_SEND_TIMEOUT_MEDIA if media else GUESS_SEND_TIMEOUT_TEXT
     try:
         await asyncio.wait_for(
-            matcher.send(message, reply_message=reply),
+            matcher.send(adapt_guess_outbound(message, event=event), reply_message=reply),
             timeout=timeout,
         )
     except Exception as e:
@@ -202,9 +229,9 @@ async def _safe_matcher_send(
 
 async def _send_guess_answer_bundle(
     matcher: Matcher,
-    event: GroupMessageEvent,
+    event: MessageEvent,
     data: GuessData,
-    gid: int,
+    gid: GroupId,
     *,
     header: str,
     settlement: str = '',
@@ -255,12 +282,17 @@ async def _send_guess_answer_bundle(
 async def _send_guess_score_forward(
     matcher: Matcher,
     bot: Bot,
-    event: GroupMessageEvent,
+    event: MessageEvent,
     title: str,
     nodes: list,
 ) -> None:
     if not nodes:
         await matcher.finish(title, reply_message=True)
+    if use_qq_mode(event):
+        await matcher.finish(
+            format_forward_nodes_as_text(title, nodes),
+            reply_message=True,
+        )
     nickname = str(getattr(bot, 'nickname', None) or 'Bot')
     title_node = build_forward_node(str(event.self_id), nickname, title)
     all_nodes = [title_node] + nodes
@@ -268,7 +300,7 @@ async def _send_guess_score_forward(
         messages = json.loads(json.dumps(all_nodes, ensure_ascii=False))
         await bot.call_api(
             'send_group_forward_msg',
-            group_id=event.group_id,
+            group_id=int(get_event_group_id(event)),
             messages=messages,
         )
     except TypeError as e:
@@ -276,30 +308,19 @@ async def _send_guess_score_forward(
         await matcher.finish('合并转发序列化失败，请稍后再试。', reply_message=True)
     except Exception as e:
         log.warning(f'[maimai] 猜歌积分排行 合并转发发送失败: {type(e).__name__}: {e}')
-        await matcher.finish('合并转发发送失败，请稍后再试。', reply_message=True)
+        await matcher.finish(
+            format_forward_nodes_as_text(title, nodes),
+            reply_message=True,
+        )
     await matcher.finish(reply_message=True)
 
 
-def _get_at_qq(event: GroupMessageEvent) -> Optional[int]:
-    for item in event.message:
-        if isinstance(item, MessageSegment) and item.type == 'at' and item.data['qq'] != 'all':
-            return int(item.data['qq'])
-    return None
-
-
-def _is_at_all(event: GroupMessageEvent) -> bool:
-    for item in event.message:
-        if isinstance(item, MessageSegment) and item.type == 'at' and item.data.get('qq') == 'all':
-            return True
-    return False
-
-
 def _parse_grant_target(
-    event: GroupMessageEvent, args: Message,
-) -> Optional[Union[int, Literal['all']]]:
-    if _is_at_all(event):
+    event: MessageEvent, args: Message,
+) -> Optional[Union[str, Literal['all']]]:
+    if is_at_all_message(event):
         return 'all'
-    target = _get_at_qq(event)
+    target = parse_at_target_id(event)
     if target is not None:
         return target
     text = args.extract_plain_text().strip()
@@ -329,8 +350,11 @@ def _parse_grant_args(text: str, *, for_all: bool = False) -> tuple[int, float]:
 
 
 @guess_boost_grant.handle()
-async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
-    if event.group_id not in guess.switch.enable:
+async def _(event: MessageEvent, args: Message = CommandArg()):
+    gid = get_event_group_id(event)
+    if gid is None:
+        await guess_boost_grant.finish('请在群内使用。', reply_message=True)
+    if gid not in guess.switch.enable:
         await guess_boost_grant.finish(
             '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
         )
@@ -345,28 +369,43 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         )
     extra = args.extract_plain_text().strip()
     count, hours = _parse_grant_args(extra, for_all=(target == 'all'))
+    issuer_uid = platform_user_id(event)
 
     if target == 'all':
-        try:
-            raw = await bot.call_api('get_group_member_list', group_id=event.group_id)
-        except Exception as e:
-            log.warning(f'[GuessBoost] 获取群成员失败 gid={event.group_id}: {e}')
-            await guess_boost_grant.finish(f'获取群成员失败：{e}', reply_message=True)
-        if not raw or not isinstance(raw, list):
-            await guess_boost_grant.finish('群成员列表为空。', reply_message=True)
-        self_id = int(bot.self_id)
-        uids = [
-            int(m['user_id']) for m in raw
-            if m.get('user_id') is not None and int(m['user_id']) != self_id
-        ]
-        if not uids:
-            await guess_boost_grant.finish('群成员列表为空。', reply_message=True)
+        if use_qq_mode(event):
+            self_id = str(event.self_id)
+            uids = [
+                uid for uid in qq_member_registry.list_member_ids(str(gid))
+                if uid != self_id
+            ]
+            if not uids:
+                await guess_boost_grant.finish(
+                    '本群尚无足够的成员记录。请让成员先发言后再试，'
+                    '或改用 @用户 单独发放。',
+                    reply_message=True,
+                )
+        else:
+            bot = resolve_event_bot(event)
+            try:
+                raw = await bot.call_api('get_group_member_list', group_id=int(gid))
+            except Exception as e:
+                log.warning(f'[GuessBoost] 获取群成员失败 gid={gid}: {e}')
+                await guess_boost_grant.finish(f'获取群成员失败：{e}', reply_message=True)
+            if not raw or not isinstance(raw, list):
+                await guess_boost_grant.finish('群成员列表为空。', reply_message=True)
+            self_id = int(bot.self_id)
+            uids = [
+                str(m['user_id']) for m in raw
+                if m.get('user_id') is not None and int(m['user_id']) != self_id
+            ]
+            if not uids:
+                await guess_boost_grant.finish('群成员列表为空。', reply_message=True)
         member_count, hours = await guess_boost_card.grant_many(
-            event.group_id,
+            gid,
             uids,
             count=count,
             hours=hours,
-            issuer_uid=event.user_id,
+            issuer_uid=issuer_uid,
         )
         await guess_boost_grant.finish(
             f'已向本群 {member_count} 人各发放 {count} 张限时加倍卡'
@@ -376,18 +415,19 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         return
 
     granted, hours = await guess_boost_card.grant(
-        event.group_id,
+        gid,
         target,
         count=count,
         hours=hours,
-        issuer_uid=event.user_id,
+        issuer_uid=issuer_uid,
     )
-    remain = guess_boost_card.active_count(event.group_id, target)
+    remain = guess_boost_card.active_count(gid, target)
     await guess_boost_grant.finish(
-        MessageSegment.at(target)
-        + MessageSegment.text(
+        build_mention_message(
+            target,
             f'\n已发放 {granted} 张限时加倍卡（{hours:g} 小时内有效，猜对消耗 1 张积分 ×2）。'
-            f'当前剩余 {remain} 张。'
+            f'当前剩余 {remain} 张。',
+            event=event,
         ),
         reply_message=True,
     )
@@ -395,36 +435,38 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
 
 @guess_boost_query.handle()
 async def _(event: MessageEvent, args: Message = CommandArg()):
-    if not isinstance(event, GroupMessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
         await guess_boost_query.finish('请在群内使用。', reply_message=True)
-    target = _get_at_qq(event) or event.user_id
-    count = guess_boost_card.active_count(event.group_id, target)
+    self_uid = platform_user_id(event)
+    target = parse_at_target_id(event) or self_uid
+    count = guess_boost_card.active_count(gid, target)
     if count <= 0:
-        if target == event.user_id:
+        if target == self_uid:
             await guess_boost_query.finish('你当前没有可用的限时加倍卡。', reply_message=True)
         else:
             await guess_boost_query.finish(
-                MessageSegment.at(target) + MessageSegment.text(' 当前没有可用的限时加倍卡。'),
+                build_mention_message(target, ' 当前没有可用的限时加倍卡。', event=event),
                 reply_message=True,
             )
-    nearest = guess_boost_card.nearest_expiry_hours(event.group_id, target)
+    nearest = guess_boost_card.nearest_expiry_hours(gid, target)
     hint = f'最近一张约 {nearest:.1f} 小时后过期' if nearest is not None else ''
-    prefix = '你' if target == event.user_id else ''
+    prefix = '你' if target == self_uid else ''
     msg = f'{prefix}当前有 {count} 张限时加倍卡（猜对消耗，积分 ×2）'
     if hint:
         msg += f'，{hint}'
     msg += '。'
-    if target != event.user_id:
+    if target != self_uid:
         await guess_boost_query.finish(
-            MessageSegment.at(target) + MessageSegment.text(f'\n{msg}'),
+            build_mention_message(target, f'\n{msg}', event=event),
             reply_message=True,
         )
     await guess_boost_query.finish(msg, reply_message=True)
 
 
 @guess_music_start.handle()
-async def _(event: GroupMessageEvent):
-    gid = event.group_id
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_start.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌')
     if guess.is_busy(gid):
@@ -476,14 +518,14 @@ async def _(event: GroupMessageEvent):
                     + await draw_music_info(guess.Group[gid].music)
                 )
                 guess.end(gid)
-                await guess_music_start.finish(answer)
+                await guess_music_start.finish(adapt_guess_outbound(answer, event=event))
     except GuessSendAborted:
         await guess_music_start.finish()
 
 
 @guess_music_pic.handle()
-async def _(event: GroupMessageEvent):
-    gid = event.group_id
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_pic.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
     if guess.is_busy(gid):
@@ -571,8 +613,8 @@ async def _(event: GroupMessageEvent):
 
 
 @guess_music_audio.handle()
-async def _(event: GroupMessageEvent):
-    gid = event.group_id
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_audio.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
     if not await guess.try_begin_prepare(gid):
@@ -693,15 +735,15 @@ async def _(event: PrivateMessageEvent, match=RegexMatched()):
 
 
 @guess_music_solve.handle()
-async def _(event: GroupMessageEvent):
-    gid = event.group_id
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
     if gid not in guess.Group:
         await guess_music_solve.finish()
     data = guess.Group[gid]
     ans = event.get_plaintext().strip()
     if not ans:
         await guess_music_solve.finish()
-    uid_key = str(event.user_id)
+    uid_key = platform_user_id(event)
     data.user_attempts[uid_key] = data.user_attempts.get(uid_key, 0) + 1
     first_guess = data.user_attempts[uid_key] == 1
     pic_difficulty = data.difficulty if isinstance(data, GuessPicData) else None
@@ -709,6 +751,7 @@ async def _(event: GroupMessageEvent):
         data.end = True
         settlement = await _award_guess_points(
             event,
+            gid,
             data,
             first_stage=_guess_first_stage(data),
             first_guess=first_guess,
@@ -727,8 +770,8 @@ async def _(event: GroupMessageEvent):
 
 
 @guess_music_reset.handle()
-async def _(event: GroupMessageEvent):
-    gid = event.group_id
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
     if gid in guess.Preparing:
         guess.end_prepare(gid)
         await guess_music_reset.finish('已取消猜曲子准备，本局未开始。', reply_message=True)
@@ -748,19 +791,19 @@ async def _(event: GroupMessageEvent):
 
 
 async def _handle_guess_score_board(
-    event: GroupMessageEvent,
+    event: MessageEvent,
     matcher: Matcher,
     *,
     period: str,
 ) -> None:
-    if event.group_id not in guess.switch.enable:
+    gid = get_event_group_id(event)
+    if gid is None:
+        await matcher.finish('请在群内使用。', reply_message=True)
+    if gid not in guess.switch.enable:
         await matcher.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    try:
-        bot = get_bot()
-    except Exception:
-        bot = get_bot(str(event.self_id))
+    bot = resolve_event_bot(event)
     title, nodes = guess_score.build_ranking_forward(
-        event.group_id,
+        gid,
         int(event.self_id),
         period=period,
     )
@@ -768,52 +811,52 @@ async def _handle_guess_score_board(
 
 
 @guess_score_rank.handle()
-async def _(event: GroupMessageEvent):
+async def _(event: MessageEvent):
     await _handle_guess_score_board(event, guess_score_rank, period='total')
 
 
 @guess_score_daily.handle()
-async def _(event: GroupMessageEvent):
+async def _(event: MessageEvent):
     await _handle_guess_score_board(event, guess_score_daily, period='daily')
 
 
 @guess_score_weekly.handle()
-async def _(event: GroupMessageEvent):
+async def _(event: MessageEvent):
     await _handle_guess_score_board(event, guess_score_weekly, period='weekly')
 
 
 @guess_score_monthly.handle()
-async def _(event: GroupMessageEvent):
+async def _(event: MessageEvent):
     await _handle_guess_score_board(event, guess_score_monthly, period='monthly')
 
 
 @guess_score_yearly.handle()
-async def _(event: GroupMessageEvent):
+async def _(event: MessageEvent):
     await _handle_guess_score_board(event, guess_score_yearly, period='yearly')
 
 
 @guess_score_season.handle()
-async def _(event: GroupMessageEvent):
+async def _(event: MessageEvent):
     await _handle_guess_score_board(event, guess_score_season, period='season')
 
 
 async def _handle_guess_history_board(
-    event: GroupMessageEvent,
+    event: MessageEvent,
     matcher: Matcher,
     *,
     period: str,
     period_key: Optional[str] = None,
 ) -> None:
-    if event.group_id not in guess.switch.enable:
+    gid = get_event_group_id(event)
+    if gid is None:
+        await matcher.finish('请在群内使用。', reply_message=True)
+    if gid not in guess.switch.enable:
         await matcher.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
     if not period_key:
         period_key = guess_score.previous_period_key(period)
-    try:
-        bot = get_bot()
-    except Exception:
-        bot = get_bot(str(event.self_id))
+    bot = resolve_event_bot(event)
     title, nodes = guess_score.build_ranking_forward(
-        event.group_id,
+        gid,
         int(event.self_id),
         period=period,
         period_key=period_key,
@@ -822,7 +865,7 @@ async def _handle_guess_history_board(
 
 
 @guess_score_hist_daily.handle()
-async def _(event: GroupMessageEvent, args: Message = CommandArg()):
+async def _(event: MessageEvent, args: Message = CommandArg()):
     key = args.extract_plain_text().strip()
     await _handle_guess_history_board(
         event, guess_score_hist_daily, period='daily', period_key=key or None,
@@ -830,7 +873,7 @@ async def _(event: GroupMessageEvent, args: Message = CommandArg()):
 
 
 @guess_score_hist_weekly.handle()
-async def _(event: GroupMessageEvent, args: Message = CommandArg()):
+async def _(event: MessageEvent, args: Message = CommandArg()):
     key = args.extract_plain_text().strip()
     await _handle_guess_history_board(
         event, guess_score_hist_weekly, period='weekly', period_key=key or None,
@@ -838,7 +881,7 @@ async def _(event: GroupMessageEvent, args: Message = CommandArg()):
 
 
 @guess_score_hist_monthly.handle()
-async def _(event: GroupMessageEvent, args: Message = CommandArg()):
+async def _(event: MessageEvent, args: Message = CommandArg()):
     key = args.extract_plain_text().strip()
     await _handle_guess_history_board(
         event, guess_score_hist_monthly, period='monthly', period_key=key or None,
@@ -846,7 +889,7 @@ async def _(event: GroupMessageEvent, args: Message = CommandArg()):
 
 
 @guess_score_hist_yearly.handle()
-async def _(event: GroupMessageEvent, args: Message = CommandArg()):
+async def _(event: MessageEvent, args: Message = CommandArg()):
     key = args.extract_plain_text().strip()
     await _handle_guess_history_board(
         event, guess_score_hist_yearly, period='yearly', period_key=key or None,
@@ -854,7 +897,7 @@ async def _(event: GroupMessageEvent, args: Message = CommandArg()):
 
 
 @guess_score_hist_season.handle()
-async def _(event: GroupMessageEvent, args: Message = CommandArg()):
+async def _(event: MessageEvent, args: Message = CommandArg()):
     key = args.extract_plain_text().strip()
     await _handle_guess_history_board(
         event, guess_score_hist_season, period='season', period_key=key or None,
@@ -863,8 +906,8 @@ async def _(event: GroupMessageEvent, args: Message = CommandArg()):
 
 @guess_music_enable.handle()
 @guess_music_disable.handle()
-async def _(matcher: Matcher, event: GroupMessageEvent):
-    gid = event.group_id
+async def _(matcher: Matcher, event: MessageEvent):
+    gid = get_event_group_id(event)
     if type(matcher) is guess_music_enable:
         msg = await guess.on(gid)
     elif type(matcher) is guess_music_disable:

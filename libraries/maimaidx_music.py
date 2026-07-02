@@ -412,9 +412,9 @@ mai = MaiMusic()
 
 class Guess:
     
-    Group: Dict[int, Union[GuessDefaultData, GuessPicData, GuessAudioData]] = {}
-    Preparing: Set[int] = set()
-    _gid_locks: Dict[int, asyncio.Lock] = {}
+    Group: Dict[Union[int, str], Union[GuessDefaultData, GuessPicData, GuessAudioData]] = {}
+    Preparing: Set[Union[int, str]] = set()
+    _gid_locks: Dict[Union[int, str], asyncio.Lock] = {}
     switch: GuessSwitch
 
     def __init__(self) -> None:
@@ -427,37 +427,37 @@ class Guess:
             )
 
     @classmethod
-    def _lock(cls, gid: int) -> asyncio.Lock:
+    def _lock(cls, gid: Union[int, str]) -> asyncio.Lock:
         if gid not in cls._gid_locks:
             cls._gid_locks[gid] = asyncio.Lock()
         return cls._gid_locks[gid]
 
-    def is_busy(self, gid: int) -> bool:
+    def is_busy(self, gid: Union[int, str]) -> bool:
         return gid in self.Group or gid in self.Preparing
 
-    async def try_begin_prepare(self, gid: int) -> bool:
+    async def try_begin_prepare(self, gid: Union[int, str]) -> bool:
         async with self._lock(gid):
             if self.is_busy(gid):
                 return False
             self.Preparing.add(gid)
             return True
 
-    def end_prepare(self, gid: int) -> None:
+    def end_prepare(self, gid: Union[int, str]) -> None:
         self.Preparing.discard(gid)
 
-    def _log_guess_start(self, mode: str, gid: int) -> None:
+    def _log_guess_start(self, mode: str, gid: Union[int, str]) -> None:
         data = self.Group[gid]
         music = data.music
         log.info(
             f'[Guess] 开始{mode}！本次答案： {music.title} 。ID: {music.id} 。'
         )
 
-    def start(self, gid: int):
+    def start(self, gid: Union[int, str]):
         """开始猜歌"""
         self.Group[gid] = self.guessData()
         self._log_guess_start('猜歌', gid)
 
-    def startpic(self, gid: int):
+    def startpic(self, gid: Union[int, str]):
         """开始猜曲绘"""
         self.Group[gid] = self.guesspicdata()
         self._log_guess_start('猜曲绘', gid)
@@ -773,7 +773,7 @@ class Guess:
                 return self.guessaudiodata(music)
         return None
 
-    def startaudio(self, gid: int, data: GuessAudioData) -> None:
+    def startaudio(self, gid: Union[int, str], data: GuessAudioData) -> None:
         self.Group[gid] = data
         self._log_guess_start('猜曲子', gid)
 
@@ -840,11 +840,11 @@ class Guess:
             options=guess_options
         )
 
-    def end(self, gid: int):
+    def end(self, gid: Union[int, str]):
         """结束猜歌"""
         self.Group.pop(gid, None)
 
-    async def on(self, gid: int) -> str:
+    async def on(self, gid: Union[int, str]) -> str:
         """开启猜歌"""
         if gid not in self.switch.enable:
             self.switch.enable.append(gid)
@@ -853,7 +853,7 @@ class Guess:
         await writefile(guess_file, self.switch.model_dump())
         return '群猜歌功能已开启'
 
-    async def off(self, gid: int) -> str:
+    async def off(self, gid: Union[int, str]) -> str:
         """关闭猜歌"""
         if gid not in self.switch.disable:
             self.switch.disable.append(gid)

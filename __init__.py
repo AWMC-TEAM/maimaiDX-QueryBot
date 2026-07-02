@@ -19,7 +19,7 @@ __plugin_meta__ = PluginMetadata(
     type='application',
     config=Config,
     homepage='https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx',
-    supported_adapters={'~onebot.v11'}
+    supported_adapters={'~onebot.v11', '~qq'}
 )
 
 sub_plugins = nonebot.load_plugins(
