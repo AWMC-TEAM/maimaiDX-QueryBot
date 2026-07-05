@@ -2,18 +2,29 @@ import asyncio
 import base64
 import json
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from nonebot import on_command, on_regex
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment
 from nonebot.exception import IgnoredException
+from nonebot.matcher import Matcher
 from nonebot.params import CommandArg, Depends, RegexStr
+from nonebot.rule import Rule
 
 from ..config import log, maiconfig
 from ..libraries.maimaidx_best_50 import generate_pc50, generate_pca50, generate_pc_rank50
+from ..libraries.maimaidx_datasource import get_user_source
+from ..libraries.maimaidx_error import QBindRequiredError
 from ..libraries.maimaidx_music import feature_manager
+from ..libraries.maimaidx_platform import resolve_score_qqid
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_playcount_fetcher import playcount_fetcher
+from ..libraries.maimaidx_prober_compare import (
+    SYNC_WARN_FISH,
+    awmc_differs_from_prober,
+    sync_warning_for_source,
+)
+from ..libraries.maimaidx_qrcode_util import extract_sgwcmaid_qrcode, qrcode_log_preview
 
 update_pc = on_command('更新pc数', aliases={'更新PC数', '同步pc数', '同步PC数', '绑定机台', '登录机台'})
 my_pc = on_command('我的pc数', aliases={'我的PC数', '我的pc', '我的PC'})
@@ -24,6 +35,22 @@ pca50 = on_command('pca50', aliases={'PCA50', '嫖娼a50'})
 pc_rank50 = on_command('游玩排行50', aliases={'游玩PC50', 'PC游玩50', 'pc游玩50'})
 
 _waiting_qrcode: dict[int, bool] = {}
+_qrcode_auto_dedupe: dict[tuple[int, str], float] = {}
+_qrcode_auto_processing: set[int] = set()
+_QRCODE_AUTO_DEDUPE_SECONDS = 60
+
+
+def _is_group_message(event: MessageEvent) -> bool:
+    return isinstance(event, GroupMessageEvent)
+
+
+# 仅匹配含 SGWCMAID 的群消息，避免 on_message 全量监听
+qrcode_auto_listener = on_regex(
+    r'SGWCMAID',
+    rule=Rule(_is_group_message),
+    priority=50,
+    block=False,
+)
 
 
 async def get_at_qq(message: MessageEvent) -> Optional[int]:
@@ -95,55 +122,161 @@ async def receive_qrcode(bot: Bot, event: GroupMessageEvent):
 
     del _waiting_qrcode[qqid]
 
-    raw_text = event.get_plaintext().strip()
-
-    if not raw_text.startswith('SGWCMAID'):
+    raw_text = event.get_plaintext()
+    qrcode_data = extract_sgwcmaid_qrcode(raw_text)
+    if not qrcode_data:
         await update_pc.finish(
             MessageSegment.reply(event.message_id)
-            + MessageSegment.text('二维码数据格式错误，请重新发送以 SGWCMAID 开头的完整字符串。')
+            + MessageSegment.text('二维码数据格式错误，消息中需包含以 SGWCMAID 开头的完整字符串。')
         )
 
-    await _handle_sdgb_update(bot, event, qqid, raw_text)
+    log.info(
+        f'[SDGBPC] 用户 {qqid} 手动提交二维码 qrcode={qrcode_log_preview(qrcode_data)}'
+    )
+    await _handle_sdgb_update(bot, event, qqid, qrcode_data, matcher=update_pc)
 
 
-async def _handle_sdgb_update(bot: Bot, event: GroupMessageEvent, qqid: int, qrcode_data: str):
+def _default_pc_success_message(count: int, total_plays: int) -> str:
+    return (
+        f'\n✅ PC数据更新完成！\n'
+        f'- 收录谱面: {count} 个\n'
+        f'- 总游玩次数: {total_plays} 次\n\n'
+        f'使用「pc50」查看按次数排序的 B50\n'
+        f'使用「pca50」查看 B50 内按 PC 排序\n'
+        f'使用「游玩排行50」查看游玩最多的 50 首谱面\n'
+        f'使用「我的pc数」查看详细数据\n'
+        f'使用「pc排行」查看全部用户 PC 排行'
+    )
+
+
+async def _build_auto_qrcode_success_message(event: GroupMessageEvent, storage_qqid: int) -> str:
+    base_msg = '🤔 AWMC已根据您提供的二维码自动更新成绩，您可以直接使用b50等指令。'
+    try:
+        score_qqid = resolve_score_qqid(event)
+        source = get_user_source(score_qqid)
+        if await awmc_differs_from_prober(
+            score_qqid,
+            storage_qqid=storage_qqid,
+            source=source,
+        ):
+            base_msg += '\n' + sync_warning_for_source(source)
+    except QBindRequiredError:
+        base_msg += '\n' + SYNC_WARN_FISH
+    return base_msg
+
+
+async def _sync_sdgb_qrcode(qqid: int, qrcode_data: str) -> int:
+    success = await playcount_fetcher.login_by_sdgb(qrcode_data, qqid)
+    if not success:
+        raise RuntimeError('凭据保存失败')
+    return await playcount_fetcher.fetch_via_sdgb_with_retry(qqid)
+
+
+def _qrcode_dedupe_hit(qqid: int, qrcode_data: str) -> bool:
+    key = (qqid, qrcode_data[:48])
+    now = time.time()
+    last = _qrcode_auto_dedupe.get(key, 0)
+    if now - last < _QRCODE_AUTO_DEDUPE_SECONDS:
+        return True
+    _qrcode_auto_dedupe[key] = now
+    if len(_qrcode_auto_dedupe) > 500:
+        cutoff = now - _QRCODE_AUTO_DEDUPE_SECONDS
+        stale = [k for k, ts in _qrcode_auto_dedupe.items() if ts < cutoff]
+        for k in stale:
+            del _qrcode_auto_dedupe[k]
+    return False
+
+
+async def _handle_sdgb_update(
+    bot: Bot,
+    event: GroupMessageEvent,
+    qqid: int,
+    qrcode_data: str,
+    *,
+    matcher: Matcher = update_pc,
+    success_builder: Optional[Callable[[int, int], str]] = None,
+):
     """通过 sw-api 更新 PC 数据"""
     try:
-        success = await playcount_fetcher.login_by_sdgb(qrcode_data, qqid)
-        if not success:
-            await update_pc.finish(
-                MessageSegment.reply(event.message_id)
-                + MessageSegment.text('凭据保存失败。')
-            )
+        count = await _sync_sdgb_qrcode(qqid, qrcode_data)
     except RuntimeError as e:
-        await update_pc.finish(
-            MessageSegment.reply(event.message_id)
-            + MessageSegment.text(f'配置错误: {e}')
+        log.error(
+            f'[SDGBPC] 用户 {qqid} 拉取失败 qrcode={qrcode_log_preview(qrcode_data)}: {e}'
         )
-
-    try:
-        count = await playcount_fetcher.fetch_via_sdgb(qqid)
-    except Exception as e:
-        log.error(f'[SDGBPC] 用户 {qqid} 拉取PC数据异常: {e}')
-        await update_pc.finish(
+        await matcher.finish(
             MessageSegment.reply(event.message_id)
             + MessageSegment.text(f'数据拉取失败: {e}。请检查 sw-api 服务或稍后重试。')
         )
+        return
 
     total_plays = pc_db.get_user_total_plays(qqid)
+    log.info(
+        f'[SDGBPC] 用户 {qqid} 更新成功 records={count} total_plays={total_plays} '
+        f'qrcode={qrcode_log_preview(qrcode_data)}'
+    )
+    if success_builder is None:
+        msg = _default_pc_success_message(count, total_plays)
+    else:
+        msg = success_builder(count, total_plays)
 
-    await update_pc.finish(
-        MessageSegment.reply(event.message_id)
-        + MessageSegment.text(
-            f'\n✅ PC数据更新完成！\n'
-            f'- 收录谱面: {count} 个\n'
-            f'- 总游玩次数: {total_plays} 次\n\n'
-            f'使用「pc50」查看按次数排序的 B50\n'
-            f'使用「pca50」查看 B50 内按 PC 排序\n'
-            f'使用「游玩排行50」查看游玩最多的 50 首谱面\n'
-            f'使用「我的pc数」查看详细数据\n'
-            f'使用「pc排行」查看全部用户 PC 排行'
+    await matcher.finish(
+        MessageSegment.reply(event.message_id) + MessageSegment.text(msg)
+    )
+
+
+@qrcode_auto_listener.handle()
+async def _auto_qrcode_update(bot: Bot, event: GroupMessageEvent):
+    """群聊被动监听：从消息任意位置提取 SGWCMAID 并自动拉取 AWMC 成绩。"""
+    if not playcount_fetcher.sdgb_available:
+        return
+    if not feature_manager.is_enabled(event.group_id, 'query'):
+        return
+
+    qqid = event.user_id
+    if qqid in _waiting_qrcode:
+        return
+
+    qrcode_data = extract_sgwcmaid_qrcode(event.get_plaintext())
+    if not qrcode_data:
+        log.debug(f'[QrcodeAuto] 群 {event.group_id} 用户 {qqid} 含 SGWCMAID 但提取失败')
+        return
+
+    if _qrcode_dedupe_hit(qqid, qrcode_data):
+        log.info(
+            f'[QrcodeAuto] 跳过重复请求 群={event.group_id} qq={qqid} '
+            f'qrcode={qrcode_log_preview(qrcode_data)}'
         )
+        return
+
+    if qqid in _qrcode_auto_processing:
+        log.info(f'[QrcodeAuto] 用户 {qqid} 已有进行中的同步，跳过')
+        return
+
+    _qrcode_auto_processing.add(qqid)
+    t0 = time.perf_counter()
+    log.info(
+        f'[QrcodeAuto] 开始同步 群={event.group_id} qq={qqid} '
+        f'qrcode={qrcode_log_preview(qrcode_data)}'
+    )
+    try:
+        count = await _sync_sdgb_qrcode(qqid, qrcode_data)
+    except Exception as e:
+        log.error(
+            f'[QrcodeAuto] 同步失败 群={event.group_id} qq={qqid} '
+            f'qrcode={qrcode_log_preview(qrcode_data)} ({time.perf_counter() - t0:.2f}s): {e}'
+        )
+        return
+    finally:
+        _qrcode_auto_processing.discard(qqid)
+
+    msg = await _build_auto_qrcode_success_message(event, qqid)
+    log.info(
+        f'[QrcodeAuto] 同步成功 群={event.group_id} qq={qqid} records={count} '
+        f'({time.perf_counter() - t0:.2f}s) qrcode={qrcode_log_preview(qrcode_data)}'
+    )
+    await bot.send(
+        event,
+        message=MessageSegment.reply(event.message_id) + MessageSegment.text(msg),
     )
 
 
