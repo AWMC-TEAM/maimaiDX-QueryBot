@@ -1,4 +1,3 @@
-import asyncio
 import json
 import time
 from typing import List, Optional
@@ -205,32 +204,26 @@ class PlayCountFetcher:
         log.info(f"[SwApi] 用户 {qqid} 二维码凭据已保存")
         return True
 
-    @staticmethod
-    async def _get_user_music_with_retry(
-        qr_text: str,
-        *,
-        max_retries: int = 3,
-        retry_delay: float = 3.0,
-    ) -> List[dict]:
-        last_error: Optional[SwApiError] = None
-        for attempt in range(max_retries + 1):
-            try:
-                return await sw_api.get_user_music(qr_text)
-            except SwApiError as e:
-                last_error = e
-                if 'HTTP 500' not in str(e) or attempt >= max_retries:
-                    raise
-                log.warning(
-                    f'[SwApi] HTTP 500，{retry_delay}s 后重试 ({attempt + 1}/{max_retries})'
-                )
-                await asyncio.sleep(retry_delay)
-        if last_error is not None:
-            raise last_error
-        return []
+    async def fetch_via_sdgb(self, qqid: int) -> int:
+        """
+        通过 sw-api 拉取全量 PC 数据并存储到本地数据库。
 
-    def _store_user_music_details(self, qqid: int, detail_list: List[dict]) -> int:
+        返回: 拉取到的记录数
+        """
+        cred = pc_db.get_credential(qqid)
+        if cred is None:
+            raise RuntimeError(f"用户 {qqid} 尚未登录，请先使用「更新pc数」命令")
+
+        qr_text = cred.credential_data
+
+        log.info(f"[SwApi] 用户 {qqid} 正在拉取全量成绩...")
+        try:
+            detail_list = await sw_api.get_user_music(qr_text)
+        except SwApiError as e:
+            raise RuntimeError(str(e)) from e
+
         if not detail_list:
-            log.warning(f'[SwApi] 用户 {qqid} 没有成绩数据')
+            log.warning(f"[SwApi] 用户 {qqid} 没有成绩数据")
             return 0
 
         now = time.time()
@@ -278,46 +271,8 @@ class PlayCountFetcher:
             pc_db.save_play_count_records(qqid, records)
             self._fill_titles(qqid)
 
-        log.info(f'[SwApi] 用户 {qqid} 拉取完成，共 {len(records)} 条记录')
+        log.info(f"[SwApi] 用户 {qqid} 拉取完成，共 {len(records)} 条记录")
         return len(records)
-
-    async def fetch_via_sdgb(self, qqid: int) -> int:
-        """
-        通过 sw-api 拉取全量 PC 数据并存储到本地数据库。
-
-        返回: 拉取到的记录数
-        """
-        return await self.fetch_via_sdgb_with_retry(qqid, max_retries=0)
-
-    async def fetch_via_sdgb_with_retry(
-        self,
-        qqid: int,
-        *,
-        max_retries: int = 3,
-        retry_delay: float = 3.0,
-    ) -> int:
-        """
-        通过 sw-api 拉取全量 PC 数据并存储到本地数据库；HTTP 500 时等待后重试。
-
-        返回: 拉取到的记录数
-        """
-        cred = pc_db.get_credential(qqid)
-        if cred is None:
-            raise RuntimeError(f'用户 {qqid} 尚未登录，请先使用「更新pc数」命令')
-
-        qr_text = cred.credential_data
-
-        log.info(f'[SwApi] 用户 {qqid} 正在拉取全量成绩...')
-        try:
-            detail_list = await self._get_user_music_with_retry(
-                qr_text,
-                max_retries=max_retries,
-                retry_delay=retry_delay,
-            )
-        except SwApiError as e:
-            raise RuntimeError(str(e)) from e
-
-        return self._store_user_music_details(qqid, detail_list)
 
     def _fill_titles(self, qqid: int):
         try:

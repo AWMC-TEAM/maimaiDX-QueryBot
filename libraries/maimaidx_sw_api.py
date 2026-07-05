@@ -15,7 +15,7 @@ class SwApiClient:
     """sw-api (AWMC) HTTP 客户端。"""
 
     def __init__(self):
-        self.base_url = (maiconfig.awmcbackend or "").rstrip("/")
+        self.base_url = (maiconfig.sdgbtechapi or "").rstrip("/")
 
     @property
     def available(self) -> bool:
@@ -25,7 +25,7 @@ class SwApiClient:
         if not self.available:
             raise SwApiError(
                 "sw-api 未配置。请在 .env 中设置:\n"
-                "  AWMCBACKEND=http://127.0.0.1:5001\n"
+                "  SDGBTECHAPI=http://127.0.0.1:5001\n"
                 "  SDGBT_CLIENT_ID=your_keychip"
             )
 

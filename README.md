@@ -73,7 +73,7 @@ MAIMAIDXTOKEN=token_a,token_b,token_c
 ### sw-api（PC 数 / 上传 / 倍率票）
 
 ```env
-AWMCBACKEND=http://127.0.0.1:5001
+SDGBTECHAPI=http://127.0.0.1:5001
 SDGBT_CLIENT_ID=your_keychip
 SDGBT_REGION_ID=1
 SDGBT_PLACE_ID=1403
