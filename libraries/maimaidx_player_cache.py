@@ -120,6 +120,9 @@ def _format_freshness_lines(meta: PlayerFetchMeta) -> List[str]:
     clock = ts.strftime("%m-%d %H:%M")
     age_s = max(0, int(time.time() - meta.fetched_at))
 
+    if meta.origin == "awmc_local":
+        return [f"🕐 数据更新：{clock}（AWMC 机台同步）"]
+
     if meta.origin == "api":
         if meta.force_refresh:
             label = f"🕐 数据更新：{clock}（刚刚已从查分器同步）"

@@ -138,9 +138,10 @@ async def receive_qrcode(bot: Bot, event: GroupMessageEvent):
 
 def _default_pc_success_message(count: int, total_plays: int) -> str:
     return (
-        f'\n✅ PC数据更新完成！\n'
+        f'\n✅ 成绩数据更新完成！\n'
         f'- 收录谱面: {count} 个\n'
         f'- 总游玩次数: {total_plays} 次\n\n'
+        f'可直接使用「b50」等指令查询成绩\n'
         f'使用「pc50」查看按次数排序的 B50\n'
         f'使用「pca50」查看 B50 内按 PC 排序\n'
         f'使用「游玩排行50」查看游玩最多的 50 首谱面\n'
@@ -169,7 +170,10 @@ async def _sync_sdgb_qrcode(qqid: int, qrcode_data: str) -> int:
     success = await playcount_fetcher.login_by_sdgb(qrcode_data, qqid)
     if not success:
         raise RuntimeError('凭据保存失败')
-    return await playcount_fetcher.fetch_via_sdgb_with_retry(qqid)
+    count = await playcount_fetcher.fetch_via_sdgb_with_retry(qqid)
+    from ..libraries.maimaidx_awmc_cache import sync_awmc_scores_to_player_cache
+    sync_awmc_scores_to_player_cache(qqid)
+    return count
 
 
 def _qrcode_dedupe_hit(qqid: int, qrcode_data: str) -> bool:

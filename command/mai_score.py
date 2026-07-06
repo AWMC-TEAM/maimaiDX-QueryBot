@@ -86,7 +86,7 @@ from ..libraries.maimaidx_update_plate import *
 
 best50       = on_command('b50', aliases={'B50'})
 best_all50   = on_command('ab50', aliases={'a50', 'allb50'})
-refresh_b50  = on_command('刷新b50', aliases={'刷新成绩', '更新b50', '刷新B50'})
+refresh_b50  = on_command('刷新b50', aliases={'刷新成绩', '更新b50', '刷新B50'}, priority=20)
 coop_b50     = on_command('合作b50', aliases={'合作B50'})
 coop_ab50    = on_command('合作a50', aliases={'合作A50'})
 how_weak     = on_command('我有多菜', aliases={'我有多菜'})
@@ -117,6 +117,10 @@ dx2026_b35   = on_command('dx2026b35', aliases={'DX2026b35'})
 difficulty_b50 = on_regex(
     r'^\s*(?!b50\s*$)(?!名刀\s*b50\s*$)(?!l\s*.+?代\s*b50\s*$)'
     r'(?!分析\s*b50\s*$)(?!理想\s*b50\s*$)(?!拟合\s*b50\s*$)'
+    r'(?!刷新\s*b50\s*$)(?!更新\s*b50\s*$)(?!合作\s*b50\s*$)'
+    r'(?!fcb50\s*$)(?!fcallb50\s*$)(?!apb50\s*$)(?!apallb50\s*$)'
+    r'(?!寸\s*b50\s*$)(?!锁血\s*b50\s*$)(?!越级\s*b50\s*$)'
+    r'(?!dx2025b50\s*$)(?!b50风险\s*$)(?!b50\s*风险\s*$)'
     r'(.+?)\s*b50\s*$',
     flags=re.IGNORECASE,
     priority=15,
@@ -927,7 +931,13 @@ async def _difficulty_b50(event: MessageEvent, matched = RegexMatched()):
     log.debug(f"[difficulty_b50] raw='{event.get_plaintext().strip()}', difficulty='{difficulty}'")
 
     if not difficulty:
-        await difficulty_b50.finish('请提供难度，如：紫b50、13b50、Master b50', reply_message=True)
+        raise IgnoredException('empty difficulty b50')
+
+    from ..libraries.maimaidx_difficulty_filter import DifficultyFilter
+    try:
+        DifficultyFilter.parse(difficulty)
+    except ValueError:
+        raise IgnoredException(f'invalid difficulty b50: {difficulty}')
 
     qqid = resolve_score_qqid(event)
     await _finish_score(
@@ -948,7 +958,13 @@ async def _difficulty_ab50(event: MessageEvent, matched = RegexMatched()):
     log.debug(f"[difficulty_ab50] raw='{event.get_plaintext().strip()}', difficulty='{difficulty}'")
 
     if not difficulty:
-        await difficulty_ab50.finish('请提供难度，如：紫ab50、13ab50、Master ab50', reply_message=True)
+        raise IgnoredException('empty difficulty ab50')
+
+    from ..libraries.maimaidx_difficulty_filter import DifficultyFilter
+    try:
+        DifficultyFilter.parse(difficulty)
+    except ValueError:
+        raise IgnoredException(f'invalid difficulty ab50: {difficulty}')
 
     qqid = resolve_score_qqid(event)
     await _finish_score(
