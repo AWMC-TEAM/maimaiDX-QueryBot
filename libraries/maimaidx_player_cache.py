@@ -120,9 +120,6 @@ def _format_freshness_lines(meta: PlayerFetchMeta) -> List[str]:
     clock = ts.strftime("%m-%d %H:%M")
     age_s = max(0, int(time.time() - meta.fetched_at))
 
-    if meta.origin == "awmc_local":
-        return [f"🕐 数据更新：{clock}（AWMC 机台同步）"]
-
     if meta.origin == "api":
         if meta.force_refresh:
             label = f"🕐 数据更新：{clock}（刚刚已从查分器同步）"
@@ -324,6 +321,13 @@ class PlayerCacheDB:
             f"[PlayerCache] 已写入 key={key} records={len(records)} rating={userinfo.rating}"
         )
 
+    def delete_by_qqid(self, qqid: int) -> int:
+        cur = self._conn.execute(
+            "DELETE FROM player_cache WHERE qqid = ?", (int(qqid),)
+        )
+        self._conn.commit()
+        return cur.rowcount
+
 
 class _LazyPlayerCacheDB:
     """延迟初始化 SQLite，避免插件 import 阶段阻塞启动。"""
@@ -409,6 +413,16 @@ def _try_storage_snapshot(qqid: int, max_age: int) -> Optional[CachedPlayerBundl
     return bundle
 
 
+def invalidate_player_cache(qqid: int) -> None:
+    """清除某 QQ 的所有玩家缓存（各数据源），下次查询强制走查分器。"""
+    try:
+        removed = player_cache_db.delete_by_qqid(int(qqid))
+        if removed:
+            log.info(f"[PlayerCache] 已清除 qq={qqid} 的 {removed} 条缓存")
+    except Exception as e:
+        log.warning(f"[PlayerCache] 清除缓存失败 qq={qqid}: {e}")
+
+
 def get_cached_player(
     qqid: Optional[int],
     username: Optional[str],
@@ -448,8 +462,9 @@ def save_cached_player(
 ) -> None:
     if _cache_ttl_seconds() <= 0:
         return
-    # 合并旧缓存：避免「先拉全量、后拉 B50」时互相覆盖 charts / records
-    prev = player_cache_db.get(qqid, username, source, 10**9)
+    # 合并旧缓存：避免「先拉全量、后拉 B50」时互相覆盖 charts / records。
+    # 只合并未过期的缓存，防止把过期的旧成绩「复活」成新数据。
+    prev = player_cache_db.get(qqid, username, source, _cache_ttl_seconds())
     if prev is not None:
         if userinfo.charts is None and prev.userinfo.charts is not None:
             userinfo = prev.userinfo.model_copy(
@@ -480,7 +495,7 @@ async def resolve_player_records(
     fetch_fn 应返回 (userinfo, records)。
     """
     cached = get_cached_player(qqid, username, source, force_refresh=force_refresh)
-    if cached is not None:
+    if cached is not None and cached.records:
         return cached.userinfo, cached.records
     userinfo, records = await fetch_fn()
     save_cached_player(qqid, username, source, userinfo, records)
@@ -503,7 +518,10 @@ async def resolve_player_b50(
     if cached is not None and cached.userinfo.charts is not None:
         return regroup_b50_userinfo(cached.userinfo)
     userinfo = regroup_b50_userinfo(await fetch_b50_fn())
-    records = cached.records if cached is not None else []
+    # 只复用 SQLite 缓存中的近期 records；存档快照数据不能重新盖新时间戳
+    records = (
+        cached.records if (cached is not None and not cached.from_storage) else []
+    )
     save_cached_player(qqid, username, source, userinfo, records)
     _set_fetch_meta(time.time(), "api", force_refresh=force_refresh)
     return userinfo

@@ -86,7 +86,7 @@ from ..libraries.maimaidx_update_plate import *
 
 best50       = on_command('b50', aliases={'B50'})
 best_all50   = on_command('ab50', aliases={'a50', 'allb50'})
-refresh_b50  = on_command('刷新b50', aliases={'刷新成绩', '更新b50', '刷新B50'}, priority=20)
+refresh_b50  = on_command('刷新b50', aliases={'刷新成绩', '更新b50', '刷新B50'})
 coop_b50     = on_command('合作b50', aliases={'合作B50'})
 coop_ab50    = on_command('合作a50', aliases={'合作A50'})
 how_weak     = on_command('我有多菜', aliases={'我有多菜'})
@@ -292,10 +292,14 @@ async def _refresh_b50(
     message: Message = CommandArg(),
     user_id: Optional[int] = Depends(get_at_qq),
 ):
-    """强制从查分器拉取最新成绩后生成常规 b50。"""
+    """强制从查分器拉取最新成绩后生成常规 b50（绕过一切本地缓存）。"""
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'score'):
         raise IgnoredException('功能已禁用')
-    qqid = resolve_score_qqid(event, user_id)
+    try:
+        qqid = resolve_score_qqid(event, user_id)
+    except QBindRequiredError as e:
+        await plugin_finish(refresh_b50, str(e), event=event)
+        return
     username = message.extract_plain_text().strip()
     from ..libraries.maimaidx_datasource import get_user_records
     from ..libraries.maimaidx_break import break_billing
@@ -930,14 +934,13 @@ async def _difficulty_b50(event: MessageEvent, matched = RegexMatched()):
     difficulty = matched.group(1).strip() if matched and matched.group(1) else ''
     log.debug(f"[difficulty_b50] raw='{event.get_plaintext().strip()}', difficulty='{difficulty}'")
 
-    if not difficulty:
-        raise IgnoredException('empty difficulty b50')
-
+    # 无法解析为难度（如「这怎么更新b50」）时静默忽略，避免刷屏
     from ..libraries.maimaidx_difficulty_filter import DifficultyFilter
     try:
         DifficultyFilter.parse(difficulty)
     except ValueError:
-        raise IgnoredException(f'invalid difficulty b50: {difficulty}')
+        log.debug(f"[difficulty_b50] 忽略无效难度: '{difficulty}'")
+        return
 
     qqid = resolve_score_qqid(event)
     await _finish_score(
@@ -957,14 +960,13 @@ async def _difficulty_ab50(event: MessageEvent, matched = RegexMatched()):
     difficulty = matched.group(1).strip() if matched and matched.group(1) else ''
     log.debug(f"[difficulty_ab50] raw='{event.get_plaintext().strip()}', difficulty='{difficulty}'")
 
-    if not difficulty:
-        raise IgnoredException('empty difficulty ab50')
-
+    # 无法解析为难度时静默忽略，避免刷屏
     from ..libraries.maimaidx_difficulty_filter import DifficultyFilter
     try:
         DifficultyFilter.parse(difficulty)
     except ValueError:
-        raise IgnoredException(f'invalid difficulty ab50: {difficulty}')
+        log.debug(f"[difficulty_ab50] 忽略无效难度: '{difficulty}'")
+        return
 
     qqid = resolve_score_qqid(event)
     await _finish_score(

@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import re
 import time
 from typing import Callable, Optional
 
@@ -51,6 +52,16 @@ qrcode_auto_listener = on_regex(
     priority=50,
     block=False,
 )
+
+# maiu/maiul 由其他机器人负责上传查分器；本 bot 监听到后清除玩家缓存，
+# 保证上传完成后 b50 拉取的是查分器最新数据（而不是 15 分钟内的旧缓存）。
+maiu_cache_listener = on_regex(
+    r'^\s*maiul?\s*$',
+    flags=re.IGNORECASE,
+    priority=98,
+    block=False,
+)
+_MAIU_UPLOAD_GRACE_SECONDS = 120
 
 
 async def get_at_qq(message: MessageEvent) -> Optional[int]:
@@ -138,20 +149,28 @@ async def receive_qrcode(bot: Bot, event: GroupMessageEvent):
 
 def _default_pc_success_message(count: int, total_plays: int) -> str:
     return (
-        f'\n✅ 成绩数据更新完成！\n'
+        f'\n✅ 机台成绩已同步到 AWMC！\n'
         f'- 收录谱面: {count} 个\n'
         f'- 总游玩次数: {total_plays} 次\n\n'
-        f'可直接使用「b50」等指令查询成绩\n'
         f'使用「pc50」查看按次数排序的 B50\n'
         f'使用「pca50」查看 B50 内按 PC 排序\n'
         f'使用「游玩排行50」查看游玩最多的 50 首谱面\n'
         f'使用「我的pc数」查看详细数据\n'
-        f'使用「pc排行」查看全部用户 PC 排行'
+        f'使用「pc排行」查看全部用户 PC 排行\n\n'
+        f'⚠️ b50 等成绩指令以查分器数据为准，'
+        f'如需更新请使用 maiu（水鱼）/ maiul（落雪）上传成绩。'
     )
 
 
 async def _build_auto_qrcode_success_message(event: GroupMessageEvent, storage_qqid: int) -> str:
-    base_msg = '🤔 AWMC已根据您提供的二维码自动更新成绩，您可以直接使用b50等指令。'
+    """扫码自动同步成功后的提示。
+
+    b50 以查分器数据为准：与查分器比对——
+    一致：查分器最新数据已刷入玩家缓存，告知可直接使用 b50；
+    不一致：提示用 maiu/maiul 上传，并清除玩家缓存（见 awmc_differs_from_prober），
+    保证上传完成后 b50 拉取查分器最新数据。
+    """
+    base_msg = '🤔 AWMC已根据您提供的二维码同步机台成绩（可使用 pc50 / 我的pc数 等指令）。'
     try:
         score_qqid = resolve_score_qqid(event)
         source = get_user_source(score_qqid)
@@ -161,18 +180,25 @@ async def _build_auto_qrcode_success_message(event: GroupMessageEvent, storage_q
             source=source,
         ):
             base_msg += '\n' + sync_warning_for_source(source)
+        else:
+            base_msg += '\n✅ 机台成绩与查分器一致，可直接使用 b50 等指令。'
     except QBindRequiredError:
         base_msg += '\n' + SYNC_WARN_FISH
     return base_msg
 
 
 async def _sync_sdgb_qrcode(qqid: int, qrcode_data: str) -> int:
+    """扫码同步机台成绩到 AWMC 本地库（供 pc 类指令使用）。
+
+    b50 等成绩指令始终以查分器（水鱼/落雪）数据为准，机台数据不写入玩家缓存。
+    同步完成后清除该用户的玩家缓存，保证之后的 b50 拉取查分器最新数据。
+    """
     success = await playcount_fetcher.login_by_sdgb(qrcode_data, qqid)
     if not success:
         raise RuntimeError('凭据保存失败')
     count = await playcount_fetcher.fetch_via_sdgb_with_retry(qqid)
-    from ..libraries.maimaidx_awmc_cache import sync_awmc_scores_to_player_cache
-    sync_awmc_scores_to_player_cache(qqid)
+    from ..libraries.maimaidx_player_cache import invalidate_player_cache
+    invalidate_player_cache(qqid)
     return count
 
 
@@ -282,6 +308,29 @@ async def _auto_qrcode_update(bot: Bot, event: GroupMessageEvent):
         event,
         message=MessageSegment.reply(event.message_id) + MessageSegment.text(msg),
     )
+
+
+@maiu_cache_listener.handle()
+async def _maiu_invalidate_cache(event: MessageEvent):
+    """用户发送 maiu/maiul（由其他机器人上传查分器）时清除本 bot 的玩家缓存。
+
+    上传耗时不定：先立即清一次；再在宽限期后清一次，
+    防止用户在上传完成前查询 b50 又把旧数据缓存 15 分钟。
+    """
+    from ..libraries.maimaidx_player_cache import invalidate_player_cache
+    try:
+        qqid = resolve_score_qqid(event)
+    except QBindRequiredError:
+        return
+    invalidate_player_cache(qqid)
+    log.info(f'[MaiuCache] 检测到 maiu/maiul，已清除 qq={qqid} 玩家缓存')
+
+    async def _delayed_invalidate():
+        await asyncio.sleep(_MAIU_UPLOAD_GRACE_SECONDS)
+        invalidate_player_cache(qqid)
+        log.info(f'[MaiuCache] 上传宽限期结束，再次清除 qq={qqid} 玩家缓存')
+
+    asyncio.create_task(_delayed_invalidate())
 
 
 @my_pc.handle()

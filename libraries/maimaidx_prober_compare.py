@@ -17,10 +17,12 @@ LINK_TITLE = 'Link'
 ACH_EPSILON = 1e-4
 
 SYNC_WARN_FISH = (
-    '⚠️ 数据当前存储在AWMC，如果您想要同步到水鱼，请使用maiu指令。'
+    '⚠️ 机台成绩与水鱼查分器不一致（b50 以查分器数据为准），'
+    '请使用 maiu 指令将最新成绩上传到水鱼。'
 )
 SYNC_WARN_LXNS = (
-    '⚠️ 数据当前存储在AWMC，如果您想要同步到落雪，请使用maiul指令。'
+    '⚠️ 机台成绩与落雪查分器不一致（b50 以查分器数据为准），'
+    '请使用 maiul 指令将最新成绩上传到落雪。'
 )
 
 
@@ -106,4 +108,10 @@ async def awmc_differs_from_prober(
         f'[ProberCompare] qq={score_qqid} source={source} differs={differs} '
         f'awmc={len(awmc_records)} prober={len(prober_records)} ({time.perf_counter() - t0:.2f}s)'
     )
+    if differs:
+        # 查分器落后于机台，用户随后大概率会执行 maiu/maiul（由其他机器人上传）。
+        # 上面 force_refresh 拉取的「上传前」数据不能留在缓存里，否则上传完成后
+        # 15 分钟内 b50 仍显示旧成绩。清除缓存，让之后的 b50 直接拉查分器最新数据。
+        from .maimaidx_player_cache import invalidate_player_cache
+        invalidate_player_cache(score_qqid)
     return differs
