@@ -123,7 +123,7 @@ async def fetch_token(code: str) -> Dict[str, Any]:
         'redirect_uri': redirect_uri,
     }
 
-    timeout = httpx.Timeout(connect=10.0, read=20.0, write=20.0, pool=10.0)
+    timeout = httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(f'{_BASE_URL}/api/v0/oauth/token', json=payload)
         return _parse_oauth_token_response(resp, operation='OAuth 授权码兑换')
@@ -140,7 +140,7 @@ async def refresh_token(refresh_token: str) -> Dict[str, Any]:
         'grant_type': 'refresh_token',
         'refresh_token': refresh_token,
     }
-    timeout = httpx.Timeout(connect=10.0, read=20.0, write=20.0, pool=10.0)
+    timeout = httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(f'{_BASE_URL}/api/v0/oauth/token', json=payload)
         return _parse_oauth_token_response(resp, operation='OAuth Token 刷新')
@@ -328,12 +328,19 @@ async def user_upload_scores(access_token: str, scores: List[dict]) -> Dict[str,
 
     uploaded = 0
     started = time.time()
-    # 连接/读超时分开，避免单批卡死拖垮整次上传。
-    timeout = httpx.Timeout(connect=10.0, read=45.0, write=45.0, pool=10.0)
+    # 单批 HTTP 15s；多批另有总时限，避免「分批无超时」一直卡住。
+    timeout = httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0)
+    # 全量成绩可能分多批；总等待控制在约 45s（非无限），与 B50 的 15s 区分开。
+    overall_deadline = time.monotonic() + 45.0
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             # 控制单次请求体大小；成绩接口按谱面覆盖，分批重试是幂等的。
             for offset in range(0, len(scores), 500):
+                remaining = overall_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f'落雪成绩上传总超时（已写入 {uploaded}/{len(scores)} 条）'
+                    )
                 batch = scores[offset:offset + 500]
                 resp = await client.post(
                     f'{_BASE_URL}/api/v0/user/maimai/player/scores',

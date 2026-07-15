@@ -47,16 +47,19 @@ class Config(BaseModel):
     awmc_api_timeout_seconds: float = 120.0
     awmc_api_retry_count: int = 3
     awmc_api_retry_delay_seconds: float = 1.0
-    awmc_upload_poll_interval_seconds: float = 3.0
-    # 公共网关异步上传轮询上限；过长会让兼容 Token 路径表现为「卡住不动」。
-    awmc_upload_poll_timeout_seconds: float = 120.0
-    # 全量 user/music 超时与重试（落雪 OAuth 主路径依赖）。
-    awmc_user_music_timeout_seconds: float = 90.0
-    awmc_user_music_retry_count: int = 1
+    awmc_upload_poll_interval_seconds: float = 2.0
+    # 水鱼 / 落雪 B50 上传（update-fish / update-lx）单次 HTTP 超时。
+    awmc_b50_upload_timeout_seconds: float = 15.0
+    # 公共网关异步上传轮询上限；与 B50 上传同量级，避免任务轮询卡很久。
+    awmc_upload_poll_timeout_seconds: float = 15.0
+    # 全量 user/music（落雪 OAuth 主路径拉机台成绩）可比 B50 略长，但必须有硬上限。
+    # 这不是「两个」B50 上传接口；超时后立即失败，不再长时间挂起。
+    awmc_user_music_timeout_seconds: float = 30.0
+    awmc_user_music_retry_count: int = 0
     # PC / 水鱼 / 落雪依次使用同一机台会话时的间隔，避免登录互相挤掉。
     awmc_machine_step_delay_seconds: float = 3.0
     # 等待全局机台锁的最长时间（秒）；0=无限等待。超时返回「机台繁忙」。
-    awmc_machine_lock_timeout_seconds: float = 180.0
+    awmc_machine_lock_timeout_seconds: float = 60.0
     # 发票允许倍率，使用英文逗号分隔，例如 2,3,5。
     awmc_ticket_allowed_multipliers: str = '2,3,5'
     # 合并后的账号功能总开关；关闭时不注册外部调用，但本地查分不受影响。

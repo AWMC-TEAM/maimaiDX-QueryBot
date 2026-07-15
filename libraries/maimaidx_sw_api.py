@@ -284,6 +284,12 @@ class SwApiClient:
         )
         return res.json()
 
+    def _b50_upload_timeout(self) -> float:
+        return max(
+            1.0,
+            float(getattr(maiconfig, "awmc_b50_upload_timeout_seconds", 15.0)),
+        )
+
     async def get_user_music(
         self,
         qrcode: str,
@@ -293,17 +299,16 @@ class SwApiClient:
     ) -> List[dict]:
         if self.api_mode == "public":
             raise SwApiError("AWMC 公共网关暂不提供 PC 全量数据接口")
-        # 全量成绩本身较慢；超时后再叠默认 3 次重试会让落雪 OAuth 上传静默卡数分钟。
-        # 默认最多再试 1 次（共 2 次）；上传场景可再收紧 timeout/retry。
+        # 全量成绩可比 B50 上传略慢（默认 30s），但禁止长重试把 OAuth 上传拖成「一直卡住」。
         music_timeout = float(
             timeout
             if timeout is not None
-            else getattr(maiconfig, "awmc_user_music_timeout_seconds", 90.0)
+            else getattr(maiconfig, "awmc_user_music_timeout_seconds", 30.0)
         )
         music_retries = (
             retry_count
             if retry_count is not None
-            else int(getattr(maiconfig, "awmc_user_music_retry_count", 1))
+            else int(getattr(maiconfig, "awmc_user_music_retry_count", 0))
         )
         log.info(
             f"[SwApi] 开始拉取谱面成绩 timeout={music_timeout:.0f}s "
@@ -322,38 +327,41 @@ class SwApiClient:
         return detail_list
 
     async def update_fish(self, qrcode: str, token: str) -> dict:
+        # 与落雪 B50 上传同为 15s 硬超时，失败快返，不做长等待重试。
+        upload_timeout = self._b50_upload_timeout()
         if self.api_mode == "public":
             return await self._request(
                 "POST",
                 "/v1/upload_b50",
                 params={"qr_text": qrcode, "fish_token": token},
-                timeout=180,
+                timeout=upload_timeout,
                 retry_count=0,
             )
         data = await self._request(
             "POST",
             "/awmc/api/v1/update-fish",
             json_body=self._machine_body(qrcode, token=token),
-            timeout=90,
-            retry_count=1,
+            timeout=upload_timeout,
+            retry_count=0,
         )
         return self._parse_envelope(data)
 
     async def update_lx(self, qrcode: str, import_token: str) -> dict:
-        # 兼容 Token 路径易在网关侧长时间无响应；严格超时 + 少重试，避免「卡住不动」。
+        # 兼容 Token 备选路径；严格 15s 超时 + 零重试，避免「卡住不动」。
+        upload_timeout = self._b50_upload_timeout()
         if self.api_mode == "public":
             return await self._request(
                 "POST",
                 "/v1/upload_lx_b50",
                 params={"qr_text": qrcode, "lxns_code": import_token},
-                timeout=120,
+                timeout=upload_timeout,
                 retry_count=0,
             )
         data = await self._request(
             "POST",
             "/awmc/api/v1/update-lx",
             json_body=self._machine_body(qrcode, key=import_token, type="maimai"),
-            timeout=90,
+            timeout=upload_timeout,
             retry_count=0,
         )
         return self._parse_envelope(data)
@@ -363,7 +371,10 @@ class SwApiClient:
         if self.api_mode != "public":
             raise SwApiError("team 模式没有异步上传任务")
         path = "/v1/get_lx_b50_task_byid" if lxns else "/v1/get_b50_task_byid"
-        return await self._request("GET", path, params={"task_id": task_id}, timeout=30)
+        # 单次查询超时需远小于轮询总预算，避免一次卡住耗尽 15s。
+        return await self._request(
+            "GET", path, params={"task_id": task_id}, timeout=5, retry_count=0
+        )
 
     async def charge_ticket(self, qrcode: str, charge_id: int) -> dict:
         if self.api_mode == "public":
@@ -399,14 +410,21 @@ class SwApiClient:
 
     async def get_user_preview(self, qrcode: str) -> dict:
         """读取绑定账号摘要；兼容公共网关与自建 sw-api。"""
+        # 上传前验码也会走这里；显式短超时，避免沿用默认 120s×重试。
         if self.api_mode == "public":
             return await self._request(
-                "GET", "/v1/get_preview", params={"qr_text": qrcode}
+                "GET",
+                "/v1/get_preview",
+                params={"qr_text": qrcode},
+                timeout=15,
+                retry_count=0,
             )
         data = await self._request(
             "POST",
             "/awmc/api/v1/user/data",
             json_body={"qrcode": qrcode, "keychip": maiconfig.sdgbt_client_id},
+            timeout=15,
+            retry_count=0,
         )
         return self._parse_envelope(data)
 

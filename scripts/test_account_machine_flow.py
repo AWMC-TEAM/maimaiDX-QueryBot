@@ -122,6 +122,7 @@ assert fake_db.saved[1]["scope"] == "read_player write_player"
 upload_src = (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert "不再回退 update_lx" in upload_src
 assert "OAuth Token 已失效且自动刷新失败" in upload_src
+assert "仅无 OAuth 时才用导入 Token" in upload_src
 fallback_block = (
     "if not binding.lxns_token:\n"
     "                        raise RuntimeError(\n"
@@ -135,6 +136,21 @@ assert fallback_block not in upload_src
 
 sw_api_src = (ROOT / "libraries" / "maimaidx_sw_api.py").read_text(encoding="utf-8")
 assert "awmc_user_music_timeout_seconds" in sw_api_src
-assert 'timeout=90,\n            retry_count=0,' in sw_api_src  # update_lx team 快失败
+assert "awmc_b50_upload_timeout_seconds" in sw_api_src
+assert "_b50_upload_timeout" in sw_api_src
+# B50 上传（水鱼 + 落雪）统一 15s 硬超时，零重试。
+assert "upload_timeout = self._b50_upload_timeout()" in sw_api_src
+assert "retry_count=0" in sw_api_src
+
+config_src = (ROOT / "config.py").read_text(encoding="utf-8")
+assert "awmc_b50_upload_timeout_seconds: float = 15.0" in config_src
+assert "awmc_upload_poll_timeout_seconds: float = 15.0" in config_src
+assert "awmc_user_music_timeout_seconds: float = 30.0" in config_src
+
+lxns_client_src = (ROOT / "libraries" / "maimaidx_lxns_client.py").read_text(
+    encoding="utf-8"
+)
+assert "read=15.0" in lxns_client_src
+assert "overall_deadline" in lxns_client_src
 
 print("account machine flow tests: ok")

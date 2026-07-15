@@ -500,11 +500,11 @@ async def _await_upload_success(result: dict, *, lxns: bool) -> dict:
     if not task_id or result.get("sync") is True:
         return result
     interval = max(
-        1.0, float(getattr(maiconfig, "awmc_upload_poll_interval_seconds", 3.0))
+        1.0, float(getattr(maiconfig, "awmc_upload_poll_interval_seconds", 2.0))
     )
-    # 默认 120s：旧 600s 会让兼容 Token 路径在网关卡住时表现为「上传不动」。
+    # 与 B50 上传同量级（默认 15s）；旧 120/600s 会表现为「上传不动」。
     timeout = max(
-        interval, float(getattr(maiconfig, "awmc_upload_poll_timeout_seconds", 120.0))
+        interval, float(getattr(maiconfig, "awmc_upload_poll_timeout_seconds", 15.0))
     )
     deadline = time.monotonic() + timeout
     log.info(
@@ -1033,7 +1033,14 @@ async def _upload(
                 lxns_stage = "读取玩家 PC 数据"
                 try:
                     log.info(f"[upload] 落雪 OAuth：开始读取机台成绩 user={key}")
-                    raw_scores = await sw_api.get_user_music(qrcode)
+                    music_timeout = float(
+                        getattr(maiconfig, "awmc_user_music_timeout_seconds", 30.0)
+                    )
+                    raw_scores = await sw_api.get_user_music(
+                        qrcode,
+                        timeout=music_timeout,
+                        retry_count=0,
+                    )
                     scores = convert_sega_music_scores(raw_scores)
                     if not scores:
                         raise RuntimeError("机台返回的成绩无法转换为落雪 Score")
@@ -1059,6 +1066,7 @@ async def _upload(
                         + "。请修正后重新发送 lxbind 授权并重试"
                     ) from exc
             else:
+                # 备选：仅无 OAuth 时才用导入 Token（mai绑定落雪 / lxns_token）。
                 log.info(f"[upload] 落雪兼容 Token：开始 update_lx user={key}")
                 result = await sw_api.update_lx(qrcode, binding.lxns_token)
                 result = await _await_upload_success(result, lxns=True)

@@ -69,7 +69,13 @@ async def _get_valid_access_token(
 ) -> Optional[str]:
     """获取有效的 OAuth access_token（自动刷新过期 token）。"""
     lock = _oauth_refresh_locks.setdefault(qqid, asyncio.Lock())
-    async with lock:
+    # 刷新锁也必须有等待上限，避免并发上传无限卡在 refresh。
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=25.0)
+    except asyncio.TimeoutError:
+        log.warning(f'[lxns] refresh lock timeout for qq={qqid}')
+        return None
+    try:
         # 等锁期间可能已有另一个请求刷新完成，因此必须重新读取数据库。
         db_row = lxns_db.get_user(qqid)
         if not db_row:
@@ -82,6 +88,8 @@ async def _get_valid_access_token(
             return access_token
 
         return await _do_token_refresh(qqid, db_row)
+    finally:
+        lock.release()
 
 
 # ─────────────────────────── lxbind ───────────────────────────
