@@ -7,7 +7,7 @@ from typing import Dict, Iterable, List, Literal, Optional, Set, Tuple
 
 from nonebot import get_bots, get_driver
 
-from ..config import log
+from ..config import BOT_QQ_GROUP, log
 from .maimaidx_platform import send_group_plain_text
 
 SHUTDOWN_NOTICE = '机器人程序因更新重启'
@@ -144,19 +144,26 @@ async def notify_shutdown(targets: Iterable[PendingTarget]) -> None:
         await _send_notice(target, text)
 
 
+def _shutdown_notice_target() -> PendingTarget:
+    """关机重启通知只发往配置的通知群（默认 BOT_QQ_GROUP）。"""
+    return PendingTarget('group', str(BOT_QQ_GROUP))
+
+
 driver = get_driver()
 
 
 @driver.on_shutdown
 async def _on_maimaidx_shutdown() -> None:
-    """关机时向有未完成交互的会话发送提示，并结束这些任务。"""
+    """关机时清理未完成交互，并向通知群发送重启提示（不广播到其它会话）。"""
+    cleaned = 0
     try:
         targets = await collect_cleanup_targets()
+        cleaned = len(targets)
     except Exception as exc:
         log.error(f'[shutdown] 收集未完成任务失败: {type(exc).__name__}: {exc}')
-        return
-    if not targets:
-        log.info('[shutdown] 无进行中交互，跳过重启通知')
-        return
-    log.info(f'[shutdown] 向 {len(targets)} 个会话发送「{SHUTDOWN_NOTICE}」')
-    await notify_shutdown(targets)
+    notice = _shutdown_notice_target()
+    log.info(
+        f'[shutdown] 已清理 {cleaned} 个会话目标；'
+        f'向通知群 {notice.target_id} 发送「{SHUTDOWN_NOTICE}」'
+    )
+    await notify_shutdown([notice])
