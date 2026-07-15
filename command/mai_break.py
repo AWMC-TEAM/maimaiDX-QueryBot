@@ -13,6 +13,8 @@ from ..libraries.maimaidx_break import (
     format_checkin_result,
     get_account_profile,
 )
+from ..libraries.maimaidx_platform import billing_user_id
+from .mai_agreement import agreement_prompt, has_user_agreed
 
 awmc_checkin = on_command('AWMC签到', aliases={'签到', 'awmc签到'})
 my_awmc = on_command('我的AWMC', aliases={'AWMC状态', '我的账号'})
@@ -21,6 +23,21 @@ awmc_admin_add = on_command('增减BREAK', permission=SUPERUSER)
 awmc_admin_config = on_command('BREAK配置', permission=SUPERUSER)
 awmc_admin_view = on_command('查看AWMC', permission=SUPERUSER)
 awmc_help = on_command('AWMC帮助', aliases={'BREAK帮助'})
+break_transfer = on_command('转账BREAK', aliases={'BREAK转账'})
+break_lottery = on_command('BREAK抽奖', aliases={'抽奖BREAK'})
+
+LOTTERY_HELP = (
+    '【BREAK 抽奖】\n'
+    '这是 Bot 内部的群互动消耗玩法，BREAK 不具有现金价值。\n'
+    '默认每次消耗 2 BREAK，奖池为：\n'
+    '· 0 BREAK：55%\n'
+    '· 1 BREAK：25%\n'
+    '· 2 BREAK：15%\n'
+    '· 5 BREAK：5%\n'
+    '用法：BREAK抽奖 [次数]\n'
+    '例：“BREAK抽奖”抽 1 次，“BREAK抽奖 5”连抽 5 次。\n'
+    '单次最多 10 连抽；长期期望为净消耗，用于控制 BREAK 通胀。'
+)
 
 
 def get_at_qq(message: MessageEvent) -> Optional[int]:
@@ -30,22 +47,74 @@ def get_at_qq(message: MessageEvent) -> Optional[int]:
     return None
 
 
+async def _require_break_agreement(matcher, event: MessageEvent) -> None:
+    if not has_user_agreed(event):
+        await matcher.finish(agreement_prompt(), reply_message=True)
+
+
 @awmc_help.handle()
 async def _():
     text = (
         '【AWMC BREAK 系统】\n'
-        '· AWMC签到 — 每日签到获取 BREAK（随机 1~5，含加成与连续奖励）\n'
+        '· AWMC签到 — 每日签到获取 BREAK（基础 1~2，连续签到逐步增加，最高额外 +2）\n'
+        '· 猜歌 — 每次猜对奖励 1 BREAK，无每日上限\n'
+        '· 转账BREAK @用户 数量 — 转给其他用户\n'
+        '· BREAK抽奖 [1-10] — 每次默认消耗 2 BREAK，发送“BREAK抽奖 帮助”看奖池\n'
         '· 我的AWMC — 查看账号状态与使用统计\n'
         '· 查分指令 — 每日首次实际请求查分器 API 免费，之后每次扣 1 BREAK（缓存命中不扣）\n'
         + format_analysis_pricing_help()
         + '· BREAK 不足时请先签到\n\n'
         '【签到加成（加算）】\n'
-        '· 指定群 1072033605 +50%\n'
-        '· 周四 +100%\n'
-        '· 群内当日首签 +100%\n'
+        '· 指定群 1072033605 +25%\n'
+        '· 周四 +50%\n'
+        '· 群内当日首签 +50%\n'
         '· 连续签到额外奖励'
     )
     await awmc_help.finish(text, reply_message=True)
+
+
+@break_transfer.handle()
+async def _(
+    event: MessageEvent,
+    message: Message = CommandArg(),
+    user_id: Optional[int] = Depends(get_at_qq),
+):
+    await _require_break_agreement(break_transfer, event)
+    parts = message.extract_plain_text().strip().split()
+    target = user_id
+    if target is None and parts and parts[0].isdigit():
+        target = int(parts.pop(0))
+    amount = int(parts[-1]) if parts and parts[-1].isdigit() else 0
+    if target is None or amount <= 0:
+        await break_transfer.finish('用法：转账BREAK @用户 数量', reply_message=True)
+    try:
+        result = break_db.transfer(int(billing_user_id(event)), target, amount)
+    except Exception as exc:
+        await break_transfer.finish(f'转账失败：{exc}', reply_message=True)
+    fee_text = f'（手续费 {result.fee}）' if result.fee else ''
+    await break_transfer.finish(
+        f'转账成功：{result.amount} BREAK {fee_text}\n当前余额：{result.sender_balance}',
+        reply_message=True,
+    )
+
+
+@break_lottery.handle()
+async def _(event: MessageEvent, message: Message = CommandArg()):
+    raw = message.extract_plain_text().strip() or '1'
+    if raw.lower() in {'帮助', '说明', 'help', '?'}:
+        await break_lottery.finish(LOTTERY_HELP, reply_message=True)
+    await _require_break_agreement(break_lottery, event)
+    if not raw.isdigit() or not 1 <= int(raw) <= 10:
+        await break_lottery.finish('用法：BREAK抽奖 [1-10]', reply_message=True)
+    try:
+        result = break_db.lottery(int(billing_user_id(event)), int(raw))
+    except Exception as exc:
+        await break_lottery.finish(f'抽奖失败：{exc}', reply_message=True)
+    await break_lottery.finish(
+        f'抽奖 {result.count} 次\n消耗：{result.cost} BREAK\n'
+        f'获得：{result.prize} BREAK\n当前余额：{result.balance}',
+        reply_message=True,
+    )
 
 
 @awmc_checkin.handle()

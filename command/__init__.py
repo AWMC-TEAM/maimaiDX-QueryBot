@@ -1,4 +1,7 @@
 from .mai_alias import *
+from .mai_admin_runtime import *
+from .mai_agreement import *
+from .mai_account import *
 from .mai_base import *
 from .mai_break import *
 from .mai_b50_analysis import *

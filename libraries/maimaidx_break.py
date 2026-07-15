@@ -16,8 +16,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from threading import Lock
-from typing import Any, Dict, List, Optional
+from threading import RLock
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -29,9 +29,28 @@ DB_PATH = DB_DIR / 'break.db'
 
 DEFAULT_CONFIG: Dict[str, str] = {
     'checkin_base_min': '1',
-    'checkin_base_max': '5',
+    'checkin_base_max': '2',
     'query_cost': '1',
     'analysis_cost': '3',
+    # 第 1～7 天的额外奖励；第 7 天以后保持最后一档。
+    'streak_bonus': '0,0,1,1,1,2,2',
+    'bonus_group_1072033605': '0.25',
+    'bonus_thursday': '0.5',
+    'bonus_group_first': '0.5',
+    # 猜对每次固定奖励，不设每日上限，避免被分数倍率放大。
+    'guess_break_per_correct': '1',
+    # 上传/发票仅在外部操作成功后结算，各自每日首次免费。
+    'upload_fish_cost': '2',
+    'upload_lx_cost': '2',
+    'upload_all_cost': '3',
+    'ticket_cost_per_multiplier': '2',
+    'transfer_fee': '0',
+    'lottery_cost': '2',
+}
+
+LEGACY_ECONOMY_DEFAULTS: Dict[str, str] = {
+    'checkin_base_min': '1',
+    'checkin_base_max': '5',
     'streak_bonus': '3,5,8,12,20',
     'bonus_group_1072033605': '0.5',
     'bonus_thursday': '1.0',
@@ -82,6 +101,26 @@ CREATE TABLE IF NOT EXISTS break_log (
     created_at  REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_break_log_qqid ON break_log(qqid, created_at DESC);
+CREATE TABLE IF NOT EXISTS break_guess_daily (
+    qqid            INTEGER NOT NULL,
+    date            TEXT NOT NULL,
+    guess_points    INTEGER NOT NULL DEFAULT 0,
+    break_awarded   INTEGER NOT NULL DEFAULT 0,
+    last_at         REAL NOT NULL,
+    PRIMARY KEY (qqid, date)
+);
+CREATE TABLE IF NOT EXISTS break_service_daily (
+    qqid          INTEGER NOT NULL,
+    date          TEXT NOT NULL,
+    service       TEXT NOT NULL,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    free_used     INTEGER NOT NULL DEFAULT 0,
+    break_spent   INTEGER NOT NULL DEFAULT 0,
+    last_at       REAL NOT NULL,
+    PRIMARY KEY (qqid, date, service)
+);
+CREATE INDEX IF NOT EXISTS idx_break_service_daily
+    ON break_service_daily(date, service);
 """
 
 
@@ -123,9 +162,44 @@ class CheckinResult:
     base: int
     multiplier_sum: float
     base_min: int = 1
-    base_max: int = 5
+    base_max: int = 2
     bonus_labels: List[str] = field(default_factory=list)
     already_checked: bool = False
+
+
+@dataclass
+class GuessBreakReward:
+    points_added: int
+    daily_points: int
+    break_added: int
+    daily_break: int
+    daily_cap: int
+    points_per_break: int
+    balance: int
+
+
+@dataclass
+class ServiceChargeResult:
+    service: str
+    charged: int
+    free: bool
+    balance: int
+
+
+@dataclass
+class TransferResult:
+    sender_balance: int
+    recipient_balance: int
+    amount: int
+    fee: int
+
+
+@dataclass
+class LotteryResult:
+    count: int
+    cost: int
+    prize: int
+    balance: int
 
 
 def _parse_config_int(raw: str, default: int) -> int:
@@ -137,7 +211,7 @@ def _parse_config_int(raw: str, default: int) -> int:
 
 class BreakDatabase:
     _instance = None
-    _lock = Lock()
+    _lock = RLock()
 
     def __new__(cls):
         if cls._instance is None:
@@ -165,6 +239,24 @@ class BreakDatabase:
                 (key, value),
             )
         self._conn.commit()
+        self._migrate_legacy_economy_defaults()
+
+    def _migrate_legacy_economy_defaults(self) -> None:
+        """仅替换仍等于旧默认值的配置，保留管理员自定义数据。"""
+        changed = False
+        for key, old_value in LEGACY_ECONOMY_DEFAULTS.items():
+            row = self._conn.execute(
+                'SELECT value FROM break_config WHERE key = ?', (key,)
+            ).fetchone()
+            if row and str(row['value']) == old_value:
+                self._conn.execute(
+                    'UPDATE break_config SET value = ? WHERE key = ?',
+                    (DEFAULT_CONFIG[key], key),
+                )
+                changed = True
+        if changed:
+            self._conn.commit()
+            log.info('[BREAK] 已将旧版高通胀签到默认值迁移为温和配置')
 
     def get_config(self, key: str, default: str = '') -> str:
         row = self._conn.execute(
@@ -343,6 +435,217 @@ class BreakDatabase:
         self._conn.commit()
         return self.get_balance(qqid)
 
+    def service_is_free(self, qqid: int, service: str) -> bool:
+        row = self._conn.execute(
+            """SELECT free_used FROM break_service_daily
+               WHERE qqid=? AND date=? AND service=?""",
+            (qqid, self._today(), service),
+        ).fetchone()
+        return not row or int(row['free_used']) == 0
+
+    def ensure_service_affordable(self, qqid: int, service: str, cost: int) -> None:
+        """外部业务请求前检查；真正扣费必须在成功后调用 settle_service_success。"""
+        if self.service_is_free(qqid, service):
+            return
+        balance = self.get_balance(qqid)
+        if balance < max(0, int(cost)):
+            raise BreakInsufficientError(max(0, int(cost)), balance, qqid=qqid)
+
+    def settle_service_success(
+        self,
+        qqid: int,
+        service: str,
+        cost: int,
+        *,
+        meta: Optional[dict] = None,
+    ) -> ServiceChargeResult:
+        """成功业务原子结算：每项服务每日首次免费，后续按配置扣费。"""
+        cost = max(0, int(cost))
+        self._ensure_user(qqid)
+        self._ensure_daily(qqid)
+        today, now = self._today(), time.time()
+        with self._lock:
+            self._conn.execute(
+                """INSERT OR IGNORE INTO break_service_daily
+                   (qqid, date, service, success_count, free_used, break_spent, last_at)
+                   VALUES (?, ?, ?, 0, 0, 0, ?)""",
+                (qqid, today, service, now),
+            )
+            row = self._conn.execute(
+                """SELECT free_used FROM break_service_daily
+                   WHERE qqid=? AND date=? AND service=?""",
+                (qqid, today, service),
+            ).fetchone()
+            free = not row or int(row['free_used']) == 0
+            charged = 0 if free else cost
+            balance = self.get_balance(qqid)
+            if charged and balance < charged:
+                raise BreakInsufficientError(charged, balance, qqid=qqid)
+            self._conn.execute(
+                """UPDATE break_service_daily SET success_count=success_count+1,
+                   free_used=1, break_spent=break_spent+?, last_at=?
+                   WHERE qqid=? AND date=? AND service=?""",
+                (charged, now, qqid, today, service),
+            )
+            if charged:
+                self._conn.execute(
+                    'UPDATE break_users SET balance=balance-?, updated_at=? WHERE qqid=?',
+                    (charged, now, qqid),
+                )
+                self._conn.execute(
+                    """UPDATE break_daily_usage SET break_spent=break_spent+?
+                       WHERE qqid=? AND date=?""",
+                    (charged, qqid, today),
+                )
+            detail = dict(meta or {})
+            detail.update({'service': service, 'free': free, 'listed_cost': cost})
+            self._append_log(qqid, -charged, f'service:{service}', meta=detail)
+            self._conn.commit()
+            balance -= charged
+        return ServiceChargeResult(service, charged, free, balance)
+
+    def transfer(self, sender: int, recipient: int, amount: int) -> TransferResult:
+        amount = int(amount)
+        if amount <= 0 or sender == recipient:
+            raise ValueError('转账数量必须大于 0，且不能转给自己')
+        fee = max(0, _parse_config_int(self.get_config('transfer_fee', '0'), 0))
+        self._ensure_user(sender)
+        self._ensure_user(recipient)
+        self._ensure_daily(sender)
+        self._ensure_daily(recipient)
+        with self._lock:
+            sender_balance = self.get_balance(sender)
+            total = amount + fee
+            if sender_balance < total:
+                raise BreakInsufficientError(total, sender_balance, qqid=sender)
+            now = time.time()
+            self._conn.execute(
+                'UPDATE break_users SET balance=balance-?, updated_at=? WHERE qqid=?',
+                (total, now, sender),
+            )
+            self._conn.execute(
+                'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
+                (amount, now, recipient),
+            )
+            self._conn.execute(
+                'UPDATE break_daily_usage SET break_spent=break_spent+? WHERE qqid=? AND date=?',
+                (total, sender, self._today()),
+            )
+            self._conn.execute(
+                'UPDATE break_daily_usage SET break_gained=break_gained+? WHERE qqid=? AND date=?',
+                (amount, recipient, self._today()),
+            )
+            self._append_log(sender, -total, 'transfer_out', meta={'to': recipient, 'amount': amount, 'fee': fee})
+            self._append_log(recipient, amount, 'transfer_in', meta={'from': sender, 'amount': amount})
+            self._conn.commit()
+            return TransferResult(sender_balance-total, self.get_balance(recipient), amount, fee)
+
+    def lottery(self, qqid: int, count: int = 1) -> LotteryResult:
+        count = max(1, min(int(count), 10))
+        unit_cost = max(1, _parse_config_int(self.get_config('lottery_cost', '2'), 2))
+        cost = unit_cost * count
+        self._ensure_user(qqid)
+        self._ensure_daily(qqid)
+        with self._lock:
+            balance = self.get_balance(qqid)
+            if balance < cost:
+                raise BreakInsufficientError(cost, balance, qqid=qqid)
+            prizes = random.choices([0, 1, 2, 5], weights=[55, 25, 15, 5], k=count)
+            prize = sum(prizes)
+            net = prize - cost
+            now = time.time()
+            self._conn.execute(
+                'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
+                (net, now, qqid),
+            )
+            self._conn.execute(
+                """UPDATE break_daily_usage SET break_spent=break_spent+?,
+                   break_gained=break_gained+? WHERE qqid=? AND date=?""",
+                (cost, prize, qqid, self._today()),
+            )
+            self._append_log(
+                qqid, net, 'lottery',
+                meta={'count': count, 'cost': cost, 'prizes': prizes, 'prize': prize},
+            )
+            self._conn.commit()
+            return LotteryResult(count, cost, prize, balance + net)
+
+    def award_guess_points(
+        self,
+        qqid: int,
+        points: int,
+        *,
+        group_id: Optional[str] = None,
+    ) -> GuessBreakReward:
+        """每次猜对固定发 BREAK；分数仅作排行统计，不放大奖励。"""
+        points = max(0, int(points))
+        reward = max(0, _parse_config_int(
+            self.get_config('guess_break_per_correct', '1'), 1
+        ))
+        self._ensure_user(qqid)
+        self._ensure_daily(qqid)
+        today = self._today()
+        now = time.time()
+        with self._lock:
+            self._conn.execute(
+                """INSERT OR IGNORE INTO break_guess_daily
+                   (qqid, date, guess_points, break_awarded, last_at)
+                   VALUES (?, ?, 0, 0, ?)""",
+                (qqid, today, now),
+            )
+            self._conn.execute(
+                """UPDATE break_guess_daily
+                   SET guess_points = guess_points + ?, last_at = ?
+                   WHERE qqid = ? AND date = ?""",
+                (points, now, qqid, today),
+            )
+            row = self._conn.execute(
+                """SELECT guess_points, break_awarded FROM break_guess_daily
+                   WHERE qqid = ? AND date = ?""",
+                (qqid, today),
+            ).fetchone()
+            daily_points = int(row['guess_points'])
+            already = int(row['break_awarded'])
+            if reward:
+                self._conn.execute(
+                    """UPDATE break_guess_daily SET break_awarded = break_awarded + ?
+                       WHERE qqid = ? AND date = ?""",
+                    (reward, qqid, today),
+                )
+                self._conn.execute(
+                    """UPDATE break_users SET balance = balance + ?, updated_at = ?
+                       WHERE qqid = ?""",
+                    (reward, now, qqid),
+                )
+                self._conn.execute(
+                    """UPDATE break_daily_usage SET break_gained = break_gained + ?
+                       WHERE qqid = ? AND date = ?""",
+                    (reward, qqid, today),
+                )
+                self._append_log(
+                    qqid, reward, 'guess_reward',
+                    meta={
+                        'points_added': points,
+                        'daily_points': daily_points,
+                        'daily_break': already + reward,
+                        'daily_cap': 0,
+                        'group_id': group_id,
+                    },
+                )
+            self._conn.commit()
+            balance_row = self._conn.execute(
+                'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
+            ).fetchone()
+        return GuessBreakReward(
+            points_added=points,
+            daily_points=daily_points,
+            break_added=reward,
+            daily_break=already + reward,
+            daily_cap=0,
+            points_per_break=0,
+            balance=int(balance_row['balance']) if balance_row else 0,
+        )
+
     def admin_set_balance(self, qqid: int, balance: int) -> int:
         self._ensure_user(qqid)
         row = self._conn.execute(
@@ -387,6 +690,56 @@ class BreakDatabase:
             for r in rows
         ]
 
+    def list_users(self, *, limit: int = 100, offset: int = 0, search: str = '') -> List[dict]:
+        clauses, params = [], []
+        if search:
+            clauses.append('CAST(qqid AS TEXT) LIKE ?')
+            params.append(f'%{search}%')
+        where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
+        params.extend([max(1, min(limit, 500)), max(0, offset)])
+        rows = self._conn.execute(
+            'SELECT * FROM break_users' + where + ' ORDER BY updated_at DESC LIMIT ? OFFSET ?',
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_users(self) -> int:
+        row = self._conn.execute('SELECT COUNT(*) AS c FROM break_users').fetchone()
+        return int(row['c']) if row else 0
+
+    def economy_report(self, days: int = 30) -> List[dict]:
+        from datetime import timedelta
+
+        since = (date.today() - timedelta(days=max(1, days) - 1)).isoformat()
+        rows = self._conn.execute(
+            """SELECT date, SUM(break_gained) AS gained, SUM(break_spent) AS spent,
+                      SUM(query_count) AS queries, SUM(analysis_count) AS analyses,
+                      COUNT(DISTINCT qqid) AS active_users
+               FROM break_daily_usage WHERE date >= ?
+               GROUP BY date ORDER BY date""",
+            (since,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_break_calls(
+        self, *, limit: int = 200, offset: int = 0, user_id: str = '', reason: str = ''
+    ) -> List[dict]:
+        clauses, params = [], []
+        if user_id:
+            clauses.append('CAST(qqid AS TEXT) LIKE ?')
+            params.append(f'%{user_id}%')
+        if reason:
+            clauses.append('reason LIKE ?')
+            params.append(f'%{reason}%')
+        where = ' WHERE ' + ' AND '.join(clauses) if clauses else ''
+        params.extend([max(1, min(limit, 500)), max(0, offset)])
+        rows = self._conn.execute(
+            """SELECT id, qqid AS user_id, delta, reason, meta, created_at
+               FROM break_log""" + where + ' ORDER BY id DESC LIMIT ? OFFSET ?',
+            params,
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def is_checked_in_today(self, qqid: int) -> bool:
         row = self.get_user_row(qqid)
         return row.get('last_checkin_date') == self._today()
@@ -401,7 +754,7 @@ class BreakDatabase:
 
     def _checkin_base_range(self) -> tuple[int, int]:
         lo = _parse_config_int(self.get_config('checkin_base_min', DEFAULT_CONFIG['checkin_base_min']), 1)
-        hi = _parse_config_int(self.get_config('checkin_base_max', DEFAULT_CONFIG['checkin_base_max']), 5)
+        hi = _parse_config_int(self.get_config('checkin_base_max', DEFAULT_CONFIG['checkin_base_max']), 2)
         if lo > hi:
             lo, hi = hi, lo
         return lo, hi
@@ -802,6 +1155,7 @@ def format_account_profile(profile: AccountProfile, *, title: str = '我的 AWMC
             'query': '查分',
             'checkin': '签到',
             'b50_analysis': '分析b50',
+            'guess_reward': '猜歌奖励',
             'admin_set': '管理员设置',
             'admin_add': '管理员调整',
         }

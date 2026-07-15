@@ -1,6 +1,4 @@
 import asyncio
-import base64
-import json
 import re
 import time
 from typing import Callable, Optional
@@ -9,15 +7,14 @@ from nonebot import on_command, on_regex
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment
 from nonebot.exception import IgnoredException
 from nonebot.matcher import Matcher
-from nonebot.params import CommandArg, Depends, RegexStr
-from nonebot.rule import Rule
+from nonebot.params import CommandArg, Depends
 
-from ..config import log, maiconfig
+from ..config import log
 from ..libraries.maimaidx_best_50 import generate_pc50, generate_pca50, generate_pc_rank50
 from ..libraries.maimaidx_datasource import get_user_source
 from ..libraries.maimaidx_error import QBindRequiredError
 from ..libraries.maimaidx_music import feature_manager
-from ..libraries.maimaidx_platform import resolve_score_qqid
+from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_playcount_fetcher import playcount_fetcher
 from ..libraries.maimaidx_prober_compare import (
@@ -38,19 +35,17 @@ pc_rank50 = on_command('游玩排行50', aliases={'游玩PC50', 'PC游玩50', 'p
 _waiting_qrcode: dict[int, bool] = {}
 _qrcode_auto_dedupe: dict[tuple[int, str], float] = {}
 _qrcode_auto_processing: set[int] = set()
+_qrcode_retry_state: dict[int, tuple[int, float]] = {}
 _QRCODE_AUTO_DEDUPE_SECONDS = 60
+_QRCODE_RETRY_WINDOW_SECONDS = 180
 
 
-def _is_group_message(event: MessageEvent) -> bool:
-    return isinstance(event, GroupMessageEvent)
-
-
-# 仅匹配含 SGWCMAID 的群消息，避免 on_message 全量监听
+# 仅拦截“直接发送”的 SGWCMAID；mai绑定等显式命令仍交给命令处理器。
+# 优先级 1 + block=True 确保先撤回敏感凭据，再做任何外部请求。
 qrcode_auto_listener = on_regex(
-    r'SGWCMAID',
-    rule=Rule(_is_group_message),
-    priority=50,
-    block=False,
+    r'^\s*SGWCMAID',
+    priority=1,
+    block=True,
 )
 
 # maiu/maiul 由其他机器人负责上传查分器；本 bot 监听到后清除玩家缓存，
@@ -109,6 +104,26 @@ async def handle_update_pc(bot: Bot, event: GroupMessageEvent):
             )
         )
 
+    # 账号功能合并后，已执行「mai绑定」的用户无需重复发送二维码。
+    from ..libraries.maimaidx_account_db import account_db
+    from ..libraries.maimaidx_platform import billing_user_id
+
+    account_qqid = billing_user_id(event)
+    binding = account_db.get(str(account_qqid))
+    if binding and binding.qrcode:
+        await _handle_sdgb_update(
+            bot,
+            event,
+            account_qqid,
+            binding.qrcode,
+            matcher=update_pc,
+            success_builder=lambda count, total: (
+                f'\n✅ 已使用绑定账号同步 PC 数据！\n'
+                f'- 收录谱面: {count} 个\n- 总游玩次数: {total} 次'
+            ),
+        )
+        return
+
     await update_pc.send(
         MessageSegment.reply(event.message_id)
         + MessageSegment.text(
@@ -162,7 +177,7 @@ def _default_pc_success_message(count: int, total_plays: int) -> str:
     )
 
 
-async def _build_auto_qrcode_success_message(event: GroupMessageEvent, storage_qqid: int) -> str:
+async def _build_auto_qrcode_success_message(event: MessageEvent, storage_qqid: int) -> str:
     """扫码自动同步成功后的提示。
 
     b50 以查分器数据为准：与查分器比对——
@@ -217,6 +232,28 @@ def _qrcode_dedupe_hit(qqid: int, qrcode_data: str) -> bool:
     return False
 
 
+def _qrcode_retry_failed(qqid: int) -> tuple[int, bool]:
+    now = time.time()
+    previous, deadline = _qrcode_retry_state.get(qqid, (0, 0.0))
+    attempt = 1 if now > deadline else previous + 1
+    exhausted = attempt >= 3
+    if exhausted:
+        _qrcode_retry_state.pop(qqid, None)
+    else:
+        _qrcode_retry_state[qqid] = (attempt, now + _QRCODE_RETRY_WINDOW_SECONDS)
+    return attempt, exhausted
+
+
+def _qrcode_retry_succeeded(qqid: int, qrcode_data: str) -> None:
+    _qrcode_retry_state.pop(qqid, None)
+    # 失败时去掉去重标记，成功后才保留 60 秒防重复请求。
+    _qrcode_auto_dedupe[(qqid, qrcode_data[:48])] = time.time()
+
+
+def _qrcode_retry_release_dedupe(qqid: int, qrcode_data: str) -> None:
+    _qrcode_auto_dedupe.pop((qqid, qrcode_data[:48]), None)
+
+
 async def _handle_sdgb_update(
     bot: Bot,
     event: GroupMessageEvent,
@@ -255,25 +292,47 @@ async def _handle_sdgb_update(
 
 
 @qrcode_auto_listener.handle()
-async def _auto_qrcode_update(bot: Bot, event: GroupMessageEvent):
-    """群聊被动监听：从消息任意位置提取 SGWCMAID 并自动拉取 AWMC 成绩。"""
-    if not playcount_fetcher.sdgb_available:
+async def _auto_qrcode_update(bot: Bot, event: MessageEvent):
+    """直发 SGWCMAID：先撤回，再更新 PC，最后按已绑定 Token 上传。"""
+    recalled = True
+    try:
+        await bot.delete_msg(message_id=event.message_id)
+    except Exception as exc:
+        recalled = False
+        log.warning(f'[QrcodeAuto] 敏感消息撤回失败：{type(exc).__name__}')
+
+    from .mai_agreement import agreement_prompt, has_user_agreed
+
+    recall_warning = (
+        '⚠️ Bot 无法撤回原凭据消息，请立即手动撤回。\n'
+        if not recalled else ''
+    )
+    if not has_user_agreed(event):
+        await bot.send(event, recall_warning + agreement_prompt())
         return
-    if not feature_manager.is_enabled(event.group_id, 'query'):
+    if not playcount_fetcher.sdgb_available:
+        await bot.send(event, recall_warning + 'AWMC PC 服务尚未配置，未处理该二维码。')
+        return
+    if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'query'):
+        if recall_warning:
+            await bot.send(event, recall_warning.strip())
         return
 
-    qqid = event.user_id
+    qqid = int(billing_user_id(event))
     if qqid in _waiting_qrcode:
-        return
+        _waiting_qrcode.pop(qqid, None)
 
     qrcode_data = extract_sgwcmaid_qrcode(event.get_plaintext())
     if not qrcode_data:
-        log.debug(f'[QrcodeAuto] 群 {event.group_id} 用户 {qqid} 含 SGWCMAID 但提取失败')
+        log.debug(
+            f'[QrcodeAuto] group={getattr(event, "group_id", "private")} '
+            f'用户 {qqid} 含 SGWCMAID 但提取失败'
+        )
         return
 
     if _qrcode_dedupe_hit(qqid, qrcode_data):
         log.info(
-            f'[QrcodeAuto] 跳过重复请求 群={event.group_id} qq={qqid} '
+            f'[QrcodeAuto] 跳过重复请求 group={getattr(event, "group_id", "private")} qq={qqid} '
             f'qrcode={qrcode_log_preview(qrcode_data)}'
         )
         return
@@ -285,29 +344,61 @@ async def _auto_qrcode_update(bot: Bot, event: GroupMessageEvent):
     _qrcode_auto_processing.add(qqid)
     t0 = time.perf_counter()
     log.info(
-        f'[QrcodeAuto] 开始同步 群={event.group_id} qq={qqid} '
+        f'[QrcodeAuto] 开始同步 group={getattr(event, "group_id", "private")} qq={qqid} '
         f'qrcode={qrcode_log_preview(qrcode_data)}'
     )
     try:
         count = await _sync_sdgb_qrcode(qqid, qrcode_data)
     except Exception as e:
+        _qrcode_retry_release_dedupe(qqid, qrcode_data)
+        attempt, exhausted = _qrcode_retry_failed(qqid)
         log.error(
-            f'[QrcodeAuto] 同步失败 群={event.group_id} qq={qqid} '
+            f'[QrcodeAuto] 同步失败 group={getattr(event, "group_id", "private")} qq={qqid} '
             f'qrcode={qrcode_log_preview(qrcode_data)} ({time.perf_counter() - t0:.2f}s): {e}'
         )
+        if exhausted:
+            retry_text = (
+                f'二维码验证已连续失败 3 次（{type(e).__name__}），流程已结束。\n'
+                '请返回舞萌页面重新获取最新二维码，稍后再直接发送。'
+            )
+        else:
+            retry_text = (
+                f'二维码无效、已过期或服务暂时不可用（{type(e).__name__}）。\n'
+                f'请在 3 分钟内重新获取并发送 SGWCMAID（{attempt}/3）。'
+            )
+        await bot.send(event, recall_warning + retry_text)
         return
     finally:
         _qrcode_auto_processing.discard(qqid)
 
-    msg = await _build_auto_qrcode_success_message(event, qqid)
+    _qrcode_retry_succeeded(qqid, qrcode_data)
+
+    from ..libraries.maimaidx_account_db import account_db
+    from .mai_account import _upload
+
+    binding = account_db.get(str(qqid))
+    fish = bool(binding and binding.fish_token)
+    lxns = bool(binding and binding.lxns_token)
+    total_plays = pc_db.get_user_total_plays(qqid)
+    lines = [
+        '✅ 已同步 PC 数据',
+        f'收录谱面：{count} 个 · 总游玩：{total_plays} PC',
+    ]
+    if recall_warning:
+        lines.insert(0, recall_warning.strip())
+    if fish or lxns:
+        lines.append(await _upload(
+            event, fish=fish, lxns=lxns, qrcode_arg=qrcode_data,
+        ))
+    else:
+        lines.append('未绑定水鱼/落雪上传 Token，本次仅同步 PC。')
+    msg = '\n'.join(lines)
     log.info(
-        f'[QrcodeAuto] 同步成功 群={event.group_id} qq={qqid} records={count} '
+        f'[QrcodeAuto] 同步成功 group={getattr(event, "group_id", "private")} qq={qqid} records={count} '
         f'({time.perf_counter() - t0:.2f}s) qrcode={qrcode_log_preview(qrcode_data)}'
     )
-    await bot.send(
-        event,
-        message=MessageSegment.reply(event.message_id) + MessageSegment.text(msg),
-    )
+    prefix = MessageSegment.at(event.user_id) + MessageSegment.text('\n') if isinstance(event, GroupMessageEvent) else Message()
+    await bot.send(event, message=prefix + MessageSegment.text(msg))
 
 
 @maiu_cache_listener.handle()

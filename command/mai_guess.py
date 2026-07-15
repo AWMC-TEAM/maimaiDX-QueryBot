@@ -32,6 +32,7 @@ from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_platform import (
     GroupId,
     adapt_guess_outbound,
+    billing_user_id,
     build_mention_message,
     format_forward_nodes_as_text,
     get_event_group_id,
@@ -134,10 +135,21 @@ async def _award_guess_points(
         raw_base,
         multiplier,
     )
-    return guess_score.format_settlement_lines(
+    settlement = guess_score.format_settlement_lines(
         added, raw_base, combo, multiplier, streak, total, rank, period_snapshot,
         multiplier_tags,
     )
+    from ..libraries.maimaidx_break import break_db
+
+    reward = break_db.award_guess_points(
+        billing_user_id(event), added, group_id=str(gid),
+    )
+    if reward.break_added > 0:
+        settlement += (
+            f'\n💳 猜对奖励 +{reward.break_added} BREAK'
+            f'（余额 {reward.balance}）'
+        )
+    return settlement
 
 
 _GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘或猜曲子'

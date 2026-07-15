@@ -63,7 +63,7 @@ from ..libraries.maimaidx_progress_report import (
     generate_progress_report,
     generate_progress_report_between,
 )
-from ..libraries.maimaidx_gain_recommend import generate_today_gain_recommendation
+from ..libraries.maimaidx_gain_recommend import generate_today_gain_recommendation_image
 from ..libraries.maimaidx_floor import generate_floor_query
 from ..libraries.maimaidx_friend_battle import (
     check_friend_battle_cooldown,
@@ -1226,7 +1226,7 @@ async def _today_gain_recommend(event: MessageEvent):
             reply_message=True,
         )
         return
-    await _finish_score(today_gain_recommend, generate_today_gain_recommendation(qqid), qqid,
+    await _finish_score(today_gain_recommend, generate_today_gain_recommendation_image(qqid), qqid,
         billing_qqid=event.user_id,
     )
 

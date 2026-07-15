@@ -38,6 +38,35 @@ class Config(BaseModel):
     sdgbt_place_id: int = 1403
     sdgbt_region_name: Optional[str] = '北京'
     sdgbt_place_name: Optional[str] = '默认机台'
+    # ---------- AWMC 账号 / 上传服务（由原 maibot 合并） ----------
+    # team：自建 sw-api；public：AWMC 公共网关。
+    awmc_api_mode: str = 'team'
+    # 留空时沿用 SDGBTECHAPI，便于旧部署无感升级。
+    awmc_api_base_url: Optional[str] = None
+    awmc_public_gateway_token: Optional[str] = None
+    awmc_api_timeout_seconds: float = 120.0
+    awmc_api_retry_count: int = 3
+    awmc_api_retry_delay_seconds: float = 1.0
+    awmc_upload_poll_interval_seconds: float = 3.0
+    awmc_upload_poll_timeout_seconds: float = 600.0
+    # 合并后的账号功能总开关；关闭时不注册外部调用，但本地查分不受影响。
+    awmc_account_enabled: bool = True
+    # 账号二维码本地缓存时间。0 表示永久保留，单位秒。
+    awmc_qrcode_cache_seconds: int = 0
+    # ---------- 管理审计 / WebUI ----------
+    maimaidx_admin_web_enabled: bool = False
+    # 必须使用高强度随机值；WebUI 仅接受 Authorization: Bearer。
+    maimaidx_admin_web_token: str = ''
+    # 默认独立监听本机 8099，便于 Nginx/Caddy 反向代理。
+    # port=0 时改为挂载到 NoneBot FastAPI Driver 的共享端口。
+    maimaidx_admin_web_host: str = '127.0.0.1'
+    maimaidx_admin_web_port: int = 8099
+    maimaidx_admin_web_path: str = '/maimaidx/admin'
+    maimaidx_admin_web_public_url: str = ''
+    maimaidx_audit_retention_days: int = 90
+    maimaidx_message_stats_enabled: bool = True
+    # 开启后，绑定、上传和发票前需先同意当前用户协议。
+    maimaidx_user_agreement_required: bool = True
     # ---------- 曲目数据源切换（可选） ----------
     # 留空/不设置 = 使用水鱼查分器 API（默认）
     # "dxdata" = 使用本地 dxdata.json 文件，无需网络

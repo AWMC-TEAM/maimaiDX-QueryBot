@@ -13,6 +13,8 @@
 - **群功能**：我在群里有多菜、群 rating 排行、群单曲排行、友人对战（含段位 CP）、对战战绩 Head-to-Head
 - **PC 数系统**：机台登录、曲目 PC 数统计、PC 数排行榜
 - **查分器上传**：水鱼查分器、落雪查分器 b50 上传；支持切换数据源
+- **统一账号**：原 maibot 的账号绑定、Token、上传、票券与状态功能已合并，无需单独运行 Koishi Bot
+- **管理审计**：统一 REF_ID 请求链路、敏感信息脱敏、用户封禁与内置管理 WebUI
 - **倍率票 / 道具**：获取倍率票、查询票券、添加收藏品
 - **谱面标签 / 印象**：dxrating 谱面标签、谱面印象 API
 - **数据源切换**：水鱼 API 或本地 `dxdata.json`
@@ -73,11 +75,16 @@ MAIMAIDXTOKEN=token_a,token_b,token_c
 ### sw-api（PC 数 / 上传 / 倍率票）
 
 ```env
-SDGBTECHAPI=http://127.0.0.1:5001
+# 统一 AWMC API 配置（team=自建 sw-api，public=公共网关）
+AWMC_API_MODE=team
+AWMC_API_BASE_URL=http://127.0.0.1:5001
+AWMC_PUBLIC_GATEWAY_TOKEN=
 SDGBT_CLIENT_ID=your_keychip
 SDGBT_REGION_ID=1
 SDGBT_PLACE_ID=1403
 ```
+
+旧变量 `SDGBTECHAPI` 仍兼容。完整模板见仓库根目录 `.env.example`。
 
 PC 数拉取接口：`POST /awmc/api/v1/user/music`（JSON body，含 `qrcode` + `keychip`）。
 
@@ -128,6 +135,24 @@ MAIMAIDX_MUSIC_CACHE_SECONDS=3600
 # 友人对战冷却（秒），默认 180（3 分钟）；设为 0 关闭
 MAIMAIDX_FRIEND_BATTLE_COOLDOWN_SECONDS=180
 ```
+
+### 管理 WebUI（可选）
+
+```env
+MAIMAIDX_ADMIN_WEB_ENABLED=true
+MAIMAIDX_ADMIN_WEB_TOKEN=至少24位高强度随机字符串
+MAIMAIDX_ADMIN_WEB_HOST=127.0.0.1
+MAIMAIDX_ADMIN_WEB_PORT=8099
+MAIMAIDX_ADMIN_WEB_PATH=/maimaidx/admin
+MAIMAIDX_ADMIN_WEB_PUBLIC_URL=https://bot.example.com
+MAIMAIDX_MESSAGE_STATS_ENABLED=true
+```
+
+WebUI 默认独立监听 `127.0.0.1:8099`，可以直接用 Nginx/Caddy 反向代理；设
+`MAIMAIDX_ADMIN_WEB_PORT=0` 时才挂载到 NoneBot FastAPI Driver 的共享端口。
+API 强制使用 Bearer Token，页面不会返回二维码、水鱼/落雪 Token 等原文。
+管理员可在 Bot 内发送 `管理面板` 查看地址。
+完整部署与安全说明见 `docs/WebUI配置说明.md`。
 
 ### 代理与其它（可选）
 
@@ -215,6 +240,26 @@ BOTNAME=maimai
 | `上传水鱼 <二维码>` | 上传 b50 到水鱼 |
 | `上传落雪 <二维码>` | 上传 b50 到落雪 |
 | `数据源 落雪` | 切换个人数据源 |
+
+### 统一账号（原 maibot）
+
+| 命令 | 说明 |
+|------|------|
+| `mai账号` | 查看账号功能帮助 |
+| `mai绑定 <二维码>` / `mai解绑` | 绑定或解绑舞萌账号 |
+| `mai状态` | 查看绑定、Rating 与上传 Token 状态 |
+| `mai绑定水鱼 <token>` | 绑定水鱼上传 Token |
+| `mai绑定落雪 <导入token>` | 绑定落雪第三方导入 Token |
+| `maiu` / `maiul` / `maiua` | 上传水鱼 / 落雪 / 同时上传 |
+| `mai发票 <2-6>` / `mai查票` | 票券操作（team 模式） |
+| `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
+
+绑定后执行 `更新pc数` 会直接使用已保存账号，不再要求重复发送二维码。
+落雪查询 OAuth 仍使用 `lxbind`；它与 `mai绑定落雪` 的上传 Token 用途不同。
+
+直接发送 `SGWCMAID...` 时，Bot 会先尝试撤回敏感消息，再同步 PC，并按用户
+已绑定的水鱼/落雪 Token 自动上传。账号与 BREAK 功能首次使用前需发送
+`用户协议`，阅读链接并完整输入网页确认词。
 
 ### 倍率票 / 道具
 

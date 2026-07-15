@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, Iterable, List, Optional, Set, Union
 
 import httpx
@@ -8,6 +9,7 @@ from ..config import UUID, maiconfig
 from .maimaidx_error import *
 from .maimaidx_model import *
 from . import maimaidx_timing as _timing
+from .maimaidx_admin_audit import admin_audit
 
 # 计入「数据获取」耗时的成绩查询接口
 _FETCH_ENDPOINTS = ('/query/player', '/query/plate', '/dev/player/records', '/dev/player/record')
@@ -123,17 +125,32 @@ class MaimaiAPI:
         _ctx = _timing.measure('fetch') if _is_fetch else None
         if _ctx:
             _ctx.__enter__()
+        _audit_started = time.time()
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(90)) as session:
-                res = await session.request(
-                    method, 
-                    self.MaiProberProxyAPI + endpoint, 
-                    headers=headers, 
-                    **kwargs
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(90)) as session:
+                    res = await session.request(
+                        method,
+                        self.MaiProberProxyAPI + endpoint,
+                        headers=headers,
+                        **kwargs
+                    )
+            except Exception as exc:
+                admin_audit.add_step(
+                    'http.divingfish', 'error',
+                    {'method': method, 'endpoint': endpoint, 'error': str(exc)},
+                    started_at=_audit_started,
                 )
+                raise
         finally:
             if _ctx:
                 _ctx.__exit__(None, None, None)
+        admin_audit.add_step(
+            'http.divingfish',
+            'success' if res.status_code == 200 else 'error',
+            {'method': method, 'endpoint': endpoint, 'status_code': res.status_code},
+            started_at=_audit_started,
+        )
         if res.status_code == 200:
             data = res.json()
             if _bill_qq:

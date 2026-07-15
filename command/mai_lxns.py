@@ -76,7 +76,7 @@ async def _get_valid_access_token(qqid: int) -> Optional[str]:
 
 # ─────────────────────────── lxbind ───────────────────────────
 
-lxbind = on_command('lxbind', aliases={'绑定落雪', '绑定lx', 'mai绑定落雪'})
+lxbind = on_command('lxbind', aliases={'绑定落雪', '绑定lx'})
 
 
 @lxbind.handle()

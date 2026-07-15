@@ -969,21 +969,18 @@ class FeatureManager:
         return getattr(self.switch, feature_name)
     
     def is_enabled(self, gid: int, feature_name: str) -> bool:
-        """检查功能是否在群组中启用。
-
-        注意：本项目已将“禁用/启用”统一交由 `nonebot_plugin_plugin_manager` 处理，
-        通过拦截触发词来实现按群禁用。为避免与插件管理的开关重复/冲突，这里默认始终启用。
-        """
-        return True
+        """检查功能是否在群组中启用；默认启用，显式 disable 优先。"""
+        switch = self._get_feature_switch(feature_name)
+        key = str(gid)
+        return key not in {str(item) for item in switch.disable}
     
     async def enable(self, gid: int, feature_name: str) -> str:
         """在群组中启用功能"""
         from ..config import group_feature_switch_file
         switch = self._get_feature_switch(feature_name)
-        if gid not in switch.enable:
+        if str(gid) not in {str(item) for item in switch.enable}:
             switch.enable.append(gid)
-        if gid in switch.disable:
-            switch.disable.remove(gid)
+        switch.disable = [item for item in switch.disable if str(item) != str(gid)]
         await writefile(group_feature_switch_file, self.switch.model_dump())
         feature_names = self._feature_display_names()
         return f'群组 {feature_names.get(feature_name, feature_name)} 已启用'
@@ -992,10 +989,9 @@ class FeatureManager:
         """在群组中禁用功能"""
         from ..config import group_feature_switch_file
         switch = self._get_feature_switch(feature_name)
-        if gid not in switch.disable:
+        if str(gid) not in {str(item) for item in switch.disable}:
             switch.disable.append(gid)
-        if gid in switch.enable:
-            switch.enable.remove(gid)
+        switch.enable = [item for item in switch.enable if str(item) != str(gid)]
         await writefile(group_feature_switch_file, self.switch.model_dump())
         feature_names = self._feature_display_names()
         return f'群组 {feature_names.get(feature_name, feature_name)} 已禁用'

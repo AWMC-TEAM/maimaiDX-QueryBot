@@ -7,6 +7,7 @@ from .config import Config, driver, log, maiconfig, plate_tabledir, rating_table
 from .command import *
 nonebot.load_plugin("nonebot_plugin_maimaidx.command.mai_jacket")
 from .libraries.maimaidx_music_info import get_music_tags, _get_dxrating_token
+from .libraries import maimaidx_admin_web as _maimaidx_admin_web  # 注册可选管理 WebUI
 
 scheduler = require('nonebot_plugin_apscheduler')
 

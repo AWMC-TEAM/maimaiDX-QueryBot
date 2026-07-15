@@ -259,3 +259,16 @@ async def generate_today_gain_recommendation(qqid: int, top_n: int = 12) -> str:
     log.debug(f"[today_gain] qq={qqid} picks={len(picks)} top={len(top)}")
     return "\n".join(lines) + f"\n\n{footer_generated()}"
 
+
+async def generate_today_gain_recommendation_image(qqid: int, top_n: int = 12):
+    """成功的推荐渲染成图片，缺少存档/成绩等错误仍返回文字提示。"""
+    text = await generate_today_gain_recommendation(qqid, top_n)
+    error_prefixes = (
+        '昨日无存档', '未读取到全量成绩', '今天没有明显吃分候选',
+    )
+    if text.startswith(error_prefixes):
+        return text
+    from nonebot.adapters.onebot.v11 import MessageSegment
+    from .image import text_to_bytes_io
+
+    return MessageSegment.image(text_to_bytes_io(text))
