@@ -377,7 +377,10 @@ async def _(
     )
     label = name or "已识别玩家"
     action = "绑定认领成功" if claimed_keys else "绑定成功"
-    claim_note = "\n旧记录已安全转移，原账号凭据已失效。" if claimed_keys else ""
+    claim_note = (
+        "\n旧记录已安全转移，原记录在本 Bot 保存的舞萌/PC 凭据已失效。"
+        if claimed_keys else ""
+    )
     await account_bind.finish(
         recall_notice
         + f"{action}：{label}\nRating：{rating}{claim_note}{pc_note}\nRef_ID: {ref}"
