@@ -146,7 +146,7 @@
 
 绑定账号后，`更新pc数` 会直接使用已保存二维码。`maiul` / `maiua` 优先复用
 `lxbind` OAuth 上传；没有 OAuth 时才使用 `mai绑定落雪` 的兼容导入 Token。
-直接发送以 `SGWCMAID` 开头的凭据时，Bot 会优先撤回原消息、同步 PC，
+直接发送 `SGWCMAID` 或舞萌官方二维码图片/请求链接时，Bot 会优先撤回原消息、同步 PC，
 并按已绑定的水鱼 Token / 落雪 OAuth（或兼容 Token）自动上传。
 
 ---

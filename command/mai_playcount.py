@@ -22,7 +22,11 @@ from ..libraries.maimaidx_prober_compare import (
     awmc_differs_from_prober,
     sync_warning_for_source,
 )
-from ..libraries.maimaidx_qrcode_util import extract_sgwcmaid_qrcode, qrcode_log_preview
+from ..libraries.maimaidx_qrcode_util import (
+    DIRECT_QRCODE_PREFIX_PATTERN,
+    extract_sgwcmaid_qrcode,
+    qrcode_log_preview,
+)
 
 update_pc = on_command('更新pc数', aliases={'更新PC数', '同步pc数', '同步PC数', '绑定机台', '登录机台'})
 my_pc = on_command('我的pc数', aliases={'我的PC数', '我的pc', '我的PC'})
@@ -40,10 +44,11 @@ _QRCODE_AUTO_DEDUPE_SECONDS = 60
 _QRCODE_RETRY_WINDOW_SECONDS = 180
 
 
-# 仅拦截“直接发送”的 SGWCMAID；mai绑定等显式命令仍交给命令处理器。
+# 仅拦截“直接发送”的 SGWCMAID/官方二维码链接；显式命令仍交给命令处理器。
 # 优先级 1 + block=True 确保先撤回敏感凭据，再做任何外部请求。
 qrcode_auto_listener = on_regex(
-    r'^\s*SGWCMAID',
+    DIRECT_QRCODE_PREFIX_PATTERN,
+    flags=re.IGNORECASE,
     priority=1,
     block=True,
 )
@@ -130,7 +135,7 @@ async def handle_update_pc(bot: Bot, event: GroupMessageEvent):
             '\n请发送你的机台二维码数据。\n\n'
             '获取方式：打开舞萌中二获取一个最新二维码，\n'
             '进入后长按识别，\n'
-            '复制以 SGWCMAID 开头的完整字符串，\n'
+            '复制 SGWCMAID 完整字符串，或二维码图片/请求链接，\n'
             '直接发送给 Bot 即可。\n\n'
             '⚠️ 请注意保护好你的二维码数据，不要发给他人。'
         )
@@ -153,7 +158,7 @@ async def receive_qrcode(bot: Bot, event: GroupMessageEvent):
     if not qrcode_data:
         await update_pc.finish(
             MessageSegment.reply(event.message_id)
-            + MessageSegment.text('二维码数据格式错误，消息中需包含以 SGWCMAID 开头的完整字符串。')
+            + MessageSegment.text('二维码格式错误，请发送 SGWCMAID 或官方二维码链接。')
         )
 
     log.info(
@@ -293,7 +298,7 @@ async def _handle_sdgb_update(
 
 @qrcode_auto_listener.handle()
 async def _auto_qrcode_update(bot: Bot, event: MessageEvent):
-    """直发 SGWCMAID：先撤回，再更新 PC，最后按已绑定 Token 上传。"""
+    """直发 SGWCMAID/官方链接：先撤回，再更新 PC，最后按绑定配置上传。"""
     recalled = True
     try:
         await bot.delete_msg(message_id=event.message_id)
@@ -326,7 +331,7 @@ async def _auto_qrcode_update(bot: Bot, event: MessageEvent):
     if not qrcode_data:
         log.debug(
             f'[QrcodeAuto] group={getattr(event, "group_id", "private")} '
-            f'用户 {qqid} 含 SGWCMAID 但提取失败'
+            f'用户 {qqid} 的二维码消息提取失败'
         )
         return
 
@@ -364,7 +369,7 @@ async def _auto_qrcode_update(bot: Bot, event: MessageEvent):
         else:
             retry_text = (
                 f'二维码无效、已过期或服务暂时不可用（{type(e).__name__}）。\n'
-                f'请在 3 分钟内重新获取并发送 SGWCMAID（{attempt}/3）。'
+                f'请在 3 分钟内重新获取并发送 SGWCMAID 或官方链接（{attempt}/3）。'
             )
         await bot.send(event, recall_warning + retry_text)
         return

@@ -28,6 +28,12 @@ _SECRET_KEYS = {
     "mai_uid", "arcade_uid",
 }
 _SGID_RE = re.compile(r"SGWCMAID[^\s\]\[<>{}\"']+", re.IGNORECASE)
+_WAHLAP_QR_RE = re.compile(
+    r"https?://wq\.wahlap\.net/qrcode/(?:img|req)/MAID[A-Z0-9]{20,160}"
+    r"(?:\.png|\.html)(?:\?[^\s\]\[<>{}\"']*)?",
+    re.IGNORECASE,
+)
+_BARE_MAID_RE = re.compile(r"(?<![A-Z0-9])MAID[A-Z0-9]{20,160}", re.IGNORECASE)
 _BEARER_RE = re.compile(r"(?i)Bearer\s+[A-Za-z0-9._~+\-/=]+")
 _TOKEN_ASSIGN_RE = re.compile(
     r"(?i)(token|secret|password|qrcode|qr_text|sgid)=([^&\s]+)"
@@ -59,7 +65,9 @@ def redact(value: Any, *, depth: int = 0) -> Any:
         items = list(value)
         return [redact(item, depth=depth + 1) for item in items[:100]]
     text = str(value)
+    text = _WAHLAP_QR_RE.sub("WAHLAP_QR_URL[REDACTED]", text)
     text = _SGID_RE.sub("SGWCMAID[REDACTED]", text)
+    text = _BARE_MAID_RE.sub("MAID[REDACTED]", text)
     text = _BEARER_RE.sub("Bearer [REDACTED]", text)
     text = _TOKEN_ASSIGN_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
     text = _ARCADE_UID_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)

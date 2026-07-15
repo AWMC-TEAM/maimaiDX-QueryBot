@@ -298,7 +298,7 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
         matcher.set_arg("qrcode", Message(raw))
     else:
         await account_bind.send(
-            "请发送最新的 SGWCMAID 完整字符串。\n"
+            "请发送最新的 SGWCMAID，或舞萌二维码图片/请求链接。\n"
             "Bot 会尝试撤回凭据消息；最多可重试 3 次。\n"
             "发送“取消”可结束绑定。"
         )
@@ -334,12 +334,12 @@ async def _(
         await account_bind.reject(
             recall_notice
             + f"二维码无效或已过期：{reason}\n"
-            f"请重新获取并发送 SGWCMAID（{attempt}/3）。\n"
+            f"请重新获取并发送 SGWCMAID 或官方二维码链接（{attempt}/3）。\n"
             "发送“取消”可退出。"
         )
 
     if not qrcode:
-        await retry("内容不是以 SGWCMAID 开头的完整凭据")
+        await retry("内容不是完整 SGWCMAID 或受支持的官方二维码链接")
     key = _user_key(event)
     claimed_keys: list[str] = []
     try:
@@ -585,7 +585,7 @@ def _upload_retry_prompt(message: str, attempt: int) -> str:
     retry_label = f"已尝试 {attempt}/3" if attempt else "尚未重试，最多可尝试 3 次"
     return (
         f"上传未完成：{redact(reason)}\n"
-        f"请重新获取并发送最新 SGWCMAID（{retry_label}）。\n"
+        f"请重新获取并发送最新 SGWCMAID 或官方二维码链接（{retry_label}）。\n"
         "Bot 会尝试撤回凭据消息；发送“取消”可退出。"
     )
 
