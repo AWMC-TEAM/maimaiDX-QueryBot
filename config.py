@@ -84,7 +84,8 @@ class Config(BaseModel):
     maimaidx_storage_mysql_table_prefix: str = 'maimaidx_'
     maimaidx_storage_mysql_ssl: bool = False
     maimaidx_storage_mysql_keep_snapshots: int = 3
-    maimaidx_storage_sync_interval_seconds: int = 60
+    # 仅在工作集发生变化时制作快照；此值是检测间隔，不再代表全量打包频率。
+    maimaidx_storage_sync_interval_seconds: int = 900
     maimaidx_storage_include_user_scores: bool = True
     # 最新成绩 API 缓存通常较大且可重建；大型部署可关闭其远端快照。
     maimaidx_storage_include_player_cache: bool = True

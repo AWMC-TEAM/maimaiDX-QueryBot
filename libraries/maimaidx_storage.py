@@ -110,12 +110,37 @@ def _excluded(path: Path, config: Any) -> bool:
     return False
 
 
+def _excluded_directory(path: Path, config: Any) -> bool:
+    """在遍历前剪枝，避免连可重建的数 GiB 缓存都逐文件扫描。"""
+    try:
+        rel = path.resolve().relative_to(DATA_ROOT.resolve())
+    except ValueError:
+        return False
+    if rel.parts and rel.parts[0] in {"storage", "migration"}:
+        return True
+    if len(rel.parts) >= 2 and rel.parts[:2] == ("audio_guess", "cache"):
+        return True
+    if rel.parts and rel.parts[0] == "user_scores":
+        return not bool(_setting(config, "maimaidx_storage_include_user_scores", True))
+    if rel.parts and rel.parts[0] == "player_cache":
+        return not bool(_setting(config, "maimaidx_storage_include_player_cache", True))
+    return False
+
+
 def _managed_files(config: Any) -> dict[str, Path]:
     result: dict[str, Path] = {}
     if DATA_ROOT.exists():
-        for path in sorted(DATA_ROOT.rglob("*")):
-            if path.is_file() and not _excluded(path, config):
-                result["data/" + path.relative_to(DATA_ROOT).as_posix()] = path
+        for root, dirs, files in os.walk(DATA_ROOT):
+            root_path = Path(root)
+            dirs[:] = sorted(
+                name
+                for name in dirs
+                if not _excluded_directory(root_path / name, config)
+            )
+            for name in sorted(files):
+                path = root_path / name
+                if not _excluded(path, config):
+                    result["data/" + path.relative_to(DATA_ROOT).as_posix()] = path
     static_value = str(_setting(config, "maimaidxpath", "") or "")
     if static_value:
         static_root = Path(static_value).expanduser().resolve()
@@ -124,6 +149,32 @@ def _managed_files(config: Any) -> dict[str, Path]:
             if path.is_file():
                 result["static/" + name] = path
     return result
+
+
+def local_change_token(config: Any) -> str:
+    """用路径、大小和纳秒 mtime 检测工作集是否需要重新制作快照。
+
+    SQLite WAL 不进入持久化文件列表，但必须参与变更检测；在线 backup 会在真正
+    同步时把 WAL 中已提交的数据合并进快照。
+    """
+    digest = hashlib.sha256()
+    for logical, path in sorted(_managed_files(config).items()):
+        candidates = [(logical, path)]
+        if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+            candidates.append((logical + "-wal", Path(str(path) + "-wal")))
+        for label, candidate in candidates:
+            digest.update(label.encode("utf-8"))
+            digest.update(b"\0")
+            try:
+                stat = candidate.stat()
+            except FileNotFoundError:
+                digest.update(b"missing")
+                continue
+            digest.update(str(stat.st_size).encode("ascii"))
+            digest.update(b":")
+            digest.update(str(stat.st_mtime_ns).encode("ascii"))
+            digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def collect_local_snapshot(config: Any) -> dict[str, Any]:
@@ -388,9 +439,73 @@ def save_mysql_snapshot(config: Any, snapshot: dict[str, Any]) -> None:
         raise StorageError(f"MySQL 写入失败，旧快照未切换：{type(exc).__name__}: {exc}") from exc
     finally:
         conn.close()
-    loaded = load_mysql_snapshot(config)
-    if loaded["manifest"] != snapshot["manifest"]:
-        raise StorageError("MySQL 写入后校验失败")
+    _verify_mysql_active_snapshot(config, snapshot)
+
+
+def _verify_mysql_active_snapshot(config: Any, expected: dict[str, Any]) -> None:
+    """流式校验活动快照，避免为了校验再把整个快照复制一份到内存。"""
+    try:
+        import pymysql
+    except ImportError as exc:
+        raise StorageError("MySQL 后端需要安装 PyMySQL") from exc
+    namespace = str(_setting(config, "maimaidx_storage_namespace", "default") or "default")
+    prefix = _mysql_prefix(config)
+    conn = _mysql_connect(config)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT a.snapshot_id,s.manifest,s.file_count,s.total_bytes "
+                f"FROM `{prefix}storage_active` a "
+                f"JOIN `{prefix}storage_snapshots` s ON s.snapshot_id=a.snapshot_id "
+                "WHERE a.namespace=%s",
+                (namespace,),
+            )
+            meta = cur.fetchone()
+        if not meta:
+            raise StorageError("MySQL 写入后活动快照不存在")
+        snapshot_id, manifest, file_count, total_bytes = meta
+        if (
+            str(manifest) != expected["manifest"]
+            or int(file_count) != expected["file_count"]
+            or int(total_bytes) != expected["total_bytes"]
+        ):
+            raise StorageError("MySQL 写入后元数据校验失败")
+
+        entries: list[tuple[str, bytes, int]] = []
+        actual_count = 0
+        actual_bytes = 0
+        with conn.cursor(pymysql.cursors.SSCursor) as cur:
+            cur.execute(
+                f"SELECT path,sha256,size,content FROM `{prefix}storage_files` "
+                "WHERE snapshot_id=%s ORDER BY path",
+                (snapshot_id,),
+            )
+            for name, sha256, size, content in cur:
+                raw = bytes(content)
+                raw_hash = hashlib.sha256(raw)
+                if len(raw) != int(size) or raw_hash.hexdigest() != str(sha256):
+                    raise StorageError(f"MySQL 文件 {name} 写入后校验失败")
+                entries.append((str(name), raw_hash.digest(), len(raw)))
+                actual_count += 1
+                actual_bytes += len(raw)
+        digest = hashlib.sha256()
+        for name, raw_hash, size in sorted(entries, key=lambda item: item[0]):
+            digest.update(name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(raw_hash)
+            digest.update(str(size).encode())
+        if (
+            digest.hexdigest() != expected["manifest"]
+            or actual_count != expected["file_count"]
+            or actual_bytes != expected["total_bytes"]
+        ):
+            raise StorageError("MySQL 写入后内容校验失败")
+    except StorageError:
+        raise
+    except Exception as exc:
+        raise StorageError(f"MySQL 写入后校验失败：{type(exc).__name__}: {exc}") from exc
+    finally:
+        conn.close()
 
 
 def load_mysql_snapshot(config: Any) -> dict[str, Any]:
