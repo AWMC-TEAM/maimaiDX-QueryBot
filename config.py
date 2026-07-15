@@ -55,6 +55,10 @@ class Config(BaseModel):
     awmc_qrcode_cache_seconds: int = 0
     # mymai/成绩上传复用最近一次已验证 SGID 的时长；0 表示每次重新询问。
     awmc_sgid_cache_seconds: int = 600
+    # 自动识别消息图片中的舞萌二维码；普通图片静默忽略。
+    awmc_image_qrcode_enabled: bool = True
+    # 单张待识别图片最大下载字节数，默认 8 MiB。
+    awmc_image_qrcode_max_bytes: int = 8 * 1024 * 1024
     # ---------- 管理审计 / WebUI ----------
     maimaidx_admin_web_enabled: bool = False
     # 必须使用高强度随机值；WebUI 仅接受 Authorization: Bearer。

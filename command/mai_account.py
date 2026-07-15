@@ -190,6 +190,29 @@ async def _read_verified_preview(
     return refreshed, data
 
 
+async def _bind_verified_account(
+    user_key: str, qrcode: str
+) -> tuple[AccountBinding, list[str]]:
+    """验真并绑定/认领账号，供显式绑定和直发二维码共用。"""
+    preview = await sw_api.get_user_preview(qrcode)
+    mai_uid, name, rating, preview_data = _normalize_preview(preview)
+    binding, claimed_keys = account_db.bind_verified(
+        user_key,
+        qrcode,
+        mai_uid=mai_uid,
+        user_name=name,
+        rating=rating,
+        preview=preview_data,
+    )
+    # 认领后令旧账号保存的 PC 登录凭据失效，避免继续访问同一舞萌账号。
+    for old_key in claimed_keys:
+        try:
+            pc_db.delete_credential(int(old_key))
+        except (TypeError, ValueError):
+            continue
+    return binding, claimed_keys
+
+
 def _preview_line(data: dict, label: str, *keys: str) -> Optional[str]:
     value = _pick(data, *keys)
     if value in (None, ""):
@@ -507,22 +530,9 @@ async def _(
     key = _user_key(event)
     claimed_keys: list[str] = []
     try:
-        preview = await sw_api.get_user_preview(qrcode)
-        mai_uid, name, rating, preview_data = _normalize_preview(preview)
-        _, claimed_keys = account_db.bind_verified(
-            key,
-            qrcode,
-            mai_uid=mai_uid,
-            user_name=name,
-            rating=rating,
-            preview=preview_data,
-        )
-        # 认领后令旧账号保存的 PC 登录凭据失效，避免继续访问同一舞萌账号。
-        for old_key in claimed_keys:
-            try:
-                pc_db.delete_credential(int(old_key))
-            except (TypeError, ValueError):
-                continue
+        binding, claimed_keys = await _bind_verified_account(key, qrcode)
+        name = binding.user_name
+        rating = binding.rating
     except Exception as exc:
         ref = _log(key, "bind", "error", str(exc))
         await retry(f"{type(exc).__name__}（Ref_ID: {ref}）")

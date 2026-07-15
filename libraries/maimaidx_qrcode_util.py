@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import ipaddress
+from io import BytesIO
+from pathlib import Path
 import re
-from typing import Optional
+from typing import Any, Iterable, Optional
+from urllib.parse import urlparse
+
+import httpx
+import numpy as np
+from PIL import Image, ImageOps
 
 # 机台二维码：SGWCMAID 后接连续非空白字符（可嵌在「mai绑定 SGWCMAID…」等文本中）
 SGWCMAID_PATTERN = re.compile(r'(SGWCMAID\S+)')
@@ -23,6 +33,7 @@ DIRECT_QRCODE_PREFIX_PATTERN = (
 )
 
 _QRCODE_QUICK_CHECK = 'SGWCMAID'
+_IMAGE_MAX_PIXELS = 25_000_000
 
 
 def message_may_contain_qrcode(text: str) -> bool:
@@ -50,3 +61,145 @@ def qrcode_log_preview(qrcode: str, *, head: int = 24, tail: int = 8) -> str:
     if len(qrcode) <= head + tail + 3:
         return f'{qrcode[:head]}…'
     return f'{qrcode[:head]}…{qrcode[-tail:]}'
+
+
+def decode_sgwcmaid_qrcode_image(image_bytes: bytes) -> Optional[str]:
+    """识别图片中的二维码，仅返回有效 SGWCMAID/舞萌官方二维码链接。"""
+    if not image_bytes:
+        return None
+    import zxingcpp
+
+    with Image.open(BytesIO(image_bytes)) as opened:
+        width, height = opened.size
+        if width <= 0 or height <= 0:
+            return None
+        image = ImageOps.exif_transpose(opened).convert('RGB')
+        if width * height > _IMAGE_MAX_PIXELS:
+            image.thumbnail((4096, 4096), Image.Resampling.LANCZOS)
+        pixels = np.asarray(image)
+
+    results = zxingcpp.read_barcodes(
+        pixels,
+        formats=zxingcpp.BarcodeFormat.QRCode,
+    )
+    for result in results:
+        qrcode = extract_sgwcmaid_qrcode(str(result.text or '').strip())
+        if qrcode:
+            return qrcode
+    return None
+
+
+async def _read_local_image(path: Path, max_bytes: int) -> Optional[bytes]:
+    try:
+        if not path.is_file() or path.stat().st_size > max_bytes:
+            return None
+        return await asyncio.to_thread(path.read_bytes)
+    except OSError:
+        return None
+
+
+async def _read_remote_image(
+    client: httpx.AsyncClient, url: str, max_bytes: int
+) -> Optional[bytes]:
+    if not _safe_remote_image_url(url):
+        return None
+    chunks: list[bytes] = []
+    total = 0
+    async with client.stream('GET', url) as response:
+        response.raise_for_status()
+        if not _safe_remote_image_url(str(response.url)):
+            return None
+        content_type = response.headers.get('content-type', '').lower()
+        if content_type and not (
+            content_type.startswith('image/')
+            or content_type.startswith('application/octet-stream')
+        ):
+            return None
+        declared = response.headers.get('content-length')
+        if declared and declared.isdigit() and int(declared) > max_bytes:
+            return None
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > max_bytes:
+                return None
+            chunks.append(chunk)
+    return b''.join(chunks)
+
+
+def _safe_remote_image_url(url: str) -> bool:
+    """拒绝明显的本机/内网 URL，避免图片段被滥用于访问内部服务。"""
+    parsed = urlparse(url)
+    if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
+        return False
+    host = parsed.hostname.rstrip('.').lower()
+    if host == 'localhost' or host.endswith('.localhost'):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return True
+
+
+async def _image_segment_bytes(
+    segment: Any,
+    client: httpx.AsyncClient,
+    max_bytes: int,
+) -> Optional[bytes]:
+    data = getattr(segment, 'data', None) or {}
+    raw = str(data.get('url') or data.get('file') or '').strip()
+    if not raw:
+        return None
+    if raw.startswith('base64://'):
+        try:
+            value = base64.b64decode(raw[9:], validate=True)
+        except (ValueError, TypeError):
+            return None
+        return value if len(value) <= max_bytes else None
+    if raw.startswith('data:image/') and ';base64,' in raw:
+        try:
+            value = base64.b64decode(raw.split(';base64,', 1)[1], validate=True)
+        except (ValueError, TypeError):
+            return None
+        return value if len(value) <= max_bytes else None
+    if raw.startswith('file://'):
+        return await _read_local_image(Path(raw[7:]), max_bytes)
+    local = Path(raw)
+    if local.is_absolute():
+        return await _read_local_image(local, max_bytes)
+    if raw.startswith(('https://', 'http://')):
+        return await _read_remote_image(client, raw, max_bytes)
+    return None
+
+
+async def extract_sgwcmaid_from_image_segments(
+    segments: Iterable[Any],
+    *,
+    max_images: int = 3,
+    max_bytes: int = 8 * 1024 * 1024,
+) -> Optional[str]:
+    """依次下载/读取消息图片并扫码；普通图片或非舞萌二维码返回 ``None``。"""
+    images = [
+        segment
+        for segment in segments
+        if getattr(segment, 'type', None) == 'image'
+    ][:max(1, max_images)]
+    if not images:
+        return None
+    timeout = httpx.Timeout(12.0, connect=5.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        for segment in images:
+            try:
+                image_bytes = await _image_segment_bytes(segment, client, max_bytes)
+            except (httpx.HTTPError, OSError, ValueError):
+                continue
+            if not image_bytes:
+                continue
+            try:
+                qrcode = await asyncio.to_thread(
+                    decode_sgwcmaid_qrcode_image, image_bytes
+                )
+            except (OSError, ValueError):
+                continue
+            if qrcode:
+                return qrcode
+    return None

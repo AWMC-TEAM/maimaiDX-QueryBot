@@ -20,6 +20,7 @@ Requires-Dist: pydantic<3.0.0,>=2.0.0
 Requires-Dist: pyecharts<3.0.0,>=2.0.0
 Requires-Dist: playwright>=1.52.0
 Requires-Dist: httpx-ws<1.0.0,>=0.7.2
+Requires-Dist: zxing-cpp<4.0.0,>=3.0.0
 Requires-Dist: pillow<11.0.0,>=10.0.0; python_version < "3.13"
 Requires-Dist: pillow<12.0.0,>=11.0.0; python_version >= "3.13"
 Requires-Dist: numpy==1.26.0; python_version < "3.10"

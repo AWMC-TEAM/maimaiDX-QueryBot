@@ -119,6 +119,11 @@ async def _audit_and_ban_preprocessor(
                 pass
         raise IgnoredException("maimaidx user banned")
 
+    # 图片扫码监听会匹配所有图片；普通图片不创建 REF，识别到舞萌二维码后
+    # 由业务层的 _log 按需开启完整链路，避免审计库被普通图片刷大。
+    if bool(getattr(type(matcher), "_maimaidx_deferred_audit", False)):
+        return
+
     ref_id = admin_audit.start_trace(
         command=_command_name(matcher, event, state),
         user_id=uid,
@@ -140,8 +145,18 @@ async def _audit_postprocessor(
     ref_id = state.get("__maimaidx_ref_id")
     if not ref_id:
         return
+    trace = admin_audit.get_trace(str(ref_id))
+    if trace and trace.get("status") != "running":
+        token = state.get("__maimaidx_ref_token")
+        if token is not None:
+            try:
+                admin_audit.reset_current_ref(token)
+            except Exception:
+                pass
+        return
     normal_control = {
         "FinishedException", "PausedException", "RejectedException", "SkippedException",
+        "StopPropagation",
     }
     if exception is None or type(exception).__name__ in normal_control:
         admin_audit.finish_trace(str(ref_id), "success")
