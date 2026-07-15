@@ -22,6 +22,7 @@ from ..libraries.maimaidx_account_db import AccountBinding, account_db
 from ..libraries.maimaidx_admin_audit import admin_audit, redact
 from ..libraries.maimaidx_break import break_db
 from ..libraries.maimaidx_lxns_client import (
+    LxnsApiError,
     convert_sega_music_scores,
     user_upload_scores,
 )
@@ -413,6 +414,17 @@ def _has_lxns_oauth(event: MessageEvent) -> bool:
     return bool(row and row.get("access_token"))
 
 
+def _lxns_oauth_missing_write_scope(event: MessageEvent) -> bool:
+    qqid = _oauth_qqid(event)
+    if qqid is None:
+        return False
+    row = lxns_db.get_user(qqid)
+    if not row or not row.get("access_token"):
+        return False
+    scope = str(row.get("scope") or "").replace(",", " ").split()
+    return bool(scope and "write_player" not in scope)
+
+
 async def _lxns_oauth_access_token(
     event: MessageEvent, *, force_refresh: bool = False
 ) -> Optional[str]:
@@ -433,10 +445,21 @@ async def _lxns_oauth_access_token(
 
 
 def _oauth_token_rejected(exc: Exception) -> bool:
-    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {
-        401,
-        403,
-    }
+    if isinstance(exc, LxnsApiError):
+        return exc.status_code in {401, 403}
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {401, 403}
+
+
+def _lxns_upload_failure_text(exc: Exception, *, stage: str) -> str:
+    detail = redact(str(exc)).strip() or type(exc).__name__
+    if isinstance(exc, LxnsApiError) and exc.status_code == 403:
+        return (
+            "落雪拒绝写入（HTTP 403）。请确认 OAuth 应用已启用 write_player，"
+            "并在落雪账号隐私设置中允许第三方写入数据"
+        )
+    if isinstance(exc, LxnsApiError) and exc.status_code == 401:
+        return "落雪 OAuth 凭据已失效，自动刷新后仍未通过验证"
+    return f"{stage}失败：{detail[:200]}"
 
 
 def _ensure_business_success(result: dict) -> None:
@@ -895,6 +918,11 @@ async def _upload(
         return "尚未绑定舞萌账号，请使用 mai绑定，或在上传命令后附带 SGWCMAID。"
     oauth_token = await _lxns_oauth_access_token(event) if lxns else None
     has_lxns_upload = bool(oauth_token or binding.lxns_token)
+    if lxns and not oauth_token and _lxns_oauth_missing_write_scope(event):
+        return (
+            "落雪 OAuth 授权缺少 write_player 写入权限。"
+            "请让管理员在落雪 OAuth 应用中启用该权限，然后重新发送 lxbind 授权。"
+        )
     if fish and lxns and not binding.fish_token and not has_lxns_upload:
         return (
             "水鱼和落雪上传均未绑定。\n"
@@ -944,9 +972,13 @@ async def _upload(
             if fish:
                 await wait_between_machine_steps()
             if oauth_token:
+                lxns_stage = "读取玩家 PC 数据"
                 try:
                     raw_scores = await sw_api.get_user_music(qrcode)
                     scores = convert_sega_music_scores(raw_scores)
+                    if not scores:
+                        raise RuntimeError("机台返回的成绩无法转换为落雪 Score")
+                    lxns_stage = "向落雪写入成绩"
                     try:
                         result = await user_upload_scores(oauth_token, scores)
                     except Exception as exc:
@@ -962,7 +994,8 @@ async def _upload(
                 except Exception as exc:
                     if not binding.lxns_token:
                         raise RuntimeError(
-                            "落雪 OAuth 上传失败，请重新发送 lxbind 授权后重试"
+                            _lxns_upload_failure_text(exc, stage=lxns_stage)
+                            + "。请修正后重新发送 lxbind 授权并重试"
                         ) from exc
                     await wait_between_machine_steps()
                     result = await sw_api.update_lx(qrcode, binding.lxns_token)

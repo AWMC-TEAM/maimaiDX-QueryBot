@@ -7,6 +7,7 @@
   lxb50           — 用落雪数据源查询 B50
 """
 
+import asyncio
 import re
 import time
 from textwrap import dedent
@@ -31,6 +32,8 @@ from ..libraries.maimaidx_lxns_db import lxns_db
 from ..libraries.maimaidx_platform import resolve_score_qqid
 
 # ─────────────────────────── helpers ───────────────────────────
+
+_oauth_refresh_locks: dict[int, asyncio.Lock] = {}
 
 
 def _lxns_qqid(event) -> int:
@@ -64,17 +67,20 @@ async def _get_valid_access_token(
     qqid: int, *, force_refresh: bool = False
 ) -> Optional[str]:
     """获取有效的 OAuth access_token（自动刷新过期 token）。"""
-    db_row = lxns_db.get_user(qqid)
-    if not db_row:
-        return None
+    lock = _oauth_refresh_locks.setdefault(qqid, asyncio.Lock())
+    async with lock:
+        # 等锁期间可能已有另一个请求刷新完成，因此必须重新读取数据库。
+        db_row = lxns_db.get_user(qqid)
+        if not db_row:
+            return None
 
-    access_token = db_row.get('access_token')
-    expires_at = db_row.get('expires_at', 0)
+        access_token = db_row.get('access_token')
+        expires_at = db_row.get('expires_at', 0)
 
-    if not force_refresh and access_token and expires_at > time.time() + 60:
-        return access_token
+        if not force_refresh and access_token and expires_at > time.time() + 60:
+            return access_token
 
-    return await _do_token_refresh(qqid, db_row)
+        return await _do_token_refresh(qqid, db_row)
 
 
 # ─────────────────────────── lxbind ───────────────────────────
@@ -148,6 +154,7 @@ async def _lxbind_got(matcher: Matcher, event: MessageEvent, code_msg: Message =
     refresh_token_val = token_data['refresh_token']
     expires_in = token_data.get('expires_in', 900)
     scope = token_data.get('scope', '')
+    scope_items = str(scope or '').replace(',', ' ').split()
 
     friend_code = None
     nickname = ''
@@ -172,11 +179,16 @@ async def _lxbind_got(matcher: Matcher, event: MessageEvent, code_msg: Message =
     )
 
     fc_msg = f'好友码：{friend_code}' if friend_code else '（未获取到好友码）'
+    write_note = (
+        ''
+        if not scope_items or 'write_player' in scope_items
+        else '\n⚠️ 本次授权缺少 write_player，无法上传成绩；请联系管理员检查 OAuth 应用权限。'
+    )
     await lxbind.finish(
         f'落雪绑定成功！\n'
         f'昵称：{nickname}\n'
         f'{fc_msg}\n'
-        f'Rating：{rating}',
+        f'Rating：{rating}{write_note}',
         reply_message=True,
     )
 

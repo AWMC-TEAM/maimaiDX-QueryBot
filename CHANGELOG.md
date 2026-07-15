@@ -25,6 +25,10 @@
   不同用户共用同一 keychip 时也不会并发登录互相挤掉。
 - 落雪 OAuth 上传直接读取机台全量成绩；Access Token 被拒绝时会强制刷新并重试一次，
   刷新响应未轮换 Refresh Token 时仍可继续使用旧 Token。
+- 兼容落雪 OAuth Token 接口的新标准顶层响应与旧版 `success/data` 包装；
+  上传失败时会区分 PC 读取、Token 失效及 `write_player`/隐私写入权限问题。
+- 同一用户的 OAuth 刷新改为串行并在加锁后重新读取 Token，避免 Refresh Token
+  发生轮换时被并发请求互相作废。
 
 ### 修复
 

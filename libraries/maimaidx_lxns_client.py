@@ -19,6 +19,71 @@ _BASE_URL = 'https://maimai.lxns.net'
 _DEFAULT_REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob'
 
 
+class LxnsApiError(RuntimeError):
+    """落雪 API 错误；仅保留可安全展示的状态码与服务端说明。"""
+
+    def __init__(self, message: str, *, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _error_message(payload: Any, fallback: str) -> str:
+    if not isinstance(payload, dict):
+        return fallback
+    return str(
+        payload.get('error_description')
+        or payload.get('message')
+        or payload.get('error')
+        or fallback
+    )
+
+
+def _parse_oauth_token_response(
+    response: httpx.Response, *, operation: str
+) -> Dict[str, Any]:
+    """兼容 OAuth 标准顶层响应与旧版 ``success/data`` 包装。"""
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise LxnsApiError(
+            f'{operation}响应不是有效 JSON', status_code=response.status_code
+        ) from exc
+
+    if response.is_error:
+        raise LxnsApiError(
+            _error_message(payload, f'{operation}失败'),
+            status_code=response.status_code,
+        )
+
+    token_data = payload.get('data') if isinstance(payload, dict) else None
+    if not isinstance(token_data, dict) or not token_data.get('access_token'):
+        token_data = payload
+    if not isinstance(token_data, dict) or not token_data.get('access_token'):
+        raise LxnsApiError(
+            _error_message(payload, f'{operation}未返回 access_token'),
+            status_code=response.status_code,
+        )
+    return token_data
+
+
+def _parse_user_api_response(
+    response: httpx.Response, *, operation: str
+) -> Dict[str, Any]:
+    """解析落雪 OAuth 用户 API 的统一响应，并保留明确失败原因。"""
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise LxnsApiError(
+            f'{operation}响应不是有效 JSON', status_code=response.status_code
+        ) from exc
+    if response.is_error or not isinstance(payload, dict) or payload.get('success') is False:
+        raise LxnsApiError(
+            _error_message(payload, f'{operation}失败'),
+            status_code=response.status_code,
+        )
+    return payload
+
+
 def _dev_headers() -> Dict[str, str]:
     """开发者 Token 请求头。"""
     return {'Authorization': maiconfig.lxns_dev_token or ''}
@@ -60,11 +125,7 @@ async def fetch_token(code: str) -> Dict[str, Any]:
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f'{_BASE_URL}/api/v0/oauth/token', json=payload)
-        resp.raise_for_status()
-        result = resp.json()
-        if not result.get('success'):
-            raise ValueError(result.get('message', 'OAuth token exchange failed'))
-        return result['data']
+        return _parse_oauth_token_response(resp, operation='OAuth 授权码兑换')
 
 
 async def refresh_token(refresh_token: str) -> Dict[str, Any]:
@@ -80,11 +141,7 @@ async def refresh_token(refresh_token: str) -> Dict[str, Any]:
     }
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(f'{_BASE_URL}/api/v0/oauth/token', json=payload)
-        resp.raise_for_status()
-        result = resp.json()
-        if not result.get('success'):
-            raise ValueError(result.get('message', 'OAuth token refresh failed'))
-        return result['data']
+        return _parse_oauth_token_response(resp, operation='OAuth Token 刷新')
 
 
 # ─────────────────────────── 开发者 API ───────────────────────────
@@ -177,10 +234,7 @@ async def user_get_bests(access_token: str) -> Optional[Dict[str, Any]]:
                 f'{_BASE_URL}/api/v0/user/maimai/player/bests',
                 headers=_oauth_headers(access_token),
             )
-            resp.raise_for_status()
-            result = resp.json()
-            if not result.get('success'):
-                raise ValueError(result.get('message', '获取 b50 失败'))
+            result = _parse_user_api_response(resp, operation='获取落雪 B50')
             return result.get('data')
 
     return await _billable_lxns_fetch(_fetch())
@@ -194,10 +248,7 @@ async def user_get_player(access_token: str) -> Optional[Dict[str, Any]]:
                 f'{_BASE_URL}/api/v0/user/maimai/player',
                 headers=_oauth_headers(access_token),
             )
-            resp.raise_for_status()
-            result = resp.json()
-            if not result.get('success'):
-                raise ValueError(result.get('message', '获取用户信息失败'))
+            result = _parse_user_api_response(resp, operation='获取落雪用户信息')
             return result.get('data')
 
     return await _billable_lxns_fetch(_fetch())
@@ -211,10 +262,7 @@ async def user_get_scores(access_token: str) -> Optional[list]:
                 f'{_BASE_URL}/api/v0/user/maimai/player/scores',
                 headers=_oauth_headers(access_token),
             )
-            resp.raise_for_status()
-            result = resp.json()
-            if not result.get('success'):
-                raise ValueError(result.get('message', '获取成绩失败'))
+            result = _parse_user_api_response(resp, operation='获取落雪成绩')
             return result.get('data')
 
     return await _billable_lxns_fetch(_fetch())
@@ -283,10 +331,7 @@ async def user_upload_scores(access_token: str, scores: List[dict]) -> Dict[str,
                     headers=_oauth_headers(access_token),
                     json={'scores': batch},
                 )
-                resp.raise_for_status()
-                result = resp.json()
-                if not result.get('success'):
-                    raise ValueError(result.get('message', '上传成绩失败'))
+                _parse_user_api_response(resp, operation='OAuth 成绩上传')
                 uploaded += len(batch)
     except Exception as exc:
         admin_audit.add_step(
