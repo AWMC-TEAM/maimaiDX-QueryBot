@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gc
 import hashlib
 import json
 import os
@@ -568,9 +569,27 @@ def sync_configured_backend(config: Any) -> Optional[dict[str, Any]]:
     if backend == "sqlite":
         return None
     snapshot = collect_local_snapshot(config)
-    save_snapshot(config, backend, snapshot)
-    _write_marker(config, backend, snapshot["manifest"])
-    return snapshot
+    try:
+        save_snapshot(config, backend, snapshot)
+        _write_marker(config, backend, snapshot["manifest"])
+        # 调用方只需要同步摘要。大型历史成绩快照不能跨线程返回并长期占用堆。
+        return {
+            key: snapshot[key]
+            for key in ("version", "created_at", "manifest", "file_count", "total_bytes")
+        }
+    finally:
+        snapshot.clear()
+        gc.collect()
+        # glibc 可能保留数 GiB 的大 bytes 分配；同步结束后主动归还给系统。
+        if os.name == "posix":
+            try:
+                import ctypes
+
+                trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+                if trim is not None:
+                    trim(0)
+            except (OSError, TypeError):
+                pass
 
 
 def bootstrap_storage(config: Any) -> str:
