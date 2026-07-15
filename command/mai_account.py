@@ -11,12 +11,13 @@ import json
 import time
 from typing import Any, Optional
 
+import httpx
 from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent
 from nonebot.matcher import Matcher
 from nonebot.params import Arg, CommandArg
 
-from ..config import maiconfig
+from ..config import log, maiconfig
 from ..libraries.maimaidx_account_db import AccountBinding, account_db
 from ..libraries.maimaidx_admin_audit import admin_audit, redact
 from ..libraries.maimaidx_break import break_db
@@ -25,6 +26,10 @@ from ..libraries.maimaidx_lxns_client import (
     user_upload_scores,
 )
 from ..libraries.maimaidx_lxns_db import lxns_db
+from ..libraries.maimaidx_machine_session import (
+    machine_session,
+    wait_between_machine_steps,
+)
 from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_qrcode_util import extract_sgwcmaid_qrcode
@@ -93,6 +98,20 @@ def _nested_preview(payload: dict) -> dict:
     return payload
 
 
+def _merged_preview(payload: dict) -> dict:
+    """保留 userData 内字段，同时保留 maibot 兼容的顶层状态字段。"""
+    nested = _nested_preview(payload)
+    if nested is payload:
+        return dict(payload)
+    merged = dict(payload)
+    merged.update(nested)
+    # 新版 sw-api 会把 banState / returnCode 放在最外层。
+    for key in ("BanState", "banState", "ReturnCode", "returnCode"):
+        if payload.get(key) is not None:
+            merged[key] = payload[key]
+    return merged
+
+
 def _pick(data: dict, *keys: str, default: Any = None) -> Any:
     for key in keys:
         value = data.get(key)
@@ -102,7 +121,7 @@ def _pick(data: dict, *keys: str, default: Any = None) -> Any:
 
 
 def _normalize_preview(payload: dict) -> tuple[str, str, int, dict]:
-    data = _nested_preview(payload)
+    data = _merged_preview(payload)
     uid = _pick(payload, "userId", "UserID", "userID")
     if uid is None:
         uid = _pick(data, "userId", "UserID", "userID")
@@ -115,6 +134,35 @@ def _normalize_preview(payload: dict) -> tuple[str, str, int, dict]:
     except (TypeError, ValueError):
         rating = 0
     return str(uid), name, rating, data
+
+
+def _normalize_charge_payload(payload: dict) -> tuple[bool, list[dict], list[dict]]:
+    """兼容 maibot 的新版 user/charge 顶层与 userCharge 包装格式。"""
+    nested = payload.get("userCharge")
+    data = nested if isinstance(nested, dict) else payload
+    rows = _pick(data, "userChargeList", "UserChargeList")
+    if rows is None:
+        rows = _pick(payload, "userChargeList", "UserChargeList")
+    free_rows = _pick(data, "userFreeChargeList", "UserFreeChargeList")
+    if free_rows is None:
+        free_rows = _pick(payload, "userFreeChargeList", "UserFreeChargeList")
+
+    return_code = _pick(payload, "returnCode", "ReturnCode")
+    if return_code is None:
+        return_code = _pick(data, "returnCode", "ReturnCode")
+    charge_status = _pick(data, "chargeStatus", "ChargeStatus")
+    if charge_status is None:
+        charge_status = _pick(payload, "chargeStatus", "ChargeStatus")
+    user_id = _pick(payload, "userId", "UserID")
+    has_new_response = user_id is not None and any(
+        key in payload for key in ("userChargeList", "UserChargeList", "length", "Length")
+    )
+    success = charge_status in (True, 1, "1") or return_code in (1, "1") or has_new_response
+    return (
+        success,
+        rows if isinstance(rows, list) else [],
+        free_rows if isinstance(free_rows, list) else [],
+    )
 
 
 def _binding_or_error(event: MessageEvent) -> tuple[str, Optional[AccountBinding], Optional[str]]:
@@ -285,13 +333,19 @@ async def _render_account_status(
             + time.strftime("%Y-%m-%d %H:%M", time.localtime(binding.last_upload_at))
         )
 
-    if binding.mai_uid and sw_api.api_mode == "team":
+    if binding.qrcode and sw_api.api_mode == "team":
         try:
-            charge = await sw_api.get_user_charge(binding.mai_uid)
-            rows = _pick(charge, "userChargeList", "UserChargeList", default=[])
+            async with machine_session():
+                charge = await sw_api.get_user_charge(binding.qrcode)
+            charge_ok, rows, free_rows = _normalize_charge_payload(charge)
+            if not charge_ok:
+                return_code = _pick(charge, "returnCode", "ReturnCode")
+                suffix = f"（returnCode={return_code}）" if return_code is not None else ""
+                lines.append(f"🎫 票券情况：获取失败{suffix}")
+                return "\n".join(lines)
             now = time.time()
             valid = []
-            for row in rows if isinstance(rows, list) else []:
+            for row in rows:
                 if not isinstance(row, dict):
                     continue
                 valid_date = row.get("validDate") or row.get("ValidDate")
@@ -305,8 +359,20 @@ async def _render_account_status(
                 if valid_ts > now and int(row.get("stock") or row.get("Stock") or 0) > 0:
                     valid.append(row)
             total = sum(int(row.get("stock") or row.get("Stock") or 0) for row in valid)
-            lines.append(f"🎫 有效票券：{total} 张（{len(valid)} 种）" if valid else "🎫 有效票券：暂无")
-        except Exception:
+            free_total = sum(
+                int(row.get("stock") or row.get("Stock") or 0)
+                for row in free_rows
+                if isinstance(row, dict)
+            )
+            if valid or free_total:
+                label = f"🎫 有效票券：{total} 张（{len(valid)} 种）"
+                if free_total:
+                    label += f"；免费票券 {free_total} 张"
+                lines.append(label)
+            else:
+                lines.append("🎫 票券情况：暂无有效票券")
+        except Exception as exc:
+            log.warning(f"[AccountStatus] 获取票券失败：{type(exc).__name__}: {exc}")
             lines.append("🎫 票券情况：暂时无法获取")
     return "\n".join(lines)
 
@@ -347,7 +413,9 @@ def _has_lxns_oauth(event: MessageEvent) -> bool:
     return bool(row and row.get("access_token"))
 
 
-async def _lxns_oauth_access_token(event: MessageEvent) -> Optional[str]:
+async def _lxns_oauth_access_token(
+    event: MessageEvent, *, force_refresh: bool = False
+) -> Optional[str]:
     """复用现有 lxbind 授权；旧授权缺少写权限时要求重新授权。"""
     qqid = _oauth_qqid(event)
     if qqid is None:
@@ -361,7 +429,14 @@ async def _lxns_oauth_access_token(event: MessageEvent) -> Optional[str]:
     # 延迟导入，避免命令模块初始化时形成循环依赖。
     from .mai_lxns import _get_valid_access_token
 
-    return await _get_valid_access_token(qqid)
+    return await _get_valid_access_token(qqid, force_refresh=force_refresh)
+
+
+def _oauth_token_rejected(exc: Exception) -> bool:
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {
+        401,
+        403,
+    }
 
 
 def _ensure_business_success(result: dict) -> None:
@@ -788,8 +863,24 @@ async def _(event: MessageEvent):
 
 
 async def _upload(
-    event: MessageEvent, *, fish: bool, lxns: bool, qrcode_arg: str = ""
+    event: MessageEvent,
+    *,
+    fish: bool,
+    lxns: bool,
+    qrcode_arg: str = "",
+    _machine_locked: bool = False,
+    _qrcode_verified: bool = False,
 ) -> str:
+    if not _machine_locked:
+        async with machine_session():
+            return await _upload(
+                event,
+                fish=fish,
+                lxns=lxns,
+                qrcode_arg=qrcode_arg,
+                _machine_locked=True,
+                _qrcode_verified=_qrcode_verified,
+            )
     if bool(getattr(maiconfig, "maimaidx_user_agreement_required", True)):
         key = _user_key(event)
         if not has_user_agreed(event):
@@ -815,7 +906,9 @@ async def _upload(
         return "未绑定落雪上传，请先发送「lxbind」完成 OAuth。"
 
     try:
-        if direct_qrcode:
+        if _qrcode_verified:
+            qrcode = direct_qrcode or binding.qrcode
+        elif direct_qrcode:
             binding, _ = await _read_verified_preview(
                 binding, direct_qrcode, save_qrcode=True
             )
@@ -840,22 +933,38 @@ async def _upload(
     results: list[str] = []
     try:
         break_db.ensure_service_affordable(int(key), billing_service, cost)
+        # 显式 maiu/maiul 会先验二维码；给下一次机台登录留出间隔。
+        if not _qrcode_verified:
+            await wait_between_machine_steps()
         if fish:
             result = await sw_api.update_fish(qrcode, binding.fish_token)
             result = await _await_upload_success(result, lxns=False)
             results.append("水鱼：" + _result_text(result))
         if lxns:
+            if fish:
+                await wait_between_machine_steps()
             if oauth_token:
                 try:
                     raw_scores = await sw_api.get_user_music(qrcode)
                     scores = convert_sega_music_scores(raw_scores)
-                    result = await user_upload_scores(oauth_token, scores)
+                    try:
+                        result = await user_upload_scores(oauth_token, scores)
+                    except Exception as exc:
+                        if not _oauth_token_rejected(exc):
+                            raise
+                        refreshed_token = await _lxns_oauth_access_token(
+                            event, force_refresh=True
+                        )
+                        if not refreshed_token:
+                            raise RuntimeError("落雪 OAuth Token 刷新失败") from exc
+                        result = await user_upload_scores(refreshed_token, scores)
                     results.append("落雪（OAuth）：" + _result_text(result))
                 except Exception as exc:
                     if not binding.lxns_token:
                         raise RuntimeError(
                             "落雪 OAuth 上传失败，请重新发送 lxbind 授权后重试"
                         ) from exc
+                    await wait_between_machine_steps()
                     result = await sw_api.update_lx(qrcode, binding.lxns_token)
                     result = await _await_upload_success(result, lxns=True)
                     results.append("落雪（兼容 Token）：" + _result_text(result))
@@ -1006,7 +1115,8 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     try:
         cost = _service_cost("ticket", multiple=multiple)
         break_db.ensure_service_affordable(int(key), "ticket", cost)
-        result = await sw_api.charge_ticket(binding.qrcode, multiple)
+        async with machine_session():
+            result = await sw_api.charge_ticket(binding.qrcode, multiple)
         _ensure_business_success(result)
         charge = break_db.settle_service_success(
             int(key), "ticket", cost, meta={"multiple": multiple}
@@ -1032,10 +1142,9 @@ async def _(event: MessageEvent):
     _, binding, error = _binding_or_error(event)
     if error or binding is None:
         await account_ticket_status.finish(error or "账号未绑定")
-    if not binding.mai_uid:
-        await account_ticket_status.finish("账号缺少街机 UID，请重新执行 mai绑定。")
     try:
-        result = await sw_api.get_user_charge(binding.mai_uid)
+        async with machine_session():
+            result = await sw_api.get_user_charge(binding.qrcode)
     except Exception as exc:
         await account_ticket_status.finish(f"查询失败：{exc}")
     await account_ticket_status.finish(

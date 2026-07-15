@@ -48,10 +48,11 @@ async def _do_token_refresh(qqid: int, db_row: dict) -> Optional[str]:
         lxns_db.update_tokens(
             qqid,
             access_token=token_data['access_token'],
-            refresh_token=token_data['refresh_token'],
+            # 部分 OAuth 服务刷新时不会轮换 refresh_token。
+            refresh_token=token_data.get('refresh_token') or rt,
             expires_in=token_data.get('expires_in', 900),
-            scope=token_data.get('scope', ''),
-            token_type=token_data.get('token_type', 'Bearer'),
+            scope=token_data.get('scope') or db_row.get('scope', ''),
+            token_type=token_data.get('token_type') or db_row.get('token_type', 'Bearer'),
         )
         return token_data['access_token']
     except Exception as e:
@@ -59,7 +60,9 @@ async def _do_token_refresh(qqid: int, db_row: dict) -> Optional[str]:
         return None
 
 
-async def _get_valid_access_token(qqid: int) -> Optional[str]:
+async def _get_valid_access_token(
+    qqid: int, *, force_refresh: bool = False
+) -> Optional[str]:
     """获取有效的 OAuth access_token（自动刷新过期 token）。"""
     db_row = lxns_db.get_user(qqid)
     if not db_row:
@@ -68,7 +71,7 @@ async def _get_valid_access_token(qqid: int) -> Optional[str]:
     access_token = db_row.get('access_token')
     expires_at = db_row.get('expires_at', 0)
 
-    if access_token and expires_at > time.time() + 60:
+    if not force_refresh and access_token and expires_at > time.time() + 60:
         return access_token
 
     return await _do_token_refresh(qqid, db_row)

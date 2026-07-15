@@ -82,6 +82,8 @@ AWMC_PUBLIC_GATEWAY_TOKEN=
 SDGBT_CLIENT_ID=your_keychip
 SDGBT_REGION_ID=1
 SDGBT_PLACE_ID=1403
+# PC -> 水鱼 -> 落雪之间默认等待 3 秒；同一 keychip 下全局串行。
+AWMC_MACHINE_STEP_DELAY_SECONDS=3
 ```
 
 旧变量 `SDGBTECHAPI` 仍兼容。完整模板见仓库根目录 `.env.example`。

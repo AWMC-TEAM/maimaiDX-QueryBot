@@ -14,6 +14,10 @@ from ..libraries.maimaidx_best_50 import generate_pc50, generate_pca50, generate
 from ..libraries.maimaidx_datasource import get_user_source
 from ..libraries.maimaidx_error import QBindRequiredError
 from ..libraries.maimaidx_music import feature_manager
+from ..libraries.maimaidx_machine_session import (
+    machine_session,
+    wait_between_machine_steps,
+)
 from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_playcount_fetcher import playcount_fetcher
@@ -228,6 +232,8 @@ async def _sync_sdgb_qrcode(
     await _verify_or_auto_bind_account(
         qqid, qrcode_data, save_qrcode=save_qrcode
     )
+    # preview 验真也会使用机台登录；立即拉成绩容易触发 returnCode=102。
+    await wait_between_machine_steps()
     success = await playcount_fetcher.login_by_sdgb(qrcode_data, qqid)
     if not success:
         raise RuntimeError('凭据保存失败')
@@ -303,9 +309,10 @@ async def _handle_sdgb_update(
 ):
     """通过 sw-api 更新 PC 数据"""
     try:
-        count = await _sync_sdgb_qrcode(
-            qqid, qrcode_data, save_qrcode=not retry_on_cached_failure
-        )
+        async with machine_session():
+            count = await _sync_sdgb_qrcode(
+                qqid, qrcode_data, save_qrcode=not retry_on_cached_failure
+            )
     except Exception as e:
         log.error(
             f'[SDGBPC] 用户 {qqid} 拉取失败 qrcode={qrcode_log_preview(qrcode_data)}: {e}'
@@ -466,10 +473,30 @@ async def _process_auto_qrcode(
     count: Optional[int] = None
     try:
         try:
-            if playcount_fetcher.sdgb_available:
-                count = await _sync_sdgb_qrcode(qqid, qrcode_data)
-            else:
-                await _verify_or_auto_bind_account(qqid, qrcode_data)
+            async with machine_session():
+                if playcount_fetcher.sdgb_available:
+                    count = await _sync_sdgb_qrcode(qqid, qrcode_data)
+                else:
+                    await _verify_or_auto_bind_account(qqid, qrcode_data)
+
+                from .mai_account import _has_lxns_oauth, _upload
+
+                binding = account_db.get(str(qqid))
+                fish = bool(binding and binding.fish_token)
+                lxns = bool(binding and binding.lxns_token) or _has_lxns_oauth(event)
+                upload_result: Optional[str] = None
+                if fish or lxns:
+                    # PC/二维码校验完成后再开始查分器上传，避免同一 keychip
+                    # 的登录会话互相挤掉。
+                    await wait_between_machine_steps()
+                    upload_result = await _upload(
+                        event,
+                        fish=fish,
+                        lxns=lxns,
+                        qrcode_arg=qrcode_data,
+                        _machine_locked=True,
+                        _qrcode_verified=True,
+                    )
         except Exception as exc:
             _qrcode_retry_release_dedupe(qqid, qrcode_data)
             account_db.mark_qrcode_result(str(qqid), False)
@@ -508,11 +535,8 @@ async def _process_auto_qrcode(
 
         _qrcode_retry_succeeded(qqid, qrcode_data)
 
-        from .mai_account import _has_lxns_oauth, _log, _upload
+        from .mai_account import _log
 
-        binding = account_db.get(str(qqid))
-        fish = bool(binding and binding.fish_token)
-        lxns = bool(binding and binding.lxns_token) or _has_lxns_oauth(event)
         lines: list[str] = []
         if recall_warning:
             lines.append(recall_warning.strip())
@@ -529,12 +553,8 @@ async def _process_auto_qrcode(
             ])
         else:
             lines.append('AWMC PC 服务尚未配置，本次已跳过 PC 同步。')
-        if fish or lxns:
-            lines.append(
-                await _upload(
-                    event, fish=fish, lxns=lxns, qrcode_arg=qrcode_data
-                )
-            )
+        if upload_result is not None:
+            lines.append(upload_result)
         else:
             lines.append('未绑定水鱼 Token 或落雪 OAuth，本次未上传查分器。')
         ref = _log(

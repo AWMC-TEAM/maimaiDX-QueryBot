@@ -1,7 +1,5 @@
 from typing import Optional
 
-from loguru import logger as log
-
 from .maimaidx_sw_api import SwApiError, sw_api
 
 
@@ -65,12 +63,10 @@ class SdgbProberClient:
             raise RuntimeError(str(e)) from e
 
     async def get_charge(self, qr_text: str, user_id: Optional[str] = None) -> dict:
-        """查询用户发票/票券信息。sw-api 需要 userId，若未提供则无法查询。"""
+        """查询用户发票/票券信息；新版 sw-api 使用二维码只读查询。"""
         self._check_available()
-        if not user_id:
-            raise RuntimeError("查询票券需要提供 userId（sw-api /user/charge 接口要求）")
         try:
-            return await sw_api.get_user_charge(user_id)
+            return await sw_api.get_user_charge(qr_text)
         except SwApiError as e:
             raise RuntimeError(str(e)) from e
 

@@ -251,16 +251,14 @@ class SwApiClient:
         )
         return self._parse_envelope(data)
 
-    async def get_user_charge(self, user_id: str) -> dict:
+    async def get_user_charge(self, qrcode: str) -> dict:
         if self.api_mode == "public":
             raise SwApiError("AWMC 公共网关暂不支持查询票券")
         data = await self._request(
             "POST",
             "/awmc/api/v1/user/charge",
-            json_body={
-                "userId": user_id,
-                "keychip": maiconfig.sdgbt_client_id,
-            },
+            # 与 maibot 新版 swQrBody 保持一致；只读查询不传 region/place。
+            json_body={"qrcode": qrcode, "keychip": maiconfig.sdgbt_client_id},
             timeout=30,
         )
         return self._parse_envelope(data)

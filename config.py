@@ -49,6 +49,8 @@ class Config(BaseModel):
     awmc_api_retry_delay_seconds: float = 1.0
     awmc_upload_poll_interval_seconds: float = 3.0
     awmc_upload_poll_timeout_seconds: float = 600.0
+    # PC / 水鱼 / 落雪依次使用同一机台会话时的间隔，避免登录互相挤掉。
+    awmc_machine_step_delay_seconds: float = 3.0
     # 合并后的账号功能总开关；关闭时不注册外部调用，但本地查分不受影响。
     awmc_account_enabled: bool = True
     # 账号二维码本地缓存时间。0 表示永久保留，单位秒。
