@@ -374,11 +374,11 @@ async def _auto_qrcode_update(bot: Bot, event: MessageEvent):
     _qrcode_retry_succeeded(qqid, qrcode_data)
 
     from ..libraries.maimaidx_account_db import account_db
-    from .mai_account import _upload
+    from .mai_account import _has_lxns_oauth, _upload
 
     binding = account_db.get(str(qqid))
     fish = bool(binding and binding.fish_token)
-    lxns = bool(binding and binding.lxns_token)
+    lxns = bool(binding and binding.lxns_token) or _has_lxns_oauth(event)
     total_plays = pc_db.get_user_total_plays(qqid)
     lines = [
         '✅ 已同步 PC 数据',
@@ -391,7 +391,7 @@ async def _auto_qrcode_update(bot: Bot, event: MessageEvent):
             event, fish=fish, lxns=lxns, qrcode_arg=qrcode_data,
         ))
     else:
-        lines.append('未绑定水鱼/落雪上传 Token，本次仅同步 PC。')
+        lines.append('未绑定水鱼 Token 或落雪 OAuth，本次仅同步 PC。')
     msg = '\n'.join(lines)
     log.info(
         f'[QrcodeAuto] 同步成功 group={getattr(event, "group_id", "private")} qq={qqid} records={count} '

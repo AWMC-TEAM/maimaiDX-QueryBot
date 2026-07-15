@@ -131,22 +131,23 @@
 | 指令 | 说明 |
 |------|------|
 | `mai账号` | 查看合并后的账号功能帮助 |
-| `mai绑定 <二维码>` | 绑定并验证舞萌账号 |
+| `mai绑定` / `maibind` | 绑定并验证舞萌账号；可认领同 UID 旧记录 |
 | `mai解绑` / `mai状态` | 解绑 / 查看账号状态 |
-| `mai绑定水鱼 <Token>` | 绑定水鱼上传 Token |
-| `mai绑定落雪 <导入Token>` | 绑定落雪第三方导入 Token |
+| `mai绑定水鱼 <Token>` / `maibindfish <Token>` | 绑定水鱼上传 Token |
+| `lxbind` | 绑定落雪 OAuth，上传无需导入 Token（推荐） |
+| `mai绑定落雪 <导入Token>` / `maibindlx <导入Token>` | 绑定落雪导入 Token（兼容） |
 | `maiu` / `maiul` / `maiua` | 上传水鱼 / 落雪 / 同时上传 |
-| `mai发票 <2-6>` / `mai查票` | 发放 / 查询票券 |
+| `发票` / `fp <2-6>` / `mai查票` | 发放 / 查询票券 |
 | `mai地图` / `maiping` | 查询游玩地区 / 测试 API |
 | `用户协议` | 查看协议链接并按网页确认词完成同意 |
 | `迁移Koishi 检查/确认 <数据库>` | 超级管理员预检/导入 Koishi maiBot 数据 |
 | `存储状态` / `存储同步` | 插件管理员检查或立即同步统一存储 |
 | `存储迁移 检查/确认 <源> <目标>` | 在 sqlite / yaml / mysql 间迁移 |
 
-绑定账号后，`更新pc数` 会直接使用已保存二维码。落雪查询 OAuth 仍使用
-`lxbind`，与用于上传的 `mai绑定落雪` 不同。
+绑定账号后，`更新pc数` 会直接使用已保存二维码。`maiul` / `maiua` 优先复用
+`lxbind` OAuth 上传；没有 OAuth 时才使用 `mai绑定落雪` 的兼容导入 Token。
 直接发送以 `SGWCMAID` 开头的凭据时，Bot 会优先撤回原消息、同步 PC，
-并按已绑定的水鱼/落雪 Token 自动上传。
+并按已绑定的水鱼 Token / 落雪 OAuth（或兼容 Token）自动上传。
 
 ---
 

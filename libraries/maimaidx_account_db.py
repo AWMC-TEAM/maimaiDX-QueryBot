@@ -120,6 +120,88 @@ class AccountDatabase:
             self._conn.commit()
         return self.get(key)  # type: ignore[return-value]
 
+    def bind_verified(
+        self,
+        user_key: str,
+        qrcode: str,
+        *,
+        mai_uid: str,
+        user_name: str = "",
+        rating: int = 0,
+    ) -> tuple[AccountBinding, list[str]]:
+        """绑定已验真的街机账号，并认领同一 ``mai_uid`` 的旧记录。
+
+        能读出账号预览的最新 SGWCMAID 被视为本次认领凭证。认领时旧记录
+        不再保留二维码，并把其中已有、而当前记录尚未设置的上传 Token 一并
+        转给当前用户，避免 Koishi/旧 Bot 迁移后要求用户重新配置。
+        """
+        now = time.time()
+        key = str(user_key)
+        uid = str(mai_uid)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                current = self._conn.execute(
+                    "SELECT * FROM account_bindings WHERE user_key = ?", (key,)
+                ).fetchone()
+                previous = self._conn.execute(
+                    """SELECT * FROM account_bindings
+                       WHERE mai_uid = ? AND mai_uid != '' AND user_key != ?
+                       ORDER BY updated_at DESC""",
+                    (uid, key),
+                ).fetchall()
+
+                fish_token = str(current["fish_token"] or "") if current else ""
+                lxns_token = str(current["lxns_token"] or "") if current else ""
+                last_upload_at = current["last_upload_at"] if current else None
+                for row in previous:
+                    fish_token = fish_token or str(row["fish_token"] or "")
+                    lxns_token = lxns_token or str(row["lxns_token"] or "")
+                    candidate = row["last_upload_at"]
+                    if candidate is not None and (
+                        last_upload_at is None or candidate > last_upload_at
+                    ):
+                        last_upload_at = candidate
+
+                claimed_keys = [str(row["user_key"]) for row in previous]
+                if claimed_keys:
+                    placeholders = ",".join("?" for _ in claimed_keys)
+                    self._conn.execute(
+                        f"DELETE FROM account_bindings WHERE user_key IN ({placeholders})",
+                        claimed_keys,
+                    )
+
+                self._conn.execute(
+                    """
+                    INSERT INTO account_bindings
+                        (user_key, mai_uid, qrcode, user_name, rating, fish_token,
+                         lxns_token, bound_at, updated_at, last_upload_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_key) DO UPDATE SET
+                        mai_uid = excluded.mai_uid,
+                        qrcode = excluded.qrcode,
+                        user_name = excluded.user_name,
+                        rating = excluded.rating,
+                        fish_token = excluded.fish_token,
+                        lxns_token = excluded.lxns_token,
+                        bound_at = excluded.bound_at,
+                        updated_at = excluded.updated_at,
+                        last_upload_at = excluded.last_upload_at
+                    """,
+                    (
+                        key, uid, qrcode, user_name, int(rating or 0), fish_token,
+                        lxns_token, now, now, last_upload_at,
+                    ),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        binding = self.get(key)
+        if binding is None:  # pragma: no cover - transaction guarantees this row
+            raise RuntimeError("verified account binding was not persisted")
+        return binding, claimed_keys
+
     def refresh_preview(
         self, user_key: str, *, mai_uid: str, user_name: str, rating: int
     ) -> None:

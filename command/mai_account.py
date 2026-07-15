@@ -20,7 +20,12 @@ from ..config import maiconfig
 from ..libraries.maimaidx_account_db import AccountBinding, account_db
 from ..libraries.maimaidx_admin_audit import admin_audit, redact
 from ..libraries.maimaidx_break import break_db
-from ..libraries.maimaidx_platform import billing_user_id
+from ..libraries.maimaidx_lxns_client import (
+    convert_sega_music_scores,
+    user_upload_scores,
+)
+from ..libraries.maimaidx_lxns_db import lxns_db
+from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_qrcode_util import extract_sgwcmaid_qrcode
 from ..libraries.maimaidx_sw_api import sw_api
@@ -28,13 +33,16 @@ from .mai_agreement import agreement_prompt, has_user_agreed
 
 
 account_help = on_command("mai账号", aliases={"账号帮助", "mai账户"})
-account_bind = on_command("mai绑定", aliases={"绑定舞萌", "舞萌绑定"})
+account_bind = on_command("mai绑定", aliases={"绑定舞萌", "舞萌绑定", "maibind"})
 account_unbind = on_command("mai解绑", aliases={"解绑舞萌", "舞萌解绑"})
 account_status = on_command("mai状态", aliases={"mymai", "舞萌状态"})
-fish_bind = on_command("mai绑定水鱼", aliases={"dfbind", "绑定水鱼token"})
+fish_bind = on_command(
+    "mai绑定水鱼", aliases={"dfbind", "绑定水鱼token", "maibindfish"}
+)
 fish_unbind = on_command("mai解绑水鱼", aliases={"解绑水鱼token"})
 lx_upload_bind = on_command(
-    "mai绑定落雪", aliases={"mai绑定落雪token", "绑定落雪token", "lxuploadbind"}
+    "mai绑定落雪",
+    aliases={"mai绑定落雪token", "绑定落雪token", "lxuploadbind", "maibindlx"},
 )
 lx_upload_unbind = on_command(
     "mai解绑落雪", aliases={"mai解绑落雪token", "解绑落雪token", "lxuploadunbind"}
@@ -43,7 +51,7 @@ upload_fish = on_command("maiu", aliases={"mai上传B50", "上传水鱼"})
 upload_lx = on_command("maiul", aliases={"mai上传落雪b50", "上传落雪"})
 upload_all = on_command("maiua", aliases={"同时上传b50", "全部上传b50"})
 account_ping = on_command("maiping", aliases={"mai连接测试"})
-account_ticket = on_command("mai发票", aliases={"拿票"})
+account_ticket = on_command("mai发票", aliases={"发票", "fp", "拿票"})
 account_ticket_status = on_command("mai查票", aliases={"查票"})
 account_region = on_command("mai地图", aliases={"游玩地图"})
 account_opt = on_command("mai查询opt", aliases={"查询opt"})
@@ -52,11 +60,9 @@ account_queue = on_command("maiqueue", aliases={"mai队列"})
 _RECALL_FAILED_NOTICE = "⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。\n"
 _ACCOUNT_SETUP_GUIDE = (
     "尚未建立账号记录，请按以下步骤完成：\n"
-    "1. 发送「用户协议」，阅读网页并发送完整确认词；\n"
-    "2. 发送「mai绑定」，再提交最新的 SGWCMAID 字符串；\n"
-    "3. 按需发送「mai绑定水鱼 <Token>」或「mai绑定落雪 <导入Token>」；\n"
-    "4. 使用 maiu / maiul / maiua 上传水鱼 / 落雪 / 两边。\n"
-    "二维码和 Token 都是敏感凭据，建议在私聊中操作。"
+    "1. 发送「mai绑定」，再提交最新的 SGWCMAID 字符串；\n"
+    "2. 按需发送「mai绑定水鱼 <Token>」或「mai绑定落雪 <导入Token>」；\n"
+    "3. 使用 maiu / maiul / maiua 上传水鱼 / 落雪 / 两边。"
 )
 
 
@@ -138,6 +144,38 @@ def _result_text(result: dict) -> str:
     if count is not None:
         return f"已处理 {count} 条成绩"
     return "操作已完成"
+
+
+def _oauth_qqid(event: MessageEvent) -> Optional[int]:
+    try:
+        return resolve_score_qqid(event)
+    except Exception:
+        return None
+
+
+def _has_lxns_oauth(event: MessageEvent) -> bool:
+    qqid = _oauth_qqid(event)
+    if qqid is None:
+        return False
+    row = lxns_db.get_user(qqid)
+    return bool(row and row.get("access_token"))
+
+
+async def _lxns_oauth_access_token(event: MessageEvent) -> Optional[str]:
+    """复用现有 lxbind 授权；旧授权缺少写权限时要求重新授权。"""
+    qqid = _oauth_qqid(event)
+    if qqid is None:
+        return None
+    row = lxns_db.get_user(qqid)
+    if not row:
+        return None
+    scope = str(row.get("scope") or "").replace(",", " ").split()
+    if scope and "write_player" not in scope:
+        return None
+    # 延迟导入，避免命令模块初始化时形成循环依赖。
+    from .mai_lxns import _get_valid_access_token
+
+    return await _get_valid_access_token(qqid)
 
 
 def _ensure_business_success(result: dict) -> None:
@@ -240,10 +278,11 @@ async def _():
     ticket_unit = break_db.get_config("ticket_cost_per_multiplier", "2")
     await account_help.finish(
         "AWMC 账号功能（已合并到 QueryBot）\n"
-        "mai绑定 <SGWCMAID> / mai解绑 / mai状态\n"
-        "mai绑定水鱼 <Token> / mai绑定落雪 <导入Token>\n"
+        "mai绑定 / maibind：绑定或认领舞萌账号\n"
+        "mai绑定水鱼 <Token> / maibindfish <Token>\n"
+        "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
         "maiu / maiul / maiua：上传水鱼 / 落雪 / 同时上传\n"
-        "mai发票 <2-6> / mai查票 / mai地图 / maiping\n"
+        "发票 / fp <2-6> / mai查票 / mai地图 / maiping\n"
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
         f"发票价格：倍率 × {ticket_unit} BREAK（例：2倍=4，3倍=6）\n"
         "成绩上传与发票各自每日首次成功免费，失败不扣费。\n"
@@ -302,22 +341,46 @@ async def _(
     if not qrcode:
         await retry("内容不是以 SGWCMAID 开头的完整凭据")
     key = _user_key(event)
+    claimed_keys: list[str] = []
     try:
         preview = await sw_api.get_user_preview(qrcode)
         mai_uid, name, rating, _ = _normalize_preview(preview)
-        account_db.bind(key, qrcode, mai_uid=mai_uid, user_name=name, rating=rating)
-        # 同步给现有 PC 模块，之后可直接使用绑定凭据刷新。
+        _, claimed_keys = account_db.bind_verified(
+            key, qrcode, mai_uid=mai_uid, user_name=name, rating=rating
+        )
+        # 认领后令旧账号保存的 PC 登录凭据失效，避免继续访问同一舞萌账号。
+        for old_key in claimed_keys:
+            try:
+                pc_db.delete_credential(int(old_key))
+            except (TypeError, ValueError):
+                continue
+    except Exception as exc:
+        ref = _log(key, "bind", "error", str(exc))
+        await retry(f"{type(exc).__name__}（Ref_ID: {ref}）")
+
+    # PC 凭据同步失败不回滚已经验真的绑定，避免用户重复提交敏感凭据。
+    pc_status = "skipped"
+    pc_note = ""
+    try:
         from ..libraries.maimaidx_playcount_fetcher import playcount_fetcher
 
         if playcount_fetcher.sdgb_available and sw_api.api_mode == "team":
             await playcount_fetcher.login_by_sdgb(qrcode, int(key))
-        ref = _log(key, "bind", "success", "account_verified")
+            pc_status = "success"
     except Exception as exc:
-        ref = _log(key, "bind", "error", str(exc))
-        await retry(f"{type(exc).__name__}（Ref_ID: {ref}）")
+        pc_status = f"error:{type(exc).__name__}"
+        pc_note = "\nPC 凭据同步暂未完成，可稍后发送「更新pc数」。"
+    operation = "claim" if claimed_keys else "bind"
+    ref = _log(
+        key, operation, "success",
+        f"account_verified,claimed_records={len(claimed_keys)},pc={pc_status}",
+    )
     label = name or "已识别玩家"
+    action = "绑定认领成功" if claimed_keys else "绑定成功"
+    claim_note = "\n旧记录已安全转移，原账号凭据已失效。" if claimed_keys else ""
     await account_bind.finish(
-        recall_notice + f"绑定成功：{label}\nRating：{rating}\nRef_ID: {ref}"
+        recall_notice
+        + f"{action}：{label}\nRating：{rating}{claim_note}{pc_note}\nRef_ID: {ref}"
     )
 
 
@@ -351,10 +414,12 @@ async def _(event: MessageEvent):
         lines.append(f"水鱼 Token：{_mask(binding.fish_token)}")
     else:
         lines.append("水鱼 Token：未绑定\n使用「mai绑定水鱼 <Token>」。")
-    if binding.lxns_token:
-        lines.append(f"落雪 Token：{_mask(binding.lxns_token)}")
+    if _has_lxns_oauth(event):
+        lines.append("落雪上传：OAuth 已绑定（无需导入 Token）")
+    elif binding.lxns_token:
+        lines.append(f"落雪导入 Token：{_mask(binding.lxns_token)}")
     else:
-        lines.append("落雪 Token：未绑定\n使用「mai绑定落雪 <导入Token>」。")
+        lines.append("落雪上传：未绑定\n推荐使用「lxbind」完成 OAuth。")
     if binding.last_upload_at:
         lines.append("最近上传：" + time.strftime("%Y-%m-%d %H:%M", time.localtime(binding.last_upload_at)))
     await account_status.finish("\n".join(lines))
@@ -364,7 +429,12 @@ async def _set_token(matcher, event: MessageEvent, args: Message, kind: str):
     await _require_agreement(matcher, event)
     token = _arg_text(args)
     if not token:
-        await matcher.finish(f"请提供{'水鱼' if kind == 'fish' else '落雪导入'} Token。")
+        if kind == "lxns":
+            await matcher.finish(
+                "推荐发送「lxbind」完成落雪 OAuth，无需提供导入 Token。\n"
+                "兼容用法：mai绑定落雪 <导入Token>"
+            )
+        await matcher.finish("请提供水鱼 Token。")
     if kind == "lxns" and len(token) < 8:
         await matcher.finish("落雪导入 Token 格式过短，请检查后重试。")
     key = _user_key(event)
@@ -428,15 +498,17 @@ async def _upload(
     qrcode = direct_qrcode or binding.qrcode
     if not qrcode:
         return "尚未绑定舞萌账号，请使用 mai绑定，或在上传命令后附带 SGWCMAID。"
-    if fish and lxns and not binding.fish_token and not binding.lxns_token:
+    oauth_token = await _lxns_oauth_access_token(event) if lxns else None
+    has_lxns_upload = bool(oauth_token or binding.lxns_token)
+    if fish and lxns and not binding.fish_token and not has_lxns_upload:
         return (
-            "水鱼和落雪上传 Token 均未绑定。\n"
-            "请使用「mai绑定水鱼 <Token>」和「mai绑定落雪 <导入Token>」。"
+            "水鱼和落雪上传均未绑定。\n"
+            "请使用「mai绑定水鱼 <Token>」，并发送「lxbind」完成落雪 OAuth。"
         )
     if fish and not binding.fish_token:
         return "未绑定水鱼 Token，请使用「mai绑定水鱼 <Token>」。"
-    if lxns and not binding.lxns_token:
-        return "未绑定落雪导入 Token，请使用「mai绑定落雪 <导入Token>」。"
+    if lxns and not has_lxns_upload:
+        return "未绑定落雪上传，请先发送「lxbind」完成 OAuth。"
     operation = "upload_all" if fish and lxns else "upload_fish" if fish else "upload_lx"
     # 三种上传共用一个每日免费额度，避免通过轮流调用水鱼/落雪/同时上传获得三次免费。
     billing_service = "upload"
@@ -449,9 +521,24 @@ async def _upload(
             result = await _await_upload_success(result, lxns=False)
             results.append("水鱼：" + _result_text(result))
         if lxns:
-            result = await sw_api.update_lx(qrcode, binding.lxns_token)
-            result = await _await_upload_success(result, lxns=True)
-            results.append("落雪：" + _result_text(result))
+            if oauth_token:
+                try:
+                    raw_scores = await sw_api.get_user_music(qrcode)
+                    scores = convert_sega_music_scores(raw_scores)
+                    result = await user_upload_scores(oauth_token, scores)
+                    results.append("落雪（OAuth）：" + _result_text(result))
+                except Exception as exc:
+                    if not binding.lxns_token:
+                        raise RuntimeError(
+                            "落雪 OAuth 上传失败，请重新发送 lxbind 授权后重试"
+                        ) from exc
+                    result = await sw_api.update_lx(qrcode, binding.lxns_token)
+                    result = await _await_upload_success(result, lxns=True)
+                    results.append("落雪（兼容 Token）：" + _result_text(result))
+            else:
+                result = await sw_api.update_lx(qrcode, binding.lxns_token)
+                result = await _await_upload_success(result, lxns=True)
+                results.append("落雪（兼容 Token）：" + _result_text(result))
         account_db.mark_uploaded(key)
         from ..libraries.maimaidx_player_cache import invalidate_player_cache
 
@@ -581,7 +668,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     try:
         multiple = int(raw)
     except ValueError:
-        await account_ticket.finish("倍率格式错误，用法：mai发票 2")
+        await account_ticket.finish("倍率格式错误，用法：发票 2（或 fp 2）")
     if multiple not in {2, 3, 4, 5, 6}:
         await account_ticket.finish("票券倍率仅支持 2～6。")
     try:

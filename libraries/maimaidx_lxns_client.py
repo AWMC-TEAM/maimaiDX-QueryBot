@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from ..config import log, maiconfig
+from ..config import maiconfig
 
 _BASE_URL = 'https://maimai.lxns.net'
 # 落雪「无回调模式」标准 OOB 地址（授权后直接在页面显示授权码）
@@ -218,6 +218,86 @@ async def user_get_scores(access_token: str) -> Optional[list]:
             return result.get('data')
 
     return await _billable_lxns_fetch(_fetch())
+
+
+def convert_sega_music_scores(detail_list: List[dict]) -> List[dict]:
+    """把 ``userMusicDetail`` 转成落雪个人 API 接受的 Score 列表。"""
+    combo_map = {0: None, 1: 'fc', 2: 'fcp', 3: 'ap', 4: 'app'}
+    sync_map = {0: None, 1: 'fs', 2: 'fsp', 3: 'fsd', 4: 'fsdp', 5: 'sync'}
+    best: Dict[tuple[int, str, int], dict] = {}
+
+    for item in detail_list:
+        try:
+            raw_id = int(item.get('musicId', 0))
+            level_index = int(item.get('level', 0))
+            achievement = float(item.get('achievement', 0)) / 10000.0
+            dx_score = int(item.get('deluxscoreMax', 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if raw_id <= 0 or not 0 <= level_index <= 4 or achievement < 0:
+            continue
+
+        if raw_id > 100000:
+            song_id, song_type = raw_id, 'utage'
+        elif raw_id >= 10000:
+            song_id, song_type = raw_id % 10000, 'dx'
+        else:
+            song_id, song_type = raw_id, 'standard'
+        if song_id <= 0:
+            continue
+
+        score = {
+            'id': song_id,
+            'type': song_type,
+            'level_index': level_index,
+            'achievements': achievement,
+            'fc': combo_map.get(item.get('comboStatus')),
+            'fs': sync_map.get(item.get('syncStatus')),
+            'dx_score': dx_score,
+        }
+        key = (song_id, song_type, level_index)
+        previous = best.get(key)
+        if previous is None or (achievement, dx_score) > (
+            previous['achievements'], previous['dx_score']
+        ):
+            best[key] = score
+    return list(best.values())
+
+
+async def user_upload_scores(access_token: str, scores: List[dict]) -> Dict[str, Any]:
+    """使用 OAuth ``write_player`` 权限上传当前用户成绩。"""
+    if not scores:
+        raise ValueError('没有可上传到落雪的有效成绩')
+
+    from .maimaidx_admin_audit import admin_audit
+
+    uploaded = 0
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            # 控制单次请求体大小；成绩接口按谱面覆盖，分批重试是幂等的。
+            for offset in range(0, len(scores), 500):
+                batch = scores[offset:offset + 500]
+                resp = await client.post(
+                    f'{_BASE_URL}/api/v0/user/maimai/player/scores',
+                    headers=_oauth_headers(access_token),
+                    json={'scores': batch},
+                )
+                resp.raise_for_status()
+                result = resp.json()
+                if not result.get('success'):
+                    raise ValueError(result.get('message', '上传成绩失败'))
+                uploaded += len(batch)
+    except Exception as exc:
+        admin_audit.add_step(
+            'http.lxns.upload', 'error',
+            {'error': str(exc), 'uploaded': uploaded}, started_at=started,
+        )
+        raise
+    admin_audit.add_step(
+        'http.lxns.upload', 'success', {'count': uploaded}, started_at=started,
+    )
+    return {'success': True, 'count': uploaded, 'oauth': True}
 
 
 async def dev_get_scores(friend_code: int) -> Optional[list]:

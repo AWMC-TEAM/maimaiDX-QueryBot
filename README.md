@@ -266,20 +266,21 @@ BOTNAME=maimai
 | 命令 | 说明 |
 |------|------|
 | `mai账号` | 查看账号功能帮助 |
-| `mai绑定 <二维码>` / `mai解绑` | 绑定或解绑舞萌账号 |
+| `mai绑定` / `maibind` / `mai解绑` | 绑定、认领或解绑舞萌账号 |
 | `mai状态` | 查看绑定、Rating 与上传 Token 状态 |
-| `mai绑定水鱼 <token>` | 绑定水鱼上传 Token |
-| `mai绑定落雪 <导入token>` | 绑定落雪第三方导入 Token |
+| `mai绑定水鱼 <token>` / `maibindfish <token>` | 绑定水鱼上传 Token |
+| `lxbind` | 绑定落雪 OAuth，上传无需导入 Token（推荐） |
+| `mai绑定落雪 <导入token>` / `maibindlx <导入token>` | 绑定落雪导入 Token（兼容） |
 | `maiu` / `maiul` / `maiua` | 上传水鱼 / 落雪 / 同时上传 |
-| `mai发票 <2-6>` / `mai查票` | 票券操作（team 模式） |
+| `发票` / `fp <2-6>` / `mai查票` | 票券操作（team 模式） |
 | `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
 | `迁移Koishi 检查/确认 <数据库>` | 超级管理员预检/导入 Koishi maiBot 数据 |
 
 绑定后执行 `更新pc数` 会直接使用已保存账号，不再要求重复发送二维码。
-落雪查询 OAuth 仍使用 `lxbind`；它与 `mai绑定落雪` 的上传 Token 用途不同。
+落雪上传优先复用 `lxbind` OAuth；仅未授权 OAuth 时才需要落雪导入 Token。
 
 直接发送 `SGWCMAID...` 时，Bot 会先尝试撤回敏感消息，再同步 PC，并按用户
-已绑定的水鱼/落雪 Token 自动上传。账号与 BREAK 功能首次使用前需发送
+已绑定的水鱼 Token / 落雪 OAuth（或兼容 Token）自动上传。账号与 BREAK 功能首次使用前需发送
 `用户协议`，阅读链接并完整输入网页确认词。
 
 Koishi 数据迁移时，将完整数据库放进 `MAIMAIDX_KOISHI_MIGRATION_DIR`，先执行
