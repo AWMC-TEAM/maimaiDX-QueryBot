@@ -71,6 +71,25 @@ class Config(BaseModel):
     maimaidx_user_agreement_required: bool = True
     # Koishi 迁移指令只允许读取此目录；相对路径以插件根目录为准。
     maimaidx_koishi_migration_dir: str = 'data/migration'
+    # ---------- 统一持久化：sqlite | yaml | mysql ----------
+    maimaidx_storage_backend: str = 'sqlite'
+    maimaidx_storage_namespace: str = 'default'
+    maimaidx_storage_yaml_path: str = 'data/storage/state.yaml'
+    maimaidx_storage_mysql_host: str = ''
+    maimaidx_storage_mysql_port: int = 3306
+    maimaidx_storage_mysql_user: str = ''
+    maimaidx_storage_mysql_password: str = ''
+    maimaidx_storage_mysql_database: str = ''
+    maimaidx_storage_mysql_charset: str = 'utf8mb4'
+    maimaidx_storage_mysql_table_prefix: str = 'maimaidx_'
+    maimaidx_storage_mysql_ssl: bool = False
+    maimaidx_storage_mysql_keep_snapshots: int = 3
+    maimaidx_storage_sync_interval_seconds: int = 60
+    maimaidx_storage_include_user_scores: bool = True
+    # auto：同一后端沿用本地工作缓存；remote：每次启动强制从后端恢复。
+    maimaidx_storage_bootstrap_policy: str = 'auto'
+    maimaidx_storage_allow_empty_remote_init: bool = False
+    maimaidx_storage_fail_fast: bool = True
     # ---------- 曲目数据源切换（可选） ----------
     # 留空/不设置 = 使用水鱼查分器 API（默认）
     # "dxdata" = 使用本地 dxdata.json 文件，无需网络
@@ -124,6 +143,16 @@ class Config(BaseModel):
 
 
 maiconfig = get_plugin_config(Config)
+
+# 在其它模块创建 SQLite 连接前恢复所选持久化后端。
+try:
+    from .libraries.maimaidx_storage import bootstrap_storage
+    log.info(f"统一存储：{bootstrap_storage(maiconfig)}")
+except Exception as exc:
+    message = f"统一存储初始化失败：{type(exc).__name__}: {exc}"
+    if bool(getattr(maiconfig, 'maimaidx_storage_fail_fast', True)):
+        raise RuntimeError(message) from exc
+    log.error(message + "；已按配置允许继续使用现有本地数据")
 
 BOT_QQ_GROUP = '1072033605'
 UPSTREAM_REPO_URL = 'https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx'

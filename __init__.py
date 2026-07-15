@@ -8,6 +8,7 @@ from .command import *
 nonebot.load_plugin("nonebot_plugin_maimaidx.command.mai_jacket")
 from .libraries.maimaidx_music_info import get_music_tags, _get_dxrating_token
 from .libraries import maimaidx_admin_web as _maimaidx_admin_web  # 注册可选管理 WebUI
+from .libraries import maimaidx_storage_runtime as _maimaidx_storage_runtime  # 统一存储同步
 
 scheduler = require('nonebot_plugin_apscheduler')
 

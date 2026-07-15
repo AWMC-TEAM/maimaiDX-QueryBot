@@ -160,6 +160,20 @@ API 强制使用 Bearer Token，页面不会返回二维码、水鱼/落雪 Toke
 与业务结果，并省略非必要的“处理中”消息，以降低平台消息发送频率。二维码补交、
 猜歌阶段提示等需要用户继续交互的消息不会被省略。
 
+### SQLite / YAML / MySQL 统一存储
+
+默认继续使用原生 SQLite/JSON。迁移到 MySQL 时先填写
+`MAIMAIDX_STORAGE_MYSQL_*`，再由超级管理员执行：
+
+```text
+存储迁移 检查 sqlite mysql
+存储迁移 确认 sqlite mysql
+```
+
+成功后设置 `MAIMAIDX_STORAGE_BACKEND=mysql` 并重启。YAML 与反向迁移同样支持，
+每次迁移都会校验逐文件及总体 SHA-256。详见 `docs/统一存储与迁移说明.md`；
+本轮全部新增变量见 `docs/今日新增ENV配置.md`。
+
 ### 代理与其它（可选）
 
 ```env

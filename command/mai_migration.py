@@ -17,6 +17,14 @@ from ..config import maiconfig
 from ..libraries.maimaidx_account_db import account_db
 from ..libraries.maimaidx_admin_audit import admin_audit, redact
 from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY
+from ..libraries.maimaidx_storage import (
+    StorageError,
+    backend_name,
+    check_target,
+    collect_local_snapshot,
+    load_snapshot,
+    save_snapshot,
+)
 
 
 koishi_migrate = on_command(
@@ -24,6 +32,9 @@ koishi_migrate = on_command(
     aliases={"迁移koishi", "迁移maibot", "迁移maiBot"},
     permission=PLUGIN_ADMIN_ONLY,
 )
+storage_status = on_command("存储状态", aliases={"数据存储状态"}, permission=PLUGIN_ADMIN_ONLY)
+storage_migrate = on_command("存储迁移", aliases={"数据迁移"}, permission=PLUGIN_ADMIN_ONLY)
+storage_sync = on_command("存储同步", aliases={"数据同步"}, permission=PLUGIN_ADMIN_ONLY)
 
 _MIGRATOR: Optional[ModuleType] = None
 _ALLOWED_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".json"}
@@ -161,4 +172,106 @@ async def _(args=CommandArg()):
             confirmed=confirmed,
             map_name=identity_path.name if identity_path else "",
         )
+    )
+
+
+def _storage_help() -> str:
+    return (
+        "统一存储迁移（仅插件管理员）\n"
+        "后端：sqlite / yaml / mysql\n"
+        "预检：存储迁移 检查 sqlite mysql\n"
+        "确认：存储迁移 确认 sqlite mysql\n"
+        "其它：存储状态 / 存储同步\n"
+        "确认迁移后修改 MAIMAIDX_STORAGE_BACKEND 并重启 Bot。"
+    )
+
+
+def _snapshot_line(snapshot: dict) -> str:
+    mib = snapshot["total_bytes"] / 1024 / 1024
+    return (
+        f"{snapshot['file_count']} 个文件 / {mib:.2f} MiB / "
+        f"SHA-256 {snapshot['manifest'][:16]}…"
+    )
+
+
+@storage_status.handle()
+async def _():
+    try:
+        selected = backend_name(maiconfig)
+        local = await asyncio.to_thread(collect_local_snapshot, maiconfig)
+        lines = [f"当前配置后端：{selected}", "本地工作数据：" + _snapshot_line(local)]
+        if selected != "sqlite":
+            remote = await asyncio.to_thread(load_snapshot, maiconfig, selected)
+            lines.append(f"{selected} 持久化快照：" + _snapshot_line(remote))
+            lines.append("同步状态：" + ("一致" if local["manifest"] == remote["manifest"] else "有待同步变更"))
+    except Exception as exc:
+        await storage_status.finish(
+            f"存储状态检查失败：{redact(str(exc))}"
+        )
+    await storage_status.finish("\n".join(lines))
+
+
+@storage_sync.handle()
+async def _():
+    selected = backend_name(maiconfig)
+    if selected == "sqlite":
+        await storage_sync.finish("当前使用原生 SQLite/JSON，本地写入已即时生效，无需同步。")
+    try:
+        from ..libraries.maimaidx_storage_runtime import sync_storage_now
+
+        snapshot = await sync_storage_now()
+    except Exception as exc:
+        await storage_sync.finish(f"存储同步失败：{redact(str(exc))}")
+    await storage_sync.finish(f"已同步到 {selected}：{_snapshot_line(snapshot)}")
+
+
+@storage_migrate.handle()
+async def _(args=CommandArg()):
+    raw = args.extract_plain_text().strip()
+    if not raw or raw.lower() in {"帮助", "help", "?"}:
+        await storage_migrate.finish(_storage_help())
+    parts = raw.lower().split()
+    if len(parts) != 3 or parts[0] not in {"检查", "预检", "确认", "执行"}:
+        await storage_migrate.finish(_storage_help())
+    action, source_backend, target_backend = parts
+    allowed = {"sqlite", "yaml", "mysql"}
+    if source_backend not in allowed or target_backend not in allowed:
+        await storage_migrate.finish("后端只能是 sqlite、yaml 或 mysql。")
+    if source_backend == target_backend:
+        await storage_migrate.finish("源后端和目标后端不能相同。")
+    confirmed = action in {"确认", "执行"}
+    try:
+        snapshot = await asyncio.to_thread(load_snapshot, maiconfig, source_backend)
+        await asyncio.to_thread(check_target, maiconfig, target_backend)
+    except Exception as exc:
+        reason = redact(str(exc))
+        admin_audit.add_step("migration.storage", "error", {"error": reason})
+        await storage_migrate.finish(f"存储迁移失败：{reason}")
+    if not confirmed:
+        await storage_migrate.finish(
+            "存储迁移预检通过（尚未写入）\n"
+            f"{source_backend} → {target_backend}\n"
+            f"数据：{_snapshot_line(snapshot)}\n"
+            f"确认执行：存储迁移 确认 {source_backend} {target_backend}"
+        )
+    try:
+        detail = await asyncio.to_thread(save_snapshot, maiconfig, target_backend, snapshot)
+        if target_backend != "sqlite":
+            verified = await asyncio.to_thread(load_snapshot, maiconfig, target_backend)
+            if verified["manifest"] != snapshot["manifest"]:
+                raise StorageError("目标后端写入后总校验不一致")
+        admin_audit.add_step(
+            "migration.storage",
+            "success",
+            {"source": source_backend, "target": target_backend, "manifest": snapshot["manifest"]},
+        )
+    except Exception as exc:
+        reason = redact(str(exc))
+        admin_audit.add_step("migration.storage", "error", {"error": reason})
+        await storage_migrate.finish(f"存储迁移失败：{reason}")
+    await storage_migrate.finish(
+        "存储迁移成功\n"
+        f"{source_backend} → {target_backend}\n"
+        f"数据：{_snapshot_line(snapshot)}\n{detail}\n"
+        f"下一步：设置 MAIMAIDX_STORAGE_BACKEND={target_backend} 并重启 Bot。"
     )
