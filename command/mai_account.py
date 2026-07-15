@@ -58,6 +58,9 @@ account_opt = on_command("mai查询opt", aliases={"查询opt"})
 account_queue = on_command("maiqueue", aliases={"mai队列"})
 
 _RECALL_FAILED_NOTICE = "⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。\n"
+_DIVING_FISH_PROBER_URL = "https://www.diving-fish.com/maimaidx/prober/"
+_FISH_TOKEN_MIN_LENGTH = 127
+_FISH_TOKEN_MAX_LENGTH = 132
 _ACCOUNT_SETUP_GUIDE = (
     "尚未建立账号记录，请按以下步骤完成：\n"
     "1. 发送「mai绑定」，再提交最新的 SGWCMAID 字符串；\n"
@@ -440,7 +443,7 @@ async def _():
         "AWMC 账号功能（已合并到 QueryBot）\n"
         "mai绑定 / maibind：绑定或认领舞萌账号\n"
         "mai状态 / mymai：查看详细状态，缓存失效时引导刷新二维码\n"
-        "mai绑定水鱼 <Token> / maibindfish <Token>\n"
+        "mai绑定水鱼 [Token] / maibindfish：无参数时交互引导，最多重试 3 次\n"
         "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
         "maiu / maiul / maiua：上传水鱼 / 落雪 / 同时上传\n"
         "发票 / fp <2-6> / mai查票 / mai地图 / maiping\n"
@@ -658,18 +661,7 @@ async def _(
     )
 
 
-async def _set_token(matcher, event: MessageEvent, args: Message, kind: str):
-    await _require_agreement(matcher, event)
-    token = _arg_text(args)
-    if not token:
-        if kind == "lxns":
-            await matcher.finish(
-                "推荐发送「lxbind」完成落雪 OAuth，无需提供导入 Token。\n"
-                "兼容用法：mai绑定落雪 <导入Token>"
-            )
-        await matcher.finish("请提供水鱼 Token。")
-    if kind == "lxns" and len(token) < 8:
-        await matcher.finish("落雪导入 Token 格式过短，请检查后重试。")
+def _save_upload_token(event: MessageEvent, token: str, kind: str) -> str:
     key = _user_key(event)
     account_db.set_token(key, kind, token)
     try:
@@ -679,18 +671,87 @@ async def _set_token(matcher, event: MessageEvent, args: Message, kind: str):
             pc_db.save_prober_token(int(key), lxns_code=token)
     except (TypeError, ValueError):
         pass
-    ref = _log(key, f"bind_{kind}", "success")
-    await matcher.finish(f"{'水鱼' if kind == 'fish' else '落雪'} Token 已绑定。\nRef_ID: {ref}")
+    return _log(key, f"bind_{kind}", "success")
 
 
 @fish_bind.handle()
-async def _(event: MessageEvent, args: Message = CommandArg()):
-    await _set_token(fish_bind, event, args, "fish")
+async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
+    await _require_agreement(fish_bind, event)
+    token = _arg_text(args)
+    if token:
+        matcher.set_arg("fish_token", Message(token))
+        return
+    await fish_bind.send(
+        "🐟 水鱼 Import-Token 获取方式：\n"
+        f"1. 打开水鱼查分器：{_DIVING_FISH_PROBER_URL}\n"
+        "2. 登录后进入「编辑个人资料」；\n"
+        "3. 找到 Import-Token，生成后复制完整 Token 发给我。\n\n"
+        "我会等待你的输入；格式不正确时可以重试，本轮最多 3 次。\n"
+        "发送「取消」可结束绑定。",
+        reply_message=True,
+    )
+
+
+@fish_bind.got("fish_token")
+async def _(
+    matcher: Matcher,
+    bot: Bot,
+    event: MessageEvent,
+    token_message: Message = Arg("fish_token"),
+):
+    token = token_message.extract_plain_text().strip()
+    if token.lower() in {"取消", "cancel", "q", "退出"}:
+        await fish_bind.finish("已取消水鱼 Token 绑定。", reply_message=True)
+
+    recall_notice = ""
+    if token:
+        try:
+            await bot.delete_msg(message_id=event.message_id)
+        except Exception:
+            recall_notice = _RECALL_FAILED_NOTICE
+
+    if not (_FISH_TOKEN_MIN_LENGTH <= len(token) <= _FISH_TOKEN_MAX_LENGTH):
+        attempt = int(matcher.state.get("fish_token_retry", 0)) + 1
+        matcher.state["fish_token_retry"] = attempt
+        reason = (
+            f"Token 长度为 {len(token)}，应为 "
+            f"{_FISH_TOKEN_MIN_LENGTH}–{_FISH_TOKEN_MAX_LENGTH} 个字符。"
+        )
+        if attempt >= 3:
+            await fish_bind.finish(
+                recall_notice
+                + f"❌ {reason}\n已连续输入失败 3 次，本轮绑定已结束。\n"
+                "请重新生成完整 Import-Token 后，再发送「maibindfish」。",
+                reply_message=True,
+            )
+        await fish_bind.reject(
+            recall_notice
+            + f"❌ {reason}\n"
+            f"请重新复制完整 Import-Token 发给我（{attempt}/3）。\n"
+            "发送「取消」可退出。",
+            reply_message=True,
+        )
+
+    ref = _save_upload_token(event, token, "fish")
+    await fish_bind.finish(
+        f"✅ 水鱼 Token 已绑定。\nToken：{_mask(token, 8, 4)}\nRef_ID: {ref}",
+        reply_message=True,
+    )
 
 
 @lx_upload_bind.handle()
 async def _(event: MessageEvent, args: Message = CommandArg()):
-    await _set_token(lx_upload_bind, event, args, "lxns")
+    await _require_agreement(lx_upload_bind, event)
+    token = _arg_text(args)
+    if not token:
+        await lx_upload_bind.finish(
+            "推荐发送「lxbind」完成落雪 OAuth，无需提供导入 Token。\n"
+            "兼容用法：mai绑定落雪 <导入Token>"
+        )
+    if len(token) < 8:
+        await lx_upload_bind.finish("落雪导入 Token 格式过短，请检查后重试。")
+    ref = _save_upload_token(event, token, "lxns")
+    await lx_upload_bind.finish(f"落雪 Token 已绑定。\nRef_ID: {ref}")
 
 
 async def _clear_token(matcher, event: MessageEvent, kind: str):
