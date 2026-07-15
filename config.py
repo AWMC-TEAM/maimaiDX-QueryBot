@@ -48,7 +48,11 @@ class Config(BaseModel):
     awmc_api_retry_count: int = 3
     awmc_api_retry_delay_seconds: float = 1.0
     awmc_upload_poll_interval_seconds: float = 3.0
-    awmc_upload_poll_timeout_seconds: float = 600.0
+    # 公共网关异步上传轮询上限；过长会让兼容 Token 路径表现为「卡住不动」。
+    awmc_upload_poll_timeout_seconds: float = 120.0
+    # 全量 user/music 超时与重试（落雪 OAuth 主路径依赖）。
+    awmc_user_music_timeout_seconds: float = 90.0
+    awmc_user_music_retry_count: int = 1
     # PC / 水鱼 / 落雪依次使用同一机台会话时的间隔，避免登录互相挤掉。
     awmc_machine_step_delay_seconds: float = 3.0
     # 等待全局机台锁的最长时间（秒）；0=无限等待。超时返回「机台繁忙」。

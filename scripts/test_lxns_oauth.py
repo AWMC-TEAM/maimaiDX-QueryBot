@@ -82,7 +82,15 @@ scores = convert(
             "comboStatus": 4,
             "syncStatus": 3,
             "deluxscoreMax": 1234,
-        }
+        },
+        {
+            "musicId": 1,
+            "level": 0,
+            "achievement": 970000,
+            "comboStatus": 0,
+            "syncStatus": 0,
+            "deluxscoreMax": 0,
+        },
     ]
 )
 assert scores == [
@@ -91,10 +99,17 @@ assert scores == [
         "type": "dx",
         "level_index": 4,
         "achievements": 100.5,
+        "dx_score": 1234,
         "fc": "app",
         "fs": "fsd",
-        "dx_score": 1234,
-    }
+    },
+    {
+        "id": 1,
+        "type": "standard",
+        "level_index": 0,
+        "achievements": 97.0,
+        "dx_score": 0,
+    },
 ]
 
 print("LXNS OAuth tests: ok")

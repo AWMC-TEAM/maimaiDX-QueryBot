@@ -965,11 +965,18 @@ async def _upload(
     if not qrcode:
         return "尚未绑定舞萌账号，请使用 mai绑定，或在上传命令后附带 SGWCMAID。"
     oauth_token = await _lxns_oauth_access_token(event) if lxns else None
+    has_lxns_oauth = _has_lxns_oauth(event) if lxns else False
     has_lxns_upload = bool(oauth_token or binding.lxns_token)
     if lxns and not oauth_token and _lxns_oauth_missing_write_scope(event):
         return (
             "落雪 OAuth 授权缺少 write_player 写入权限。"
             "请让管理员在落雪 OAuth 应用中启用该权限，然后重新发送 lxbind 授权。"
+        )
+    # OAuth 已绑定但拿不到有效 token（常见：refresh 失败）时，不要静默改走兼容路径。
+    if lxns and has_lxns_oauth and not oauth_token:
+        return (
+            "落雪 OAuth Token 已失效且自动刷新失败。"
+            "请重新发送「lxbind」完成授权后再上传。"
         )
     if fish and lxns and not binding.fish_token and not has_lxns_upload:
         return (
@@ -1020,12 +1027,19 @@ async def _upload(
             if fish:
                 await wait_between_machine_steps()
             if oauth_token:
+                # 主路径：机台全量成绩 + OAuth 直传落雪。
+                # 不再回退 update_lx：get_user_music 已占用二维码/机台会话，
+                # 再走兼容导入只会长时间挂起或二次失败。
                 lxns_stage = "读取玩家 PC 数据"
                 try:
+                    log.info(f"[upload] 落雪 OAuth：开始读取机台成绩 user={key}")
                     raw_scores = await sw_api.get_user_music(qrcode)
                     scores = convert_sega_music_scores(raw_scores)
                     if not scores:
                         raise RuntimeError("机台返回的成绩无法转换为落雪 Score")
+                    log.info(
+                        f"[upload] 落雪 OAuth：转换完成 {len(scores)} 条，开始写入落雪"
+                    )
                     lxns_stage = "向落雪写入成绩"
                     try:
                         result = await user_upload_scores(oauth_token, scores)
@@ -1040,16 +1054,12 @@ async def _upload(
                         result = await user_upload_scores(refreshed_token, scores)
                     results.append("落雪（OAuth）：" + _result_text(result))
                 except Exception as exc:
-                    if not binding.lxns_token:
-                        raise RuntimeError(
-                            _lxns_upload_failure_text(exc, stage=lxns_stage)
-                            + "。请修正后重新发送 lxbind 授权并重试"
-                        ) from exc
-                    await wait_between_machine_steps()
-                    result = await sw_api.update_lx(qrcode, binding.lxns_token)
-                    result = await _await_upload_success(result, lxns=True)
-                    results.append("落雪（兼容 Token）：" + _result_text(result))
+                    raise RuntimeError(
+                        _lxns_upload_failure_text(exc, stage=lxns_stage)
+                        + "。请修正后重新发送 lxbind 授权并重试"
+                    ) from exc
             else:
+                log.info(f"[upload] 落雪兼容 Token：开始 update_lx user={key}")
                 result = await sw_api.update_lx(qrcode, binding.lxns_token)
                 result = await _await_upload_success(result, lxns=True)
                 results.append("落雪（兼容 Token）：" + _result_text(result))

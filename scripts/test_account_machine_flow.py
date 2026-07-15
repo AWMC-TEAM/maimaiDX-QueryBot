@@ -118,4 +118,23 @@ assert fake_db.saved is not None
 assert fake_db.saved[1]["refresh_token"] == "old-refresh"
 assert fake_db.saved[1]["scope"] == "read_player write_player"
 
+# 落雪 OAuth 主路径失败后不得再静默回退 update_lx（会二次占用已消耗的二维码并长时间挂起）。
+upload_src = (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
+assert "不再回退 update_lx" in upload_src
+assert "OAuth Token 已失效且自动刷新失败" in upload_src
+fallback_block = (
+    "if not binding.lxns_token:\n"
+    "                        raise RuntimeError(\n"
+    "                            _lxns_upload_failure_text(exc, stage=lxns_stage)\n"
+    "                            + \"。请修正后重新发送 lxbind 授权并重试\"\n"
+    "                        ) from exc\n"
+    "                    await wait_between_machine_steps()\n"
+    "                    result = await sw_api.update_lx(qrcode, binding.lxns_token)"
+)
+assert fallback_block not in upload_src
+
+sw_api_src = (ROOT / "libraries" / "maimaidx_sw_api.py").read_text(encoding="utf-8")
+assert "awmc_user_music_timeout_seconds" in sw_api_src
+assert 'timeout=90,\n            retry_count=0,' in sw_api_src  # update_lx team 快失败
+
 print("account machine flow tests: ok")

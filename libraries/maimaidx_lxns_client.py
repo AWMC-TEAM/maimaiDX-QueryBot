@@ -123,7 +123,8 @@ async def fetch_token(code: str) -> Dict[str, Any]:
         'redirect_uri': redirect_uri,
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    timeout = httpx.Timeout(connect=10.0, read=20.0, write=20.0, pool=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(f'{_BASE_URL}/api/v0/oauth/token', json=payload)
         return _parse_oauth_token_response(resp, operation='OAuth 授权码兑换')
 
@@ -139,7 +140,8 @@ async def refresh_token(refresh_token: str) -> Dict[str, Any]:
         'grant_type': 'refresh_token',
         'refresh_token': refresh_token,
     }
-    async with httpx.AsyncClient(timeout=30) as client:
+    timeout = httpx.Timeout(connect=10.0, read=20.0, write=20.0, pool=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(f'{_BASE_URL}/api/v0/oauth/token', json=payload)
         return _parse_oauth_token_response(resp, operation='OAuth Token 刷新')
 
@@ -299,10 +301,15 @@ def convert_sega_music_scores(detail_list: List[dict]) -> List[dict]:
             'type': song_type,
             'level_index': level_index,
             'achievements': achievement,
-            'fc': combo_map.get(item.get('comboStatus')),
-            'fs': sync_map.get(item.get('syncStatus')),
             'dx_score': dx_score,
         }
+        fc = combo_map.get(item.get('comboStatus'))
+        fs = sync_map.get(item.get('syncStatus'))
+        # 落雪 Score 接口期望缺省字段省略，而不是显式 null。
+        if fc:
+            score['fc'] = fc
+        if fs:
+            score['fs'] = fs
         key = (song_id, song_type, level_index)
         previous = best.get(key)
         if previous is None or (achievement, dx_score) > (
@@ -321,8 +328,10 @@ async def user_upload_scores(access_token: str, scores: List[dict]) -> Dict[str,
 
     uploaded = 0
     started = time.time()
+    # 连接/读超时分开，避免单批卡死拖垮整次上传。
+    timeout = httpx.Timeout(connect=10.0, read=45.0, write=45.0, pool=10.0)
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             # 控制单次请求体大小；成绩接口按谱面覆盖，分批重试是幂等的。
             for offset in range(0, len(scores), 500):
                 batch = scores[offset:offset + 500]
