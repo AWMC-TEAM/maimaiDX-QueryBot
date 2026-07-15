@@ -51,6 +51,8 @@ class Config(BaseModel):
     awmc_upload_poll_timeout_seconds: float = 600.0
     # PC / 水鱼 / 落雪依次使用同一机台会话时的间隔，避免登录互相挤掉。
     awmc_machine_step_delay_seconds: float = 3.0
+    # 等待全局机台锁的最长时间（秒）；0=无限等待。超时返回「机台繁忙」。
+    awmc_machine_lock_timeout_seconds: float = 180.0
     # 发票允许倍率，使用英文逗号分隔，例如 2,3,5。
     awmc_ticket_allowed_multipliers: str = '2,3,5'
     # 合并后的账号功能总开关；关闭时不注册外部调用，但本地查分不受影响。
@@ -77,6 +79,8 @@ class Config(BaseModel):
     maimaidx_message_stats_enabled: bool = True
     # 合并连续提示并省略非必要的“处理中”消息，降低平台发信频率。
     maimaidx_compact_messages: bool = True
+    # 开始处理时对触发消息贴的 QQ 表情 ID（NapCat set_msg_emoji_like）；空=关闭。
+    maimaidx_processing_emoji_id: str = '424'
     # 开启后，绑定、上传和发票前需先同意当前用户协议。
     maimaidx_user_agreement_required: bool = True
     # Koishi 迁移指令只允许读取此目录；相对路径以插件根目录为准。

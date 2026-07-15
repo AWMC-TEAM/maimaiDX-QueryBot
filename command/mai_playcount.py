@@ -15,9 +15,11 @@ from ..libraries.maimaidx_datasource import get_user_source
 from ..libraries.maimaidx_error import QBindRequiredError
 from ..libraries.maimaidx_music import feature_manager
 from ..libraries.maimaidx_machine_session import (
+    MachineBusyError,
     machine_session,
     wait_between_machine_steps,
 )
+from ..libraries.maimaidx_reaction import react_processing
 from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_playcount_fetcher import playcount_fetcher
@@ -41,12 +43,22 @@ pc50 = on_command('pc50', aliases={'PC50', '嫖娼50'})
 pca50 = on_command('pca50', aliases={'PCA50', '嫖娼a50'})
 pc_rank50 = on_command('游玩排行50', aliases={'游玩PC50', 'PC游玩50', 'pc游玩50'})
 
-_waiting_qrcode: dict[int, bool] = {}
+# user_id -> group_id；关机时可据此通知对应群
+_waiting_qrcode: dict[int, int] = {}
 _qrcode_auto_dedupe: dict[tuple[int, str], float] = {}
 _qrcode_auto_processing: set[int] = set()
 _qrcode_retry_state: dict[int, tuple[int, float]] = {}
 _QRCODE_AUTO_DEDUPE_SECONDS = 60
 _QRCODE_RETRY_WINDOW_SECONDS = 180
+
+
+def drain_waiting_qrcode_sessions() -> list[tuple[int, int]]:
+    """取出并清空所有「等待二维码」会话，供关机通知使用。"""
+    items = list(_waiting_qrcode.items())
+    _waiting_qrcode.clear()
+    _qrcode_retry_state.clear()
+    _qrcode_auto_processing.clear()
+    return items
 
 
 # 仅拦截“直接发送”的 SGWCMAID/官方二维码链接；显式命令仍交给命令处理器。
@@ -154,7 +166,7 @@ async def handle_update_pc(bot: Bot, event: GroupMessageEvent):
             '⚠️ 请注意保护好你的二维码数据，不要发给他人。'
         )
     )
-    _waiting_qrcode[qqid] = True
+    _waiting_qrcode[qqid] = int(event.group_id)
 
 
 @update_pc.receive()
@@ -165,7 +177,7 @@ async def receive_qrcode(bot: Bot, event: GroupMessageEvent):
     if qqid not in _waiting_qrcode:
         return
 
-    del _waiting_qrcode[qqid]
+    _waiting_qrcode.pop(qqid, None)
 
     raw_text = event.get_plaintext()
     qrcode_data = extract_sgwcmaid_qrcode(raw_text)
@@ -321,7 +333,7 @@ async def _handle_sdgb_update(
 
         account_db.mark_qrcode_result(str(qqid), False)
         if retry_on_cached_failure:
-            _waiting_qrcode[qqid] = True
+            _waiting_qrcode[qqid] = int(event.group_id)
             await matcher.send(
                 MessageSegment.reply(event.message_id)
                 + MessageSegment.text(
@@ -424,6 +436,8 @@ async def _process_auto_qrcode(
     source: str,
 ):
     """统一处理文字、链接及图片识别出的舞萌凭据。"""
+    # 先贴表情再撤回，避免用户长时间无反馈。
+    await react_processing(bot, event)
     recalled = True
     try:
         await bot.delete_msg(message_id=event.message_id)
@@ -497,6 +511,27 @@ async def _process_auto_qrcode(
                         _machine_locked=True,
                         _qrcode_verified=True,
                     )
+        except MachineBusyError as exc:
+            from .mai_account import _log
+
+            ref = _log(
+                str(qqid),
+                'auto_qrcode',
+                'error',
+                f'source={source},error=MachineBusyError',
+            )
+            from ..libraries.maimaidx_admin_audit import admin_audit
+
+            admin_audit.finish_trace(ref, 'error', error=exc)
+            log.warning(
+                f'[QrcodeAuto] 机台繁忙 source={source} qq={qqid} '
+                f'({time.perf_counter() - t0:.2f}s): {exc}'
+            )
+            await bot.send(
+                event,
+                recall_warning + f'{exc}\n请稍后再发送最新二维码。\nRef_ID: {ref}',
+            )
+            return
         except Exception as exc:
             _qrcode_retry_release_dedupe(qqid, qrcode_data)
             account_db.mark_qrcode_result(str(qqid), False)

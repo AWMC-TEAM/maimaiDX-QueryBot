@@ -275,7 +275,7 @@ BOTNAME=maimai
 | `mai绑定水鱼 [token]` / `maibindfish [token]` | 绑定水鱼上传 Token；无参数时提供获取链接并交互等待，最多重试 3 次 |
 | `lxbind` | 绑定落雪 OAuth，上传无需导入 Token（推荐） |
 | `mai绑定落雪 <导入token>` / `maibindlx <导入token>` | 绑定落雪导入 Token（兼容） |
-| `maiu` / `maiul` / `maiua` | 上传水鱼 / 落雪 / 同时上传 |
+| `maiu` / `导` / `maiul` / `maiua` | 上传水鱼 / 落雪 / 同时上传 |
 | `发票` / `fp <2/3/5>` / `mai查票` | 票券操作（team 模式，允许倍率可由 ENV 配置） |
 | `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
 | `迁移Koishi 检查/确认 <数据库>` | 超级管理员预检/导入 Koishi maiBot 数据 |

@@ -30,6 +30,7 @@ from ..libraries.maimaidx_lxns_client import (
 )
 from ..libraries.maimaidx_lxns_db import lxns_db
 from ..libraries.maimaidx_platform import resolve_score_qqid
+from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 
 # ─────────────────────────── helpers ───────────────────────────
 
@@ -89,7 +90,7 @@ lxbind = on_command('lxbind', aliases={'绑定落雪', '绑定lx'})
 
 
 @lxbind.handle()
-async def _lxbind(matcher: Matcher, message: Message = CommandArg()):
+async def _lxbind(matcher: Matcher, event: MessageEvent, message: Message = CommandArg()):
     if not maiconfig.lx_client_id or not maiconfig.lx_client_secret:
         await lxbind.finish('Bot 管理员尚未配置落雪 OAuth 信息，无法绑定。', reply_message=True)
 
@@ -112,19 +113,23 @@ async def _lxbind(matcher: Matcher, message: Message = CommandArg()):
             「隐私设置」开启允许读取成绩，
             否则 Bot 将无法查询你的成绩
         """).strip()
+        track_event(session_key('lxbind', event), event)
         await lxbind.send(prompt, reply_message=True)
 
 
 @lxbind.got('code')
 async def _lxbind_got(matcher: Matcher, event: MessageEvent, code_msg: Message = Arg('code')):
+    pending_key = session_key('lxbind', event)
     try:
         qqid = _lxns_qqid(event)
     except QBindRequiredError as e:
+        finish_pending(pending_key)
         await lxbind.finish(str(e), reply_message=True)
     code = code_msg.extract_plain_text().strip()
 
     # 取消机制
     if code.lower() in ('取消', 'cancel', 'q', '退出'):
+        finish_pending(pending_key)
         await lxbind.finish('已取消落雪绑定。', reply_message=True)
 
     # 格式校验 + 限制重试次数（最多 3 次）
@@ -132,10 +137,12 @@ async def _lxbind_got(matcher: Matcher, event: MessageEvent, code_msg: Message =
         retry = matcher.state.get('lxbind_retry', 0) + 1
         matcher.state['lxbind_retry'] = retry
         if retry >= 3:
+            finish_pending(pending_key)
             await lxbind.finish(
                 '授权码格式错误次数过多，已退出绑定。\n请重新发送 lxbind 再试。',
                 reply_message=True,
             )
+        track_event(pending_key, event)
         await lxbind.reject(
             f'授权码格式错误，应为 XXXX-XXXX-XXXX，请重新发送。（{retry}/3）\n'
             f'若你发的是 QQ 号，请先发送：qbind 你的QQ号\n'
@@ -148,6 +155,7 @@ async def _lxbind_got(matcher: Matcher, event: MessageEvent, code_msg: Message =
         token_data = await fetch_token(code)
     except Exception as e:
         log.error(f'[lxbind] token exchange failed: {e}')
+        finish_pending(pending_key)
         await lxbind.finish(f'授权码兑换失败：{e}', reply_message=True)
 
     access_token = token_data['access_token']
@@ -184,6 +192,7 @@ async def _lxbind_got(matcher: Matcher, event: MessageEvent, code_msg: Message =
         if not scope_items or 'write_player' in scope_items
         else '\n⚠️ 本次授权缺少 write_player，无法上传成绩；请联系管理员检查 OAuth 应用权限。'
     )
+    finish_pending(pending_key)
     await lxbind.finish(
         f'落雪绑定成功！\n'
         f'昵称：{nickname}\n'

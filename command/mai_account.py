@@ -28,12 +28,15 @@ from ..libraries.maimaidx_lxns_client import (
 )
 from ..libraries.maimaidx_lxns_db import lxns_db
 from ..libraries.maimaidx_machine_session import (
+    MachineBusyError,
     machine_session,
     wait_between_machine_steps,
 )
 from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_qrcode_util import extract_sgwcmaid_qrcode
+from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
+from ..libraries.maimaidx_reaction import react_processing
 from ..libraries.maimaidx_sw_api import sw_api
 from .mai_agreement import agreement_prompt, has_user_agreed
 
@@ -53,7 +56,7 @@ lx_upload_bind = on_command(
 lx_upload_unbind = on_command(
     "mai解绑落雪", aliases={"mai解绑落雪token", "解绑落雪token", "lxuploadunbind"}
 )
-upload_fish = on_command("maiu", aliases={"mai上传B50", "上传水鱼"})
+upload_fish = on_command("maiu", aliases={"mai上传B50", "上传水鱼", "导"})
 upload_lx = on_command("maiul", aliases={"mai上传落雪b50", "上传落雪"})
 upload_all = on_command("maiua", aliases={"同时上传b50", "全部上传b50"})
 account_ping = on_command("maiping", aliases={"mai连接测试"})
@@ -600,6 +603,7 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
     if raw:
         matcher.set_arg("qrcode", Message(raw))
     else:
+        track_event(session_key("account_bind", event), event)
         await account_bind.send(
             "请发送最新的 SGWCMAID，或舞萌二维码图片/请求链接。\n"
             "Bot 会尝试撤回凭据消息；最多可重试 3 次。\n"
@@ -614,8 +618,10 @@ async def _(
     event: MessageEvent,
     qrcode_message: Message = Arg("qrcode"),
 ):
+    pending_key = session_key("account_bind", event)
     raw = qrcode_message.extract_plain_text().strip()
     if raw.lower() in {"取消", "cancel", "q", "退出"}:
+        finish_pending(pending_key)
         await account_bind.finish("已取消舞萌账号绑定。")
     qrcode = extract_sgwcmaid_qrcode(raw)
     recall_notice = ""
@@ -629,11 +635,13 @@ async def _(
         attempt = int(matcher.state.get("account_bind_retry", 0)) + 1
         matcher.state["account_bind_retry"] = attempt
         if attempt >= 3:
+            finish_pending(pending_key)
             await account_bind.finish(
                 recall_notice
                 + f"二维码验证已连续失败 3 次：{reason}\n"
                 "绑定流程已结束，请重新获取二维码后再发送 mai绑定。"
             )
+        track_event(pending_key, event)
         await account_bind.reject(
             recall_notice
             + f"二维码无效或已过期：{reason}\n"
@@ -676,6 +684,7 @@ async def _(
         "\n旧记录已安全转移，原记录在本 Bot 保存的舞萌/PC 凭据已失效。"
         if claimed_keys else ""
     )
+    finish_pending(pending_key)
     await account_bind.finish(
         recall_notice
         + f"{action}：{label}\nRating：{rating}{claim_note}{pc_note}\nRef_ID: {ref}"
@@ -724,6 +733,7 @@ async def _(
             cache_label = "缓存验证失败，需刷新"
         else:
             await account_status.finish(text + f"\nRef_ID: {ref}", reply_message=True)
+    track_event(session_key("account_status", event), event)
     await account_status.send(_status_qrcode_prompt(cache_label), reply_message=True)
 
 
@@ -734,14 +744,17 @@ async def _(
     event: MessageEvent,
     qrcode_message: Message = Arg("status_qrcode"),
 ):
+    pending_key = session_key("account_status", event)
     key = _user_key(event)
     binding = account_db.get(key)
     if not binding:
+        finish_pending(pending_key)
         await account_status.finish(_ACCOUNT_SETUP_GUIDE, reply_message=True)
     raw = qrcode_message.extract_plain_text().strip()
     if raw.lower() in {"取消", "cancel", "q", "退出"}:
         text = await _render_account_status(event, binding)
         ref = _log(key, "status", "success", "preview_source=stored,cancelled_refresh")
+        finish_pending(pending_key)
         await account_status.finish(text + f"\nRef_ID: {ref}", reply_message=True)
 
     recall_notice = ""
@@ -758,6 +771,7 @@ async def _(
             account_db.mark_qrcode_result(key, False)
             text = await _render_account_status(event, account_db.get(key) or binding)
             ref = _log(key, "status", "error", "refresh_failed=3_attempts")
+            finish_pending(pending_key)
             await account_status.finish(
                 recall_notice
                 + f"二维码刷新已连续失败 3 次：{redact(reason)}\n本次展示缓存资料。\n"
@@ -765,6 +779,7 @@ async def _(
                 + f"\nRef_ID: {ref}",
                 reply_message=True,
             )
+        track_event(pending_key, event)
         await account_status.reject(
             recall_notice
             + f"二维码无效或已过期：{redact(reason)}\n"
@@ -782,6 +797,7 @@ async def _(
         await retry(type(exc).__name__)
     text = await _render_account_status(event, binding, preview)
     ref = _log(key, "status", "success", "preview_source=user_refresh")
+    finish_pending(pending_key)
     await account_status.finish(
         recall_notice + text + f"\nRef_ID: {ref}", reply_message=True
     )
@@ -807,6 +823,7 @@ async def _(matcher: Matcher, event: MessageEvent, args: Message = CommandArg())
     if token:
         matcher.set_arg("fish_token", Message(token))
         return
+    track_event(session_key("fish_bind", event), event)
     await fish_bind.send(
         "🐟 水鱼 Import-Token 获取方式：\n"
         f"1. 打开水鱼查分器：{_DIVING_FISH_PROBER_URL}\n"
@@ -825,8 +842,10 @@ async def _(
     event: MessageEvent,
     token_message: Message = Arg("fish_token"),
 ):
+    pending_key = session_key("fish_bind", event)
     token = token_message.extract_plain_text().strip()
     if token.lower() in {"取消", "cancel", "q", "退出"}:
+        finish_pending(pending_key)
         await fish_bind.finish("已取消水鱼 Token 绑定。", reply_message=True)
 
     recall_notice = ""
@@ -844,12 +863,14 @@ async def _(
             f"{_FISH_TOKEN_MIN_LENGTH}–{_FISH_TOKEN_MAX_LENGTH} 个字符。"
         )
         if attempt >= 3:
+            finish_pending(pending_key)
             await fish_bind.finish(
                 recall_notice
                 + f"❌ {reason}\n已连续输入失败 3 次，本轮绑定已结束。\n"
                 "请重新生成完整 Import-Token 后，再发送「maibindfish」。",
                 reply_message=True,
             )
+        track_event(pending_key, event)
         await fish_bind.reject(
             recall_notice
             + f"❌ {reason}\n"
@@ -859,6 +880,7 @@ async def _(
         )
 
     ref = _save_upload_token(event, token, "fish")
+    finish_pending(pending_key)
     await fish_bind.finish(
         f"✅ 水鱼 Token 已绑定。\nToken：{_mask(token, 8, 4)}\nRef_ID: {ref}",
         reply_message=True,
@@ -913,15 +935,18 @@ async def _upload(
     _qrcode_verified: bool = False,
 ) -> str:
     if not _machine_locked:
-        async with machine_session():
-            return await _upload(
-                event,
-                fish=fish,
-                lxns=lxns,
-                qrcode_arg=qrcode_arg,
-                _machine_locked=True,
-                _qrcode_verified=_qrcode_verified,
-            )
+        try:
+            async with machine_session():
+                return await _upload(
+                    event,
+                    fish=fish,
+                    lxns=lxns,
+                    qrcode_arg=qrcode_arg,
+                    _machine_locked=True,
+                    _qrcode_verified=_qrcode_verified,
+                )
+        except MachineBusyError as exc:
+            return f"上传失败：{exc}"
     if bool(getattr(maiconfig, "maimaidx_user_agreement_required", True)):
         key = _user_key(event)
         if not has_user_agreed(event):
@@ -1082,6 +1107,8 @@ async def _(
 ):
     fish, lxns = _upload_mode(matcher)
     raw = _arg_text(args)
+    # 先贴表情再撤回凭据，让用户立刻看到「已开始处理」。
+    await react_processing(bot, event)
     recall_notice = ""
     if extract_sgwcmaid_qrcode(raw):
         try:
@@ -1096,6 +1123,7 @@ async def _(
         await matcher.finish(recall_notice + result, reply_message=True)
     attempt = 1 if raw else 0
     matcher.state["upload_qrcode_retry"] = attempt
+    track_event(session_key("upload_qrcode", event), event)
     await matcher.send(
         recall_notice + _upload_retry_prompt(result, attempt), reply_message=True
     )
@@ -1110,9 +1138,12 @@ async def _(
     event: MessageEvent,
     qrcode_message: Message = Arg("upload_qrcode"),
 ):
+    pending_key = session_key("upload_qrcode", event)
     raw = qrcode_message.extract_plain_text().strip()
     if raw.lower() in {"取消", "cancel", "q", "退出"}:
+        finish_pending(pending_key)
         await matcher.finish("已取消成绩上传。", reply_message=True)
+    await react_processing(bot, event)
     qrcode = extract_sgwcmaid_qrcode(raw)
     recall_notice = ""
     if qrcode:
@@ -1126,16 +1157,19 @@ async def _(
         if qrcode else "上传失败：二维码格式无效"
     )
     if not _upload_retryable(result):
+        finish_pending(pending_key)
         await matcher.finish(recall_notice + result, reply_message=True)
     attempt = int(matcher.state.get("upload_qrcode_retry", 0)) + 1
     matcher.state["upload_qrcode_retry"] = attempt
     if attempt >= 3:
+        finish_pending(pending_key)
         await matcher.finish(
             recall_notice
             + _upload_retry_prompt(result, 3)
             + "\n已连续失败 3 次，本次上传流程结束，且不扣 BREAK。",
             reply_message=True,
         )
+    track_event(pending_key, event)
     await matcher.reject(
         recall_notice + _upload_retry_prompt(result, attempt), reply_message=True
     )

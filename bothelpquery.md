@@ -138,7 +138,7 @@
 | `mai绑定水鱼 <Token>` / `maibindfish <Token>` | 绑定水鱼上传 Token |
 | `lxbind` | 绑定落雪 OAuth，上传无需导入 Token（推荐） |
 | `mai绑定落雪 <导入Token>` / `maibindlx <导入Token>` | 绑定落雪导入 Token（兼容） |
-| `maiu` / `maiul` / `maiua` | 上传水鱼 / 落雪 / 同时上传 |
+| `maiu` / `导` / `maiul` / `maiua` | 上传水鱼 / 落雪 / 同时上传 |
 | `发票` / `fp <2-6>` / `mai查票` | 发放 / 查询票券 |
 | `mai地图` / `maiping` | 查询游玩地区 / 测试 API |
 | `用户协议` | 查看协议链接并按网页确认词完成同意 |

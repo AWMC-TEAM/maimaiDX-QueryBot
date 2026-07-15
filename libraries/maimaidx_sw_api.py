@@ -120,6 +120,7 @@ class SwApiClient:
         json_body: Optional[dict] = None,
         params: Optional[dict] = None,
         timeout: Optional[float] = None,
+        retry_count: Optional[int] = None,
     ) -> dict:
         self._check_available()
         url = f"{self.base_url}{path}"
@@ -135,7 +136,9 @@ class SwApiClient:
         if self.api_mode == "public":
             token = str(getattr(maiconfig, "awmc_public_gateway_token", "") or "")
             headers["Authorization"] = f"Bearer {token}"
-        retry_count = max(0, int(getattr(maiconfig, "awmc_api_retry_count", 3)))
+        if retry_count is None:
+            retry_count = int(getattr(maiconfig, "awmc_api_retry_count", 3))
+        retry_count = max(0, int(retry_count))
         retry_delay = max(
             0.0, float(getattr(maiconfig, "awmc_api_retry_delay_seconds", 1.0))
         )
@@ -191,10 +194,13 @@ class SwApiClient:
     async def get_user_music(self, qrcode: str) -> List[dict]:
         if self.api_mode == "public":
             raise SwApiError("AWMC 公共网关暂不提供 PC 全量数据接口")
+        # 全量成绩本身较慢；超时后再叠默认 3 次重试会让落雪 OAuth 上传静默卡数分钟。
+        # 这里最多再试 1 次（共 2 次），避免「卡住很久」的观感。
         data = await self._request(
             "POST",
             "/awmc/api/v1/user/music",
             json_body=self._machine_body(qrcode),
+            retry_count=1,
         )
         payload = self._parse_envelope(data)
         detail_list = self.flatten_user_music(payload)
