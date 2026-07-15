@@ -53,6 +53,8 @@ class Config(BaseModel):
     awmc_account_enabled: bool = True
     # 账号二维码本地缓存时间。0 表示永久保留，单位秒。
     awmc_qrcode_cache_seconds: int = 0
+    # mymai/成绩上传复用最近一次已验证 SGID 的时长；0 表示每次重新询问。
+    awmc_sgid_cache_seconds: int = 600
     # ---------- 管理审计 / WebUI ----------
     maimaidx_admin_web_enabled: bool = False
     # 必须使用高强度随机值；WebUI 仅接受 Authorization: Bearer。

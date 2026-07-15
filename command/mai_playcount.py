@@ -116,26 +116,31 @@ async def handle_update_pc(bot: Bot, event: GroupMessageEvent):
     account_qqid = billing_user_id(event)
     binding = account_db.get(str(account_qqid))
     if binding and binding.qrcode:
-        await _handle_sdgb_update(
-            bot,
-            event,
-            account_qqid,
-            binding.qrcode,
-            matcher=update_pc,
-            success_builder=lambda count, total: (
-                f'\n✅ 已使用绑定账号同步 PC 数据！\n'
-                f'- 收录谱面: {count} 个\n- 总游玩次数: {total} 次'
-            ),
-        )
-        return
+        from .mai_account import _sgid_cache_state
+
+        cache_valid, _ = _sgid_cache_state(binding)
+        if cache_valid:
+            await _handle_sdgb_update(
+                bot,
+                event,
+                account_qqid,
+                binding.qrcode,
+                matcher=update_pc,
+                retry_on_cached_failure=True,
+                success_builder=lambda count, total: (
+                    f'\n✅ 已使用绑定账号同步 PC 数据！\n'
+                    f'- 收录谱面: {count} 个\n- 总游玩次数: {total} 次'
+                ),
+            )
+            return
 
     await update_pc.send(
         MessageSegment.reply(event.message_id)
         + MessageSegment.text(
             '\n请发送你的机台二维码数据。\n\n'
-            '获取方式：打开舞萌中二获取一个最新二维码，\n'
-            '进入后长按识别，\n'
-            '复制 SGWCMAID 完整字符串，或二维码图片/请求链接，\n'
+            '获取方式：打开微信中的「舞萌DX | 中二节奏」玩家二维码，\n'
+            '长按二维码并选择「识别图中二维码」，\n'
+            '复制识别出的 SGWCMAID 字符或官方网页地址，\n'
             '直接发送给 Bot 即可。\n\n'
             '⚠️ 请注意保护好你的二维码数据，不要发给他人。'
         )
@@ -207,12 +212,20 @@ async def _build_auto_qrcode_success_message(event: MessageEvent, storage_qqid: 
     return base_msg
 
 
-async def _sync_sdgb_qrcode(qqid: int, qrcode_data: str) -> int:
+async def _sync_sdgb_qrcode(
+    qqid: int, qrcode_data: str, *, save_qrcode: bool = True
+) -> int:
     """扫码同步机台成绩到 AWMC 本地库（供 pc 类指令使用）。
 
     b50 等成绩指令始终以查分器（水鱼/落雪）数据为准，机台数据不写入玩家缓存。
     同步完成后清除该用户的玩家缓存，保证之后的 b50 拉取查分器最新数据。
     """
+    from ..libraries.maimaidx_account_db import account_db
+    from .mai_account import _read_verified_preview
+
+    binding = account_db.get(str(qqid))
+    if binding:
+        await _read_verified_preview(binding, qrcode_data, save_qrcode=save_qrcode)
     success = await playcount_fetcher.login_by_sdgb(qrcode_data, qqid)
     if not success:
         raise RuntimeError('凭据保存失败')
@@ -266,15 +279,32 @@ async def _handle_sdgb_update(
     qrcode_data: str,
     *,
     matcher: Matcher = update_pc,
+    retry_on_cached_failure: bool = False,
     success_builder: Optional[Callable[[int, int], str]] = None,
 ):
     """通过 sw-api 更新 PC 数据"""
     try:
-        count = await _sync_sdgb_qrcode(qqid, qrcode_data)
-    except RuntimeError as e:
+        count = await _sync_sdgb_qrcode(
+            qqid, qrcode_data, save_qrcode=not retry_on_cached_failure
+        )
+    except Exception as e:
         log.error(
             f'[SDGBPC] 用户 {qqid} 拉取失败 qrcode={qrcode_log_preview(qrcode_data)}: {e}'
         )
+        from ..libraries.maimaidx_account_db import account_db
+
+        account_db.mark_qrcode_result(str(qqid), False)
+        if retry_on_cached_failure:
+            _waiting_qrcode[qqid] = True
+            await matcher.send(
+                MessageSegment.reply(event.message_id)
+                + MessageSegment.text(
+                    '\n🔄 缓存二维码已失效，请重新获取。\n'
+                    '打开微信中的「舞萌DX | 中二节奏」玩家二维码，长按选择'
+                    '「识别图中二维码」，复制字符或网页地址发送给 Bot。'
+                )
+            )
+            return
         await matcher.finish(
             MessageSegment.reply(event.message_id)
             + MessageSegment.text(f'数据拉取失败: {e}。请检查 sw-api 服务或稍后重试。')
@@ -356,6 +386,9 @@ async def _auto_qrcode_update(bot: Bot, event: MessageEvent):
         count = await _sync_sdgb_qrcode(qqid, qrcode_data)
     except Exception as e:
         _qrcode_retry_release_dedupe(qqid, qrcode_data)
+        from ..libraries.maimaidx_account_db import account_db
+
+        account_db.mark_qrcode_result(str(qqid), False)
         attempt, exhausted = _qrcode_retry_failed(qqid)
         log.error(
             f'[QrcodeAuto] 同步失败 group={getattr(event, "group_id", "private")} qq={qqid} '

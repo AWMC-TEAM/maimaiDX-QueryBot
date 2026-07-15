@@ -132,7 +132,7 @@
 |------|------|
 | `mai账号` | 查看合并后的账号功能帮助 |
 | `mai绑定` / `maibind` | 绑定并验证舞萌账号；可认领同 UID 旧记录 |
-| `mai解绑` / `mai状态` | 解绑 / 查看账号状态 |
+| `mai解绑` / `mai状态` / `mymai` | 解绑 / 查看详细状态；缓存失效时刷新二维码 |
 | `mai绑定水鱼 <Token>` / `maibindfish <Token>` | 绑定水鱼上传 Token |
 | `lxbind` | 绑定落雪 OAuth，上传无需导入 Token（推荐） |
 | `mai绑定落雪 <导入Token>` / `maibindlx <导入Token>` | 绑定落雪导入 Token（兼容） |

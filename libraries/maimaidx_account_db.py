@@ -7,6 +7,7 @@ QueryBot 只保存调用 AWMC/sw-api 所需的最小状态：二维码、街机 
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -31,10 +32,24 @@ class AccountBinding:
     bound_at: float = 0.0
     updated_at: float = 0.0
     last_upload_at: Optional[float] = None
+    qrcode_updated_at: float = 0.0
+    last_qrcode_success: Optional[int] = None
+    preview_json: str = ""
+    preview_updated_at: Optional[float] = None
 
     @property
     def is_bound(self) -> bool:
         return bool(self.qrcode)
+
+    @property
+    def preview(self) -> dict:
+        if not self.preview_json:
+            return {}
+        try:
+            value = json.loads(self.preview_json)
+        except (TypeError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
 
 _SCHEMA = """
@@ -48,7 +63,11 @@ CREATE TABLE IF NOT EXISTS account_bindings (
     lxns_token     TEXT NOT NULL DEFAULT '',
     bound_at       REAL NOT NULL,
     updated_at     REAL NOT NULL,
-    last_upload_at REAL
+    last_upload_at REAL,
+    qrcode_updated_at REAL NOT NULL DEFAULT 0,
+    last_qrcode_success INTEGER,
+    preview_json TEXT NOT NULL DEFAULT '',
+    preview_updated_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_account_mai_uid ON account_bindings(mai_uid);
 
@@ -75,7 +94,31 @@ class AccountDatabase:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        columns = {
+            str(row[1])
+            for row in self._conn.execute("PRAGMA table_info(account_bindings)")
+        }
+        additions = {
+            "qrcode_updated_at": "REAL NOT NULL DEFAULT 0",
+            "last_qrcode_success": "INTEGER",
+            "preview_json": "TEXT NOT NULL DEFAULT ''",
+            "preview_updated_at": "REAL",
+        }
+        for name, declaration in additions.items():
+            if name not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE account_bindings ADD COLUMN {name} {declaration}"
+                )
+        self._conn.execute(
+            """UPDATE account_bindings
+               SET qrcode_updated_at = CASE
+                   WHEN bound_at > 0 THEN bound_at ELSE updated_at END
+               WHERE qrcode != '' AND qrcode_updated_at = 0"""
+        )
 
     @staticmethod
     def _from_row(row: sqlite3.Row | None) -> Optional[AccountBinding]:
@@ -98,6 +141,7 @@ class AccountDatabase:
         mai_uid: str = "",
         user_name: str = "",
         rating: int = 0,
+        preview: Optional[dict] = None,
     ) -> AccountBinding:
         now = time.time()
         key = str(user_key)
@@ -105,17 +149,26 @@ class AccountDatabase:
             self._conn.execute(
                 """
                 INSERT INTO account_bindings
-                    (user_key, mai_uid, qrcode, user_name, rating, bound_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (user_key, mai_uid, qrcode, user_name, rating, bound_at, updated_at,
+                     qrcode_updated_at, last_qrcode_success, preview_json,
+                     preview_updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 ON CONFLICT(user_key) DO UPDATE SET
                     mai_uid = excluded.mai_uid,
                     qrcode = excluded.qrcode,
                     user_name = excluded.user_name,
                     rating = excluded.rating,
                     bound_at = excluded.bound_at,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    qrcode_updated_at = excluded.qrcode_updated_at,
+                    last_qrcode_success = 1,
+                    preview_json = excluded.preview_json,
+                    preview_updated_at = excluded.preview_updated_at
                 """,
-                (key, str(mai_uid), qrcode, user_name, int(rating or 0), now, now),
+                (
+                    key, str(mai_uid), qrcode, user_name, int(rating or 0), now, now,
+                    now, json.dumps(preview or {}, ensure_ascii=False), now,
+                ),
             )
             self._conn.commit()
         return self.get(key)  # type: ignore[return-value]
@@ -128,6 +181,7 @@ class AccountDatabase:
         mai_uid: str,
         user_name: str = "",
         rating: int = 0,
+        preview: Optional[dict] = None,
     ) -> tuple[AccountBinding, list[str]]:
         """绑定已验真的街机账号，并认领同一 ``mai_uid`` 的旧记录。
 
@@ -175,8 +229,10 @@ class AccountDatabase:
                     """
                     INSERT INTO account_bindings
                         (user_key, mai_uid, qrcode, user_name, rating, fish_token,
-                         lxns_token, bound_at, updated_at, last_upload_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         lxns_token, bound_at, updated_at, last_upload_at,
+                         qrcode_updated_at, last_qrcode_success, preview_json,
+                         preview_updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                     ON CONFLICT(user_key) DO UPDATE SET
                         mai_uid = excluded.mai_uid,
                         qrcode = excluded.qrcode,
@@ -186,11 +242,16 @@ class AccountDatabase:
                         lxns_token = excluded.lxns_token,
                         bound_at = excluded.bound_at,
                         updated_at = excluded.updated_at,
-                        last_upload_at = excluded.last_upload_at
+                        last_upload_at = excluded.last_upload_at,
+                        qrcode_updated_at = excluded.qrcode_updated_at,
+                        last_qrcode_success = 1,
+                        preview_json = excluded.preview_json,
+                        preview_updated_at = excluded.preview_updated_at
                     """,
                     (
                         key, uid, qrcode, user_name, int(rating or 0), fish_token,
-                        lxns_token, now, now, last_upload_at,
+                        lxns_token, now, now, last_upload_at, now,
+                        json.dumps(preview or {}, ensure_ascii=False), now,
                     ),
                 )
                 self._conn.commit()
@@ -203,14 +264,55 @@ class AccountDatabase:
         return binding, claimed_keys
 
     def refresh_preview(
-        self, user_key: str, *, mai_uid: str, user_name: str, rating: int
+        self, user_key: str, *, mai_uid: str, user_name: str, rating: int,
+        preview: Optional[dict] = None,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 """UPDATE account_bindings
-                   SET mai_uid = ?, user_name = ?, rating = ?, updated_at = ?
+                   SET mai_uid = ?, user_name = ?, rating = ?, preview_json = ?,
+                       preview_updated_at = ?, updated_at = ?
                    WHERE user_key = ?""",
-                (str(mai_uid), user_name, int(rating or 0), time.time(), str(user_key)),
+                (
+                    str(mai_uid), user_name, int(rating or 0),
+                    json.dumps(preview or {}, ensure_ascii=False), time.time(),
+                    time.time(), str(user_key),
+                ),
+            )
+            self._conn.commit()
+
+    def save_verified_qrcode(
+        self,
+        user_key: str,
+        qrcode: str,
+        *,
+        mai_uid: str,
+        user_name: str,
+        rating: int,
+        preview: Optional[dict] = None,
+    ) -> None:
+        now = time.time()
+        with self._lock:
+            self._conn.execute(
+                """UPDATE account_bindings
+                   SET qrcode = ?, qrcode_updated_at = ?, last_qrcode_success = 1,
+                       mai_uid = ?, user_name = ?, rating = ?, preview_json = ?,
+                       preview_updated_at = ?, updated_at = ?
+                   WHERE user_key = ?""",
+                (
+                    qrcode, now, str(mai_uid), user_name, int(rating or 0),
+                    json.dumps(preview or {}, ensure_ascii=False), now, now,
+                    str(user_key),
+                ),
+            )
+            self._conn.commit()
+
+    def mark_qrcode_result(self, user_key: str, success: bool) -> None:
+        with self._lock:
+            self._conn.execute(
+                """UPDATE account_bindings SET last_qrcode_success = ?, updated_at = ?
+                   WHERE user_key = ?""",
+                (1 if success else 0, time.time(), str(user_key)),
             )
             self._conn.commit()
 
@@ -220,6 +322,8 @@ class AccountDatabase:
             cur = self._conn.execute(
                 """UPDATE account_bindings
                    SET mai_uid = '', qrcode = '', user_name = '', rating = 0,
+                       qrcode_updated_at = 0, last_qrcode_success = NULL,
+                       preview_json = '', preview_updated_at = NULL,
                        updated_at = ? WHERE user_key = ? AND qrcode != ''""",
                 (time.time(), str(user_key)),
             )

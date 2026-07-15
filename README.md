@@ -267,7 +267,7 @@ BOTNAME=maimai
 |------|------|
 | `mai账号` | 查看账号功能帮助 |
 | `mai绑定` / `maibind` / `mai解绑` | 绑定、认领或解绑舞萌账号 |
-| `mai状态` | 查看绑定、Rating 与上传 Token 状态 |
+| `mai状态` / `mymai` | 查看详细账号状态；SGID 缓存失效时交互刷新 |
 | `mai绑定水鱼 <token>` / `maibindfish <token>` | 绑定水鱼上传 Token |
 | `lxbind` | 绑定落雪 OAuth，上传无需导入 Token（推荐） |
 | `mai绑定落雪 <导入token>` / `maibindlx <导入token>` | 绑定落雪导入 Token（兼容） |

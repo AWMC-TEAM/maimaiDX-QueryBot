@@ -120,9 +120,169 @@ def _binding_or_error(event: MessageEvent) -> tuple[str, Optional[AccountBinding
     if not binding or not binding.qrcode:
         return key, None, "尚未绑定舞萌账号，请先使用：mai绑定 SGWCMAID..."
     ttl = max(0, int(getattr(maiconfig, "awmc_qrcode_cache_seconds", 0) or 0))
-    if ttl and time.time() - binding.updated_at > ttl:
+    if ttl and time.time() - binding.qrcode_updated_at > ttl:
         return key, None, "已保存的二维码凭据过期，请重新使用 mai绑定 提交最新二维码。"
     return key, binding, None
+
+
+def _sgid_cache_seconds() -> int:
+    return max(0, int(getattr(maiconfig, "awmc_sgid_cache_seconds", 600) or 0))
+
+
+def _sgid_cache_state(binding: AccountBinding) -> tuple[bool, str]:
+    if not binding.qrcode:
+        return False, "未保存"
+    if binding.last_qrcode_success == 0:
+        return False, "上次使用失败，需刷新"
+    ttl = _sgid_cache_seconds()
+    if ttl <= 0:
+        return False, "已关闭，每次重新获取"
+    age = max(0, time.time() - float(binding.qrcode_updated_at or 0))
+    if not binding.qrcode_updated_at or age >= ttl:
+        return False, "已过期，需刷新"
+    remaining = max(1, int((ttl - age + 59) // 60))
+    return True, f"有效（约剩 {remaining} 分钟）"
+
+
+def _status_qrcode_prompt(reason: str) -> str:
+    return (
+        f"🔄 {reason}\n"
+        "请打开微信中的「舞萌DX | 中二节奏」玩家二维码，\n"
+        "长按二维码并选择「识别图中二维码」，复制识别出的字符或网页地址发送给 Bot。\n"
+        "支持 SGWCMAID、wq.wahlap.net 的 img/req 链接；发送「取消」可查看缓存资料。"
+    )
+
+
+async def _read_verified_preview(
+    binding: AccountBinding,
+    qrcode: str,
+    *,
+    save_qrcode: bool,
+) -> tuple[AccountBinding, dict]:
+    payload = await sw_api.get_user_preview(qrcode)
+    mai_uid, name, rating, data = _normalize_preview(payload)
+    if binding.mai_uid and str(binding.mai_uid) != str(mai_uid):
+        raise RuntimeError("二维码与当前绑定的舞萌账号不一致")
+    if save_qrcode:
+        account_db.save_verified_qrcode(
+            binding.user_key,
+            qrcode,
+            mai_uid=mai_uid,
+            user_name=name,
+            rating=rating,
+            preview=data,
+        )
+    else:
+        account_db.refresh_preview(
+            binding.user_key,
+            mai_uid=mai_uid,
+            user_name=name,
+            rating=rating,
+            preview=data,
+        )
+        account_db.mark_qrcode_result(binding.user_key, True)
+    refreshed = account_db.get(binding.user_key)
+    if refreshed is None:
+        raise RuntimeError("账号状态保存失败")
+    return refreshed, data
+
+
+def _preview_line(data: dict, label: str, *keys: str) -> Optional[str]:
+    value = _pick(data, *keys)
+    if value in (None, ""):
+        return None
+    return f"{label}：{value}"
+
+
+async def _render_account_status(
+    event: MessageEvent,
+    binding: AccountBinding,
+    preview: Optional[dict] = None,
+) -> str:
+    data = preview or binding.preview
+    _, cache_label = _sgid_cache_state(binding)
+    lines = [
+        "✅ 已绑定舞萌账号",
+        f"绑定时间：{time.strftime('%Y-%m-%d %H:%M', time.localtime(binding.bound_at))}",
+        f"二维码缓存：{cache_label}",
+    ]
+    try:
+        lines.append(f"BREAK 余额：{break_db.get_balance(int(binding.user_key))}")
+    except ValueError:
+        pass
+    lines.extend(["", "📊 账号信息" + ("（缓存）" if not preview else "")])
+    name = _pick(data, "userName", "UserName", default=binding.user_name or "未知") or "未知"
+    rating = _pick(
+        data, "playerRating", "PlayerRating", "rating", "Rating",
+        default=binding.rating or "未知",
+    )
+    old_rating = _pick(data, "PlayerOldRating", "playerOldRating")
+    new_rating = _pick(data, "PlayerNewRating", "playerNewRating")
+    if old_rating is not None and new_rating is not None:
+        rating = f"{rating}（{old_rating}+{new_rating}）"
+    lines.extend([f"用户名：{name}", f"Rating：{rating}"])
+
+    class_rank = _pick(data, "ClassRank", "classRank")
+    course_rank = _pick(data, "CourseRank", "courseRank")
+    if class_rank is not None and course_rank is not None:
+        lines.append(f"友人对战等级：{class_rank}[{course_rank}]")
+    fields = (
+        ("总游玩次数", ("PlayCount", "playCount")),
+        ("当前版本游玩次数", ("CurrentPlayCount", "currentPlayCount")),
+        ("机台版本", ("RomVersion", "romVersion")),
+        ("数据版本", ("DataVersion", "dataVersion")),
+        ("上次登录", ("LastLoginDate", "lastLoginDate")),
+        ("上次游玩", ("LastPlayDate", "lastPlayDate")),
+        ("上次拼机", ("LastPairLoginDate", "lastPairLoginDate")),
+        ("上次游玩区域", ("LastRegionName", "lastRegionName")),
+        ("总觉醒次数", ("TotalAwake", "totalAwake")),
+    )
+    for label, keys in fields:
+        line = _preview_line(data, label, *keys)
+        if line:
+            lines.append(line)
+    ban_state = _pick(data, "BanState", "banState")
+    ban_labels = {0: "正常", 1: "警告", 2: "封禁", "0": "正常", "1": "警告", "2": "封禁"}
+    lines.append(f"封禁状态：{ban_labels.get(ban_state, '未知' if ban_state is None else ban_state)}")
+
+    lines.append("")
+    lines.append(f"🐟 水鱼上传：{'已绑定' if binding.fish_token else '未绑定'}")
+    if _has_lxns_oauth(event):
+        lines.append("❄️ 落雪上传：OAuth 已绑定")
+    elif binding.lxns_token:
+        lines.append("❄️ 落雪上传：兼容 Token 已绑定")
+    else:
+        lines.append("❄️ 落雪上传：未绑定（发送 lxbind）")
+    if binding.last_upload_at:
+        lines.append(
+            "最近上传："
+            + time.strftime("%Y-%m-%d %H:%M", time.localtime(binding.last_upload_at))
+        )
+
+    if binding.mai_uid and sw_api.api_mode == "team":
+        try:
+            charge = await sw_api.get_user_charge(binding.mai_uid)
+            rows = _pick(charge, "userChargeList", "UserChargeList", default=[])
+            now = time.time()
+            valid = []
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                valid_date = row.get("validDate") or row.get("ValidDate")
+                try:
+                    normalized = str(valid_date).replace(" ", "T")[:19]
+                    valid_ts = time.mktime(
+                        time.strptime(normalized, "%Y-%m-%dT%H:%M:%S")
+                    )
+                except (TypeError, ValueError):
+                    valid_ts = now + 1
+                if valid_ts > now and int(row.get("stock") or row.get("Stock") or 0) > 0:
+                    valid.append(row)
+            total = sum(int(row.get("stock") or row.get("Stock") or 0) for row in valid)
+            lines.append(f"🎫 有效票券：{total} 张（{len(valid)} 种）" if valid else "🎫 有效票券：暂无")
+        except Exception:
+            lines.append("🎫 票券情况：暂时无法获取")
+    return "\n".join(lines)
 
 
 def _result_text(result: dict) -> str:
@@ -279,6 +439,7 @@ async def _():
     await account_help.finish(
         "AWMC 账号功能（已合并到 QueryBot）\n"
         "mai绑定 / maibind：绑定或认领舞萌账号\n"
+        "mai状态 / mymai：查看详细状态，缓存失效时引导刷新二维码\n"
         "mai绑定水鱼 <Token> / maibindfish <Token>\n"
         "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
         "maiu / maiul / maiua：上传水鱼 / 落雪 / 同时上传\n"
@@ -344,9 +505,14 @@ async def _(
     claimed_keys: list[str] = []
     try:
         preview = await sw_api.get_user_preview(qrcode)
-        mai_uid, name, rating, _ = _normalize_preview(preview)
+        mai_uid, name, rating, preview_data = _normalize_preview(preview)
         _, claimed_keys = account_db.bind_verified(
-            key, qrcode, mai_uid=mai_uid, user_name=name, rating=rating
+            key,
+            qrcode,
+            mai_uid=mai_uid,
+            user_name=name,
+            rating=rating,
+            preview=preview_data,
         )
         # 认领后令旧账号保存的 PC 登录凭据失效，避免继续访问同一舞萌账号。
         for old_key in claimed_keys:
@@ -401,31 +567,90 @@ async def _(event: MessageEvent):
 
 
 @account_status.handle()
-async def _(event: MessageEvent):
+async def _(
+    matcher: Matcher,
+    event: MessageEvent,
+    args: Message = CommandArg(),
+):
     key = _user_key(event)
     binding = account_db.get(key)
     if not binding:
         await account_status.finish(_ACCOUNT_SETUP_GUIDE)
-    lines = ["AWMC 账号状态"]
-    if binding.qrcode:
-        lines.append(f"舞萌账号：{binding.user_name or '已绑定'}")
-        lines.append(f"Rating：{binding.rating}")
-        lines.append("二维码：已绑定")
-    else:
-        lines.append("舞萌账号：未绑定\n使用「mai绑定」提交最新 SGWCMAID。")
-    if binding.fish_token:
-        lines.append(f"水鱼 Token：{_mask(binding.fish_token)}")
-    else:
-        lines.append("水鱼 Token：未绑定\n使用「mai绑定水鱼 <Token>」。")
-    if _has_lxns_oauth(event):
-        lines.append("落雪上传：OAuth 已绑定（无需导入 Token）")
-    elif binding.lxns_token:
-        lines.append(f"落雪导入 Token：{_mask(binding.lxns_token)}")
-    else:
-        lines.append("落雪上传：未绑定\n推荐使用「lxbind」完成 OAuth。")
-    if binding.last_upload_at:
-        lines.append("最近上传：" + time.strftime("%Y-%m-%d %H:%M", time.localtime(binding.last_upload_at)))
-    await account_status.finish("\n".join(lines))
+    raw = _arg_text(args)
+    if raw:
+        matcher.set_arg("status_qrcode", Message(raw))
+        return
+
+    cache_valid, cache_label = _sgid_cache_state(binding)
+    if cache_valid:
+        try:
+            binding, preview = await _read_verified_preview(
+                binding, binding.qrcode, save_qrcode=False
+            )
+            text = await _render_account_status(event, binding, preview)
+            ref = _log(key, "status", "success", "preview_source=sgid_cache")
+            await account_status.finish(text + f"\nRef_ID: {ref}")
+        except Exception as exc:
+            account_db.mark_qrcode_result(key, False)
+            matcher.state["status_cache_error"] = type(exc).__name__
+            cache_label = "缓存验证失败，需刷新"
+    await account_status.send(_status_qrcode_prompt(cache_label))
+
+
+@account_status.got("status_qrcode")
+async def _(
+    matcher: Matcher,
+    bot: Bot,
+    event: MessageEvent,
+    qrcode_message: Message = Arg("status_qrcode"),
+):
+    key = _user_key(event)
+    binding = account_db.get(key)
+    if not binding:
+        await account_status.finish(_ACCOUNT_SETUP_GUIDE)
+    raw = qrcode_message.extract_plain_text().strip()
+    if raw.lower() in {"取消", "cancel", "q", "退出"}:
+        text = await _render_account_status(event, binding)
+        ref = _log(key, "status", "success", "preview_source=stored,cancelled_refresh")
+        await account_status.finish(text + f"\nRef_ID: {ref}")
+
+    recall_notice = ""
+    try:
+        await bot.delete_msg(message_id=event.message_id)
+    except Exception:
+        recall_notice = _RECALL_FAILED_NOTICE
+    qrcode = extract_sgwcmaid_qrcode(raw)
+
+    async def retry(reason: str) -> None:
+        attempt = int(matcher.state.get("status_qrcode_retry", 0)) + 1
+        matcher.state["status_qrcode_retry"] = attempt
+        if attempt >= 3:
+            account_db.mark_qrcode_result(key, False)
+            text = await _render_account_status(event, account_db.get(key) or binding)
+            ref = _log(key, "status", "error", "refresh_failed=3_attempts")
+            await account_status.finish(
+                recall_notice
+                + f"二维码刷新已连续失败 3 次：{redact(reason)}\n本次展示缓存资料。\n"
+                + text
+                + f"\nRef_ID: {ref}"
+            )
+        await account_status.reject(
+            recall_notice
+            + f"二维码无效或已过期：{redact(reason)}\n"
+            + f"请重新识别并发送（{attempt}/3），或发送「取消」查看缓存资料。"
+        )
+
+    if not qrcode:
+        await retry("未识别到 SGWCMAID 或受支持的官方二维码链接")
+    try:
+        binding, preview = await _read_verified_preview(
+            binding, qrcode, save_qrcode=True
+        )
+    except Exception as exc:
+        await retry(type(exc).__name__)
+    text = await _render_account_status(event, binding, preview)
+    ref = _log(key, "status", "success", "preview_source=user_refresh")
+    await account_status.finish(recall_notice + text + f"\nRef_ID: {ref}")
 
 
 async def _set_token(matcher, event: MessageEvent, args: Message, kind: str):
@@ -512,6 +737,26 @@ async def _upload(
         return "未绑定水鱼 Token，请使用「mai绑定水鱼 <Token>」。"
     if lxns and not has_lxns_upload:
         return "未绑定落雪上传，请先发送「lxbind」完成 OAuth。"
+
+    try:
+        if direct_qrcode:
+            binding, _ = await _read_verified_preview(
+                binding, direct_qrcode, save_qrcode=True
+            )
+            qrcode = direct_qrcode
+        else:
+            cache_valid, cache_label = _sgid_cache_state(binding)
+            if not cache_valid:
+                return f"上传失败：二维码缓存{cache_label}"
+            binding, _ = await _read_verified_preview(
+                binding, binding.qrcode, save_qrcode=False
+            )
+            qrcode = binding.qrcode
+    except Exception as exc:
+        account_db.mark_qrcode_result(key, False)
+        ref = _log(key, "upload", "error", f"sgid_preview={type(exc).__name__}")
+        return f"上传失败：二维码验证失败（{type(exc).__name__}）\nRef_ID: {ref}"
+
     operation = "upload_all" if fish and lxns else "upload_fish" if fish else "upload_lx"
     # 三种上传共用一个每日免费额度，避免通过轮流调用水鱼/落雪/同时上传获得三次免费。
     billing_service = "upload"
@@ -556,8 +801,11 @@ async def _upload(
         ref = _log(key, operation, "success", f"charged={charge.charged},free={charge.free}")
         return "上传完成\n" + "\n".join(results) + f"\n{_charge_text(charge)}\nRef_ID: {ref}"
     except Exception as exc:
+        failure_message = f"上传失败：{exc}"
+        if _upload_retryable(failure_message):
+            account_db.mark_qrcode_result(key, False)
         ref = _log(key, "upload", "error", str(exc))
-        return f"上传失败：{exc}\nRef_ID: {ref}"
+        return failure_message + f"\nRef_ID: {ref}"
 
 
 def _upload_mode(matcher: Matcher) -> tuple[bool, bool]:
