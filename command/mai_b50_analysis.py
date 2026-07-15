@@ -5,7 +5,7 @@ import json
 
 from loguru import logger as log
 from nonebot import on_command
-from nonebot.adapters.onebot.v11 import Message, MessageEvent, MessageSegment
+from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 
@@ -32,6 +32,7 @@ from ..libraries.maimaidx_break import (
 )
 from ..libraries.maimaidx_error import BreakInsufficientError, format_command_error, QBindRequiredError
 from ..libraries.maimaidx_platform import platform_user_id, resolve_query_qqid
+from ..libraries.maimaidx_reaction import react_processing
 
 _peer_stats = None
 
@@ -57,7 +58,7 @@ b50_analysis_cmd = on_command(
 
 
 @b50_analysis_cmd.handle()
-async def _handle(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
+async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message = CommandArg()):
     style = args.extract_plain_text().strip()
     qq = int(event.get_user_id())
     billing_qq = int(platform_user_id(event))
@@ -74,6 +75,8 @@ async def _handle(matcher: Matcher, event: MessageEvent, args: Message = Command
     if not maiconfig.b50_assets_path:
         await matcher.finish('未配置 b50_assets_path，请在 .env 中填写分析素材目录', reply_message=True)
         return
+
+    await react_processing(bot, event)
 
     pending = '正在查询 B50，请稍候…'
     if is_analysis_peak_hour():
