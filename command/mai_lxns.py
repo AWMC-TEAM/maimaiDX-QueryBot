@@ -285,27 +285,26 @@ async def _lxb50(event: MessageEvent):
     try:
         from ..libraries.maimaidx_timing import run_timed, timing_text
         result, total = await run_timed(generate_lxns_b50(qqid))
-        if result is None:
-            await lxb50.finish(
-                '落雪数据获取失败，请检查：\n'
-                '1. 是否已发送 lxbind 绑定落雪\n'
-                '2. 或在落雪查分器绑定了 QQ\n'
-                '3. Bot 是否配置了开发者 Token',
-                reply_message=True,
-            )
         from ..libraries.maimaidx_player_cache import footer_join_sections, pop_data_freshness_footer_lines
         from ..libraries.maimaidx_b50_warnings import pop_b50_warning_footer
-        sections = [['📊 数据源：落雪 | 可使用 数据源 水鱼/落雪 修改']]
-        freshness = pop_data_freshness_footer_lines()
-        if freshness:
-            sections.append(freshness)
-        warning = pop_b50_warning_footer()
-        if warning:
-            sections.append([warning])
-        sections.append([timing_text(total)])
-        footer = footer_join_sections(sections)
-        await lxb50.finish(result + MessageSegment.text(footer), reply_message=True)
-
     except Exception as e:
         log.error(f'[lxb50] error: {e}', exc_info=True)
         await lxb50.finish(f'查询失败：{type(e).__name__}: {e}', reply_message=True)
+    if result is None:
+        await lxb50.finish(
+            '落雪数据获取失败，请检查：\n'
+            '1. 是否已发送 lxbind 绑定落雪\n'
+            '2. 或在落雪查分器绑定了 QQ\n'
+            '3. Bot 是否配置了开发者 Token',
+            reply_message=True,
+        )
+    sections = [['📊 数据源：落雪 | 可使用 数据源 水鱼/落雪 修改']]
+    freshness = pop_data_freshness_footer_lines()
+    if freshness:
+        sections.append(freshness)
+    warning = pop_b50_warning_footer()
+    if warning:
+        sections.append([warning])
+    sections.append([timing_text(total)])
+    footer = footer_join_sections(sections)
+    await lxb50.finish(result + MessageSegment.text(footer), reply_message=True)

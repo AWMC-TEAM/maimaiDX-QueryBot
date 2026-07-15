@@ -589,11 +589,12 @@ async def _(
             )
             text = await _render_account_status(event, binding, preview)
             ref = _log(key, "status", "success", "preview_source=sgid_cache")
-            await account_status.finish(text + f"\nRef_ID: {ref}", reply_message=True)
         except Exception as exc:
             account_db.mark_qrcode_result(key, False)
             matcher.state["status_cache_error"] = type(exc).__name__
             cache_label = "缓存验证失败，需刷新"
+        else:
+            await account_status.finish(text + f"\nRef_ID: {ref}", reply_message=True)
     await account_status.send(_status_qrcode_prompt(cache_label), reply_message=True)
 
 
@@ -913,9 +914,9 @@ async def _(
 async def _():
     try:
         result = await sw_api.health()
-        await account_ping.finish("AWMC API 连接正常\n" + _result_text(result))
     except Exception as exc:
         await account_ping.finish(f"AWMC API 连接失败：{exc}")
+    await account_ping.finish("AWMC API 连接正常\n" + _result_text(result))
 
 
 @account_ticket.handle()
@@ -943,13 +944,16 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
             key, "ticket", "success",
             f"multiple={multiple},charged={charge.charged},free={charge.free}",
         )
-        await account_ticket.finish(
-            f"{multiple} 倍票请求完成：{_result_text(result)}\n"
-            f"{_charge_text(charge)}\nRef_ID: {ref}"
-        )
     except Exception as exc:
         ref = _log(key, "ticket", "error", str(exc))
-        await account_ticket.finish(f"发票失败：{exc}\nRef_ID: {ref}")
+        await account_ticket.finish(
+            f"发票失败：{exc}\nRef_ID: {ref}", reply_message=True
+        )
+    await account_ticket.finish(
+        f"{multiple} 倍票请求完成：{_result_text(result)}\n"
+        f"{_charge_text(charge)}\nRef_ID: {ref}",
+        reply_message=True,
+    )
 
 
 @account_ticket_status.handle()
@@ -961,11 +965,11 @@ async def _(event: MessageEvent):
         await account_ticket_status.finish("账号缺少街机 UID，请重新执行 mai绑定。")
     try:
         result = await sw_api.get_user_charge(binding.mai_uid)
-        await account_ticket_status.finish(
-            "票券状态：\n" + json.dumps(result, ensure_ascii=False, indent=2)[:3000]
-        )
     except Exception as exc:
         await account_ticket_status.finish(f"查询失败：{exc}")
+    await account_ticket_status.finish(
+        "票券状态：\n" + json.dumps(result, ensure_ascii=False, indent=2)[:3000]
+    )
 
 
 @account_region.handle()
@@ -975,17 +979,17 @@ async def _(event: MessageEvent):
         await account_region.finish(error or "账号未绑定")
     try:
         result = await sw_api.get_user_region(binding.qrcode)
-        rows = result.get("userRegionList") or result.get("UserRegionList") or []
-        if not rows:
-            await account_region.finish("暂无游玩地区记录。")
-        lines = ["游玩地区记录："]
-        for row in rows[:50]:
-            region = row.get("regionName") or row.get("RegionName") or row.get("regionId") or row.get("RegionId")
-            count = row.get("playCount") or row.get("PlayCount") or 0
-            lines.append(f"{region}：{count} PC")
-        await account_region.finish("\n".join(lines))
     except Exception as exc:
         await account_region.finish(f"查询失败：{exc}")
+    rows = result.get("userRegionList") or result.get("UserRegionList") or []
+    if not rows:
+        await account_region.finish("暂无游玩地区记录。")
+    lines = ["游玩地区记录："]
+    for row in rows[:50]:
+        region = row.get("regionName") or row.get("RegionName") or row.get("regionId") or row.get("RegionId")
+        count = row.get("playCount") or row.get("PlayCount") or 0
+        lines.append(f"{region}：{count} PC")
+    await account_region.finish("\n".join(lines))
 
 
 @account_opt.handle()
@@ -995,15 +999,15 @@ async def _(args: Message = CommandArg()):
         await account_opt.finish("用法：mai查询opt <titleVer>")
     try:
         result = await sw_api.get_opt(title_ver)
-        await account_opt.finish(json.dumps(result, ensure_ascii=False, indent=2)[:3000])
     except Exception as exc:
         await account_opt.finish(f"查询失败：{exc}")
+    await account_opt.finish(json.dumps(result, ensure_ascii=False, indent=2)[:3000])
 
 
 @account_queue.handle()
 async def _():
     try:
         result = await sw_api.get_charge_queue()
-        await account_queue.finish(json.dumps(result, ensure_ascii=False, indent=2)[:3000])
     except Exception as exc:
         await account_queue.finish(f"查询失败：{exc}")
+    await account_queue.finish(json.dumps(result, ensure_ascii=False, indent=2)[:3000])

@@ -139,12 +139,11 @@ async def _(event: MessageEvent, match = RegexMatched()):
                 diff=['绿黄红紫白'.index(match.group(2))], 
                 type=tp
             )
-        if len(music_data) == 0:
-            await random_song.finish('没有这样的乐曲哦。', reply_message=True)
-            return
-        await finish_timed(random_song, draw_music_info(music_data.random()))
-    except:
+    except Exception:
         await random_song.finish('随机命令错误，请检查语法', reply_message=True)
+    if len(music_data) == 0:
+        await random_song.finish('没有这样的乐曲哦。', reply_message=True)
+    await finish_timed(random_song, draw_music_info(music_data.random()))
 
 
 @rating_ranking.handle()
