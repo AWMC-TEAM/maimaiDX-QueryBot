@@ -145,12 +145,19 @@ assert "retry_count=0" in sw_api_src
 config_src = (ROOT / "config.py").read_text(encoding="utf-8")
 assert "awmc_b50_upload_timeout_seconds: float = 15.0" in config_src
 assert "awmc_upload_poll_timeout_seconds: float = 15.0" in config_src
-assert "awmc_user_music_timeout_seconds: float = 30.0" in config_src
+assert "awmc_user_music_timeout_seconds: float = 15.0" in config_src
+assert "awmc_lxns_pc_cache_seconds" in config_src
+assert "_lxns_scores_from_pc_cache" in upload_src
+assert "convert_pc_records_to_lxns_scores" in upload_src
+assert "PC缓存" in upload_src
 
 lxns_client_src = (ROOT / "libraries" / "maimaidx_lxns_client.py").read_text(
     encoding="utf-8"
 )
 assert "read=15.0" in lxns_client_src
 assert "overall_deadline" in lxns_client_src
+assert "convert_pc_records_to_lxns_scores" in lxns_client_src
 
 print("account machine flow tests: ok")
+
+

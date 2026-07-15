@@ -14,7 +14,9 @@ NAMES = {
     "_error_message",
     "_parse_oauth_token_response",
     "_parse_user_api_response",
+    "_lxns_song_id_type",
     "convert_sega_music_scores",
+    "convert_pc_records_to_lxns_scores",
 }
 
 tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
@@ -111,5 +113,28 @@ assert scores == [
         "dx_score": 0,
     },
 ]
+
+class _Rec:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+pc_convert = namespace["convert_pc_records_to_lxns_scores"]
+pc_scores = pc_convert(
+    [
+        _Rec(
+            song_id=10834,
+            level_index=3,
+            achievements=100.5,
+            dx_score=12,
+            fc="ap",
+            fs="",
+        )
+    ]
+)
+assert pc_scores[0]["id"] == 834
+assert pc_scores[0]["type"] == "dx"
+assert pc_scores[0]["fc"] == "ap"
+assert "fs" not in pc_scores[0]
 
 print("LXNS OAuth tests: ok")

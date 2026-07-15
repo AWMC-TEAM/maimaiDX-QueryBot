@@ -52,10 +52,12 @@ class Config(BaseModel):
     awmc_b50_upload_timeout_seconds: float = 15.0
     # 公共网关异步上传轮询上限；与 B50 上传同量级，避免任务轮询卡很久。
     awmc_upload_poll_timeout_seconds: float = 15.0
-    # 全量 user/music（落雪 OAuth 主路径拉机台成绩）可比 B50 略长，但必须有硬上限。
-    # 这不是「两个」B50 上传接口；超时后立即失败，不再长时间挂起。
-    awmc_user_music_timeout_seconds: float = 30.0
+    # 落雪 OAuth 拉机台全量成绩；与 B50 上传同为 15s 硬超时，超时立即失败。
+    # 有新鲜 PC 缓存时优先用本地成绩，不再打这条接口。
+    awmc_user_music_timeout_seconds: float = 15.0
     awmc_user_music_retry_count: int = 0
+    # 本地 PC 成绩可用于落雪 OAuth 直传的新鲜度（秒）；默认与 SGID 缓存一致。
+    awmc_lxns_pc_cache_seconds: float = 600.0
     # PC / 水鱼 / 落雪依次使用同一机台会话时的间隔，避免登录互相挤掉。
     awmc_machine_step_delay_seconds: float = 3.0
     # 等待全局机台锁的最长时间（秒）；0=无限等待。超时返回「机台繁忙」。

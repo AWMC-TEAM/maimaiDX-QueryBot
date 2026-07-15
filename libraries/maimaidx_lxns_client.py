@@ -270,6 +270,17 @@ async def user_get_scores(access_token: str) -> Optional[list]:
     return await _billable_lxns_fetch(_fetch())
 
 
+def _lxns_song_id_type(raw_id: int) -> Optional[tuple[int, str]]:
+    """Sega musicId → 落雪 (id, type)。同一曲目标准/DX 共用基础 ID。"""
+    if raw_id > 100000:
+        return raw_id, 'utage'
+    if raw_id >= 10000:
+        return raw_id % 10000, 'dx'
+    if raw_id > 0:
+        return raw_id, 'standard'
+    return None
+
+
 def convert_sega_music_scores(detail_list: List[dict]) -> List[dict]:
     """把 ``userMusicDetail`` 转成落雪个人 API 接受的 Score 列表。"""
     combo_map = {0: None, 1: 'fc', 2: 'fcp', 3: 'ap', 4: 'app'}
@@ -286,15 +297,10 @@ def convert_sega_music_scores(detail_list: List[dict]) -> List[dict]:
             continue
         if raw_id <= 0 or not 0 <= level_index <= 4 or achievement < 0:
             continue
-
-        if raw_id > 100000:
-            song_id, song_type = raw_id, 'utage'
-        elif raw_id >= 10000:
-            song_id, song_type = raw_id % 10000, 'dx'
-        else:
-            song_id, song_type = raw_id, 'standard'
-        if song_id <= 0:
+        parsed = _lxns_song_id_type(raw_id)
+        if not parsed:
             continue
+        song_id, song_type = parsed
 
         score = {
             'id': song_id,
@@ -306,6 +312,45 @@ def convert_sega_music_scores(detail_list: List[dict]) -> List[dict]:
         fc = combo_map.get(item.get('comboStatus'))
         fs = sync_map.get(item.get('syncStatus'))
         # 落雪 Score 接口期望缺省字段省略，而不是显式 null。
+        if fc:
+            score['fc'] = fc
+        if fs:
+            score['fs'] = fs
+        key = (song_id, song_type, level_index)
+        previous = best.get(key)
+        if previous is None or (achievement, dx_score) > (
+            previous['achievements'], previous['dx_score']
+        ):
+            best[key] = score
+    return list(best.values())
+
+
+def convert_pc_records_to_lxns_scores(records: List[Any]) -> List[dict]:
+    """把本地 PC 库记录转成落雪 Score（无需再登录机台）。"""
+    best: Dict[tuple[int, str, int], dict] = {}
+    for item in records:
+        try:
+            raw_id = int(getattr(item, 'song_id', 0) or 0)
+            level_index = int(getattr(item, 'level_index', -1))
+            achievement = float(getattr(item, 'achievements', 0) or 0)
+            dx_score = int(getattr(item, 'dx_score', 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if raw_id <= 0 or not 0 <= level_index <= 4 or achievement < 0:
+            continue
+        parsed = _lxns_song_id_type(raw_id)
+        if not parsed:
+            continue
+        song_id, song_type = parsed
+        score = {
+            'id': song_id,
+            'type': song_type,
+            'level_index': level_index,
+            'achievements': achievement,
+            'dx_score': dx_score,
+        }
+        fc = str(getattr(item, 'fc', '') or '').strip() or None
+        fs = str(getattr(item, 'fs', '') or '').strip() or None
         if fc:
             score['fc'] = fc
         if fs:

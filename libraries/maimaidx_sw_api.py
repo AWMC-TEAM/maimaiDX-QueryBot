@@ -299,11 +299,12 @@ class SwApiClient:
     ) -> List[dict]:
         if self.api_mode == "public":
             raise SwApiError("AWMC 公共网关暂不提供 PC 全量数据接口")
-        # 全量成绩可比 B50 上传略慢（默认 30s），但禁止长重试把 OAuth 上传拖成「一直卡住」。
+        # 全量成绩默认 15s 硬超时，与 B50 上传对齐；禁止长重试把 OAuth 上传拖成「一直卡住」。
+        # 有新鲜 PC 缓存时上传路径会跳过本接口。
         music_timeout = float(
             timeout
             if timeout is not None
-            else getattr(maiconfig, "awmc_user_music_timeout_seconds", 30.0)
+            else getattr(maiconfig, "awmc_user_music_timeout_seconds", 15.0)
         )
         music_retries = (
             retry_count

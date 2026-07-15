@@ -23,6 +23,7 @@ from ..libraries.maimaidx_admin_audit import admin_audit, redact
 from ..libraries.maimaidx_break import break_db
 from ..libraries.maimaidx_lxns_client import (
     LxnsApiError,
+    convert_pc_records_to_lxns_scores,
     convert_sega_music_scores,
     user_upload_scores,
 )
@@ -455,6 +456,8 @@ def _oauth_token_rejected(exc: Exception) -> bool:
 
 def _lxns_upload_failure_text(exc: Exception, *, stage: str) -> str:
     detail = redact(str(exc)).strip() or type(exc).__name__
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return f"{stage}超时（{detail[:120]}）"
     if isinstance(exc, LxnsApiError) and exc.status_code == 403:
         return (
             "落雪拒绝写入（HTTP 403）。请确认 OAuth 应用已启用 write_player，"
@@ -463,6 +466,77 @@ def _lxns_upload_failure_text(exc: Exception, *, stage: str) -> str:
     if isinstance(exc, LxnsApiError) and exc.status_code == 401:
         return "落雪 OAuth 凭据已失效，自动刷新后仍未通过验证"
     return f"{stage}失败：{detail[:200]}"
+
+
+def _pc_cache_ttl_seconds() -> float:
+    return max(
+        0.0,
+        float(
+            getattr(
+                maiconfig,
+                "awmc_lxns_pc_cache_seconds",
+                getattr(maiconfig, "awmc_sgid_cache_seconds", 600.0),
+            )
+            or 0.0
+        ),
+    )
+
+
+def _lxns_scores_from_pc_cache(qqid: int) -> Optional[list[dict]]:
+    """有足够新鲜的本地 PC 成绩时，直接转成落雪 Score，跳过机台登录。"""
+    records = pc_db.get_user_play_counts(qqid)
+    if not records:
+        return None
+    newest = max(float(r.updated_at or 0) for r in records)
+    ttl = _pc_cache_ttl_seconds()
+    if ttl > 0 and (time.time() - newest) > ttl:
+        return None
+    scores = convert_pc_records_to_lxns_scores(records)
+    return scores or None
+
+
+async def _oauth_upload_lxns_scores(
+    event: MessageEvent,
+    oauth_token: str,
+    scores: list[dict],
+    *,
+    source: str,
+) -> dict:
+    """OAuth 个人 API：POST /api/v0/user/maimai/player/scores，15s 内必须结束。"""
+    upload_timeout = float(
+        getattr(maiconfig, "awmc_b50_upload_timeout_seconds", 15.0) or 15.0
+    )
+    try:
+        return await asyncio.wait_for(
+            user_upload_scores(oauth_token, scores),
+            timeout=upload_timeout,
+        )
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(
+            f"落雪写入超时（{upload_timeout:.0f}s，来源 {source}）"
+        ) from exc
+
+
+async def _oauth_upload_lxns_with_refresh(
+    event: MessageEvent,
+    oauth_token: str,
+    scores: list[dict],
+    *,
+    source: str,
+) -> dict:
+    try:
+        return await _oauth_upload_lxns_scores(
+            event, oauth_token, scores, source=source
+        )
+    except Exception as exc:
+        if not _oauth_token_rejected(exc):
+            raise
+        refreshed_token = await _lxns_oauth_access_token(event, force_refresh=True)
+        if not refreshed_token:
+            raise RuntimeError("落雪 OAuth Token 刷新失败") from exc
+        return await _oauth_upload_lxns_scores(
+            event, refreshed_token, scores, source=source
+        )
 
 
 def _ensure_business_success(result: dict) -> None:
@@ -939,31 +1013,14 @@ async def _upload(
     _machine_locked: bool = False,
     _qrcode_verified: bool = False,
 ) -> str:
-    if not _machine_locked:
-        try:
-            async with machine_session():
-                return await _upload(
-                    event,
-                    fish=fish,
-                    lxns=lxns,
-                    qrcode_arg=qrcode_arg,
-                    _machine_locked=True,
-                    _qrcode_verified=_qrcode_verified,
-                )
-        except MachineBusyError as exc:
-            return f"上传失败：{exc}"
     if bool(getattr(maiconfig, "maimaidx_user_agreement_required", True)):
-        key = _user_key(event)
         if not has_user_agreed(event):
             return agreement_prompt()
     key = _user_key(event)
     binding = account_db.get(key)
-    direct_qrcode = extract_sgwcmaid_qrcode(qrcode_arg)
     if not binding:
         return _ACCOUNT_SETUP_GUIDE
-    qrcode = direct_qrcode or binding.qrcode
-    if not qrcode:
-        return "尚未绑定舞萌账号，请使用 mai绑定，或在上传命令后附带 SGWCMAID。"
+
     oauth_token = await _lxns_oauth_access_token(event) if lxns else None
     has_lxns_oauth = _has_lxns_oauth(event) if lxns else False
     has_lxns_upload = bool(oauth_token or binding.lxns_token)
@@ -972,7 +1029,6 @@ async def _upload(
             "落雪 OAuth 授权缺少 write_player 写入权限。"
             "请让管理员在落雪 OAuth 应用中启用该权限，然后重新发送 lxbind 授权。"
         )
-    # OAuth 已绑定但拿不到有效 token（常见：refresh 失败）时，不要静默改走兼容路径。
     if lxns and has_lxns_oauth and not oauth_token:
         return (
             "落雪 OAuth Token 已失效且自动刷新失败。"
@@ -987,6 +1043,75 @@ async def _upload(
         return "未绑定水鱼 Token，请使用「mai绑定水鱼 <Token>」。"
     if lxns and not has_lxns_upload:
         return "未绑定落雪上传，请先发送「lxbind」完成 OAuth。"
+
+    # 最优路径：仅落雪 + OAuth + 新鲜 PC 缓存 → 直连个人 API，不占机台锁、不验二维码。
+    # 文档：POST /api/v0/user/maimai/player/scores（Bearer OAuth）。
+    if lxns and oauth_token and not fish and not _machine_locked:
+        try:
+            qqid = int(key)
+        except ValueError:
+            qqid = 0
+        pc_scores = _lxns_scores_from_pc_cache(qqid) if qqid else None
+        if pc_scores:
+            operation = "upload_lx"
+            billing_service = "upload"
+            cost = _service_cost(operation)
+            try:
+                break_db.ensure_service_affordable(int(key), billing_service, cost)
+                log.info(
+                    f"[upload] 落雪 OAuth：使用 PC 缓存 {len(pc_scores)} 条，跳过机台 user={key}"
+                )
+                result = await _oauth_upload_lxns_with_refresh(
+                    event, oauth_token, pc_scores, source="PC缓存"
+                )
+                account_db.mark_uploaded(key)
+                from ..libraries.maimaidx_player_cache import invalidate_player_cache
+
+                try:
+                    invalidate_player_cache(int(key))
+                except ValueError:
+                    pass
+                charge = break_db.settle_service_success(
+                    int(key), billing_service, cost,
+                    meta={"operation": operation, "fish": False, "lxns": True, "source": "pc"},
+                )
+                ref = _log(
+                    key, operation, "success",
+                    f"charged={charge.charged},free={charge.free},source=pc,count={len(pc_scores)}",
+                )
+                return (
+                    "上传完成\n"
+                    f"落雪（OAuth/PC缓存）：{_result_text(result)}\n"
+                    f"{_charge_text(charge)}\nRef_ID: {ref}"
+                )
+            except Exception as exc:
+                failure_message = f"上传失败：{_lxns_upload_failure_text(exc, stage='向落雪写入成绩')}"
+                ref = _log(key, "upload", "error", str(exc))
+                return failure_message + f"\nRef_ID: {ref}"
+
+    if not _machine_locked:
+        try:
+            async with machine_session():
+                return await _upload(
+                    event,
+                    fish=fish,
+                    lxns=lxns,
+                    qrcode_arg=qrcode_arg,
+                    _machine_locked=True,
+                    _qrcode_verified=_qrcode_verified,
+                )
+        except MachineBusyError as exc:
+            return f"上传失败：{exc}"
+
+    direct_qrcode = extract_sgwcmaid_qrcode(qrcode_arg)
+    qrcode = direct_qrcode or binding.qrcode
+    if not qrcode:
+        if lxns and oauth_token and not fish:
+            return (
+                "本地暂无足够新鲜的 PC 成绩，且尚未绑定舞萌二维码。\n"
+                "请先发送最新 SGWCMAID / 官方二维码完成「更新pc数」或直接附在 maiul 后上传。"
+            )
+        return "尚未绑定舞萌账号，请使用 mai绑定，或在上传命令后附带 SGWCMAID。"
 
     try:
         if _qrcode_verified:
@@ -1010,13 +1135,11 @@ async def _upload(
         return f"上传失败：二维码验证失败（{type(exc).__name__}）\nRef_ID: {ref}"
 
     operation = "upload_all" if fish and lxns else "upload_fish" if fish else "upload_lx"
-    # 三种上传共用一个每日免费额度，避免通过轮流调用水鱼/落雪/同时上传获得三次免费。
     billing_service = "upload"
     cost = _service_cost(operation)
     results: list[str] = []
     try:
         break_db.ensure_service_affordable(int(key), billing_service, cost)
-        # 显式 maiu/maiul 会先验二维码；给下一次机台登录留出间隔。
         if not _qrcode_verified:
             await wait_between_machine_steps()
         if fish:
@@ -1027,46 +1150,56 @@ async def _upload(
             if fish:
                 await wait_between_machine_steps()
             if oauth_token:
-                # 主路径：机台全量成绩 + OAuth 直传落雪。
-                # 不再回退 update_lx：get_user_music 已占用二维码/机台会话，
-                # 再走兼容导入只会长时间挂起或二次失败。
+                # 主路径：机台全量成绩 + OAuth 个人 API 直传。
+                # 不再回退 update_lx（会二次占用已消耗的二维码并长时间挂起）。
                 lxns_stage = "读取玩家 PC 数据"
                 try:
-                    log.info(f"[upload] 落雪 OAuth：开始读取机台成绩 user={key}")
-                    music_timeout = float(
-                        getattr(maiconfig, "awmc_user_music_timeout_seconds", 30.0)
-                    )
-                    raw_scores = await sw_api.get_user_music(
-                        qrcode,
-                        timeout=music_timeout,
-                        retry_count=0,
-                    )
-                    scores = convert_sega_music_scores(raw_scores)
-                    if not scores:
-                        raise RuntimeError("机台返回的成绩无法转换为落雪 Score")
-                    log.info(
-                        f"[upload] 落雪 OAuth：转换完成 {len(scores)} 条，开始写入落雪"
-                    )
-                    lxns_stage = "向落雪写入成绩"
+                    # 机台路径也可能已有本轮刚写入的 PC；再试一次本地，避免重复登录。
                     try:
-                        result = await user_upload_scores(oauth_token, scores)
-                    except Exception as exc:
-                        if not _oauth_token_rejected(exc):
-                            raise
-                        refreshed_token = await _lxns_oauth_access_token(
-                            event, force_refresh=True
+                        qqid = int(key)
+                    except ValueError:
+                        qqid = 0
+                    pc_scores = _lxns_scores_from_pc_cache(qqid) if qqid else None
+                    if pc_scores:
+                        log.info(
+                            f"[upload] 落雪 OAuth：机台会话内改用 PC 缓存 "
+                            f"{len(pc_scores)} 条 user={key}"
                         )
-                        if not refreshed_token:
-                            raise RuntimeError("落雪 OAuth Token 刷新失败") from exc
-                        result = await user_upload_scores(refreshed_token, scores)
-                    results.append("落雪（OAuth）：" + _result_text(result))
+                        result = await _oauth_upload_lxns_with_refresh(
+                            event, oauth_token, pc_scores, source="PC缓存"
+                        )
+                        results.append("落雪（OAuth/PC缓存）：" + _result_text(result))
+                    else:
+                        log.info(f"[upload] 落雪 OAuth：开始读取机台成绩 user={key}")
+                        music_timeout = float(
+                            getattr(maiconfig, "awmc_user_music_timeout_seconds", 15.0)
+                        )
+                        raw_scores = await asyncio.wait_for(
+                            sw_api.get_user_music(
+                                qrcode,
+                                timeout=music_timeout,
+                                retry_count=0,
+                            ),
+                            timeout=music_timeout + 1.0,
+                        )
+                        scores = convert_sega_music_scores(raw_scores)
+                        if not scores:
+                            raise RuntimeError("机台返回的成绩无法转换为落雪 Score")
+                        log.info(
+                            f"[upload] 落雪 OAuth：转换完成 {len(scores)} 条，开始写入落雪"
+                        )
+                        lxns_stage = "向落雪写入成绩"
+                        result = await _oauth_upload_lxns_with_refresh(
+                            event, oauth_token, scores, source="机台"
+                        )
+                        results.append("落雪（OAuth）：" + _result_text(result))
                 except Exception as exc:
                     raise RuntimeError(
                         _lxns_upload_failure_text(exc, stage=lxns_stage)
-                        + "。请修正后重新发送 lxbind 授权并重试"
+                        + "。可先「更新pc数」再用 maiul，或重新 lxbind 后重试"
                     ) from exc
             else:
-                # 备选：仅无 OAuth 时才用导入 Token（mai绑定落雪 / lxns_token）。
+                # 备选：仅无 OAuth 时才用导入 Token。
                 log.info(f"[upload] 落雪兼容 Token：开始 update_lx user={key}")
                 result = await sw_api.update_lx(qrcode, binding.lxns_token)
                 result = await _await_upload_success(result, lxns=True)
