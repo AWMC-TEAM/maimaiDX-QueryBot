@@ -102,7 +102,11 @@ def _excluded(path: Path, config: Any) -> bool:
     if len(rel.parts) >= 2 and rel.parts[:2] == ("audio_guess", "cache"):
         return True
     if not bool(_setting(config, "maimaidx_storage_include_user_scores", True)):
-        return bool(rel.parts and rel.parts[0] == "user_scores")
+        if rel.parts and rel.parts[0] == "user_scores":
+            return True
+    if not bool(_setting(config, "maimaidx_storage_include_player_cache", True)):
+        if rel.parts and rel.parts[0] == "player_cache":
+            return True
     return False
 
 

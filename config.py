@@ -86,6 +86,8 @@ class Config(BaseModel):
     maimaidx_storage_mysql_keep_snapshots: int = 3
     maimaidx_storage_sync_interval_seconds: int = 60
     maimaidx_storage_include_user_scores: bool = True
+    # 最新成绩 API 缓存通常较大且可重建；大型部署可关闭其远端快照。
+    maimaidx_storage_include_player_cache: bool = True
     # auto：同一后端沿用本地工作缓存；remote：每次启动强制从后端恢复。
     maimaidx_storage_bootstrap_policy: str = 'auto'
     maimaidx_storage_allow_empty_remote_init: bool = False
