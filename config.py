@@ -69,6 +69,8 @@ class Config(BaseModel):
     maimaidx_compact_messages: bool = True
     # 开启后，绑定、上传和发票前需先同意当前用户协议。
     maimaidx_user_agreement_required: bool = True
+    # Koishi 迁移指令只允许读取此目录；相对路径以插件根目录为准。
+    maimaidx_koishi_migration_dir: str = 'data/migration'
     # ---------- 曲目数据源切换（可选） ----------
     # 留空/不设置 = 使用水鱼查分器 API（默认）
     # "dxdata" = 使用本地 dxdata.json 文件，无需网络

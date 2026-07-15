@@ -17,7 +17,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 
 SCHEMA = """
@@ -159,6 +159,48 @@ def _load_terms_source(path: Path) -> list[dict[str, Any]]:
         conn.close()
 
 
+def _load_koishi_identity_map(path: Path) -> tuple[dict[str, str], list[str]]:
+    """从 Koishi bind 插件的 binding(aid, pid) 表自动解析 QQ 身份。"""
+    if path.suffix.lower() == ".json":
+        return {}, []
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='binding'"
+        ).fetchone()
+        if not exists:
+            return {}, []
+        columns = {
+            str(row[1]).lower() for row in conn.execute("PRAGMA table_info(binding)")
+        }
+        if not {"aid", "pid"}.issubset(columns):
+            return {}, []
+        candidates: dict[str, set[str]] = {}
+        for row in conn.execute("SELECT aid, pid FROM binding"):
+            aid = str(row["aid"] or "").strip()
+            pid = str(row["pid"] or "").strip()
+            if not aid or not pid:
+                continue
+            match = re.fullmatch(r"(?:onebot|qq):([0-9]+)", pid, re.IGNORECASE)
+            qqid = match.group(1) if match else pid if pid.isdigit() else ""
+            if qqid:
+                candidates.setdefault(aid, set()).add(qqid)
+        result: dict[str, str] = {}
+        warnings: list[str] = []
+        for aid, qqids in candidates.items():
+            if len(qqids) != 1:
+                warnings.append(f"Koishi aid={aid} 对应多个 QQ，需手工 identity map")
+                continue
+            qqid = next(iter(qqids))
+            result[f"koishi:{aid}"] = qqid
+            # maiBot 的 maiUid identity 模式可能直接把 Koishi User.id 存为纯数字。
+            result[aid] = qqid
+        return result, warnings
+    finally:
+        conn.close()
+
+
 def migrate(
     rows: Iterable[dict[str, Any]],
     target: Path,
@@ -166,8 +208,11 @@ def migrate(
     *,
     dry_run: bool,
 ) -> tuple[int, list[str]]:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(target))
+    if dry_run:
+        conn = sqlite3.connect(":memory:")
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(target))
     conn.executescript(SCHEMA)
     now = time.time()
     imported = 0
@@ -228,8 +273,11 @@ def migrate_terms(
     rows: Iterable[dict[str, Any]], target: Path, identity_map: dict[str, str],
     *, dry_run: bool,
 ) -> tuple[int, list[str]]:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(target))
+    if dry_run:
+        conn = sqlite3.connect(":memory:")
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(target))
     conn.executescript(AGREEMENT_SCHEMA)
     imported = 0
     skipped: list[str] = []
@@ -268,6 +316,42 @@ def migrate_terms(
     return imported, skipped
 
 
+def run_migration(
+    source: Path,
+    target: Path,
+    admin_target: Path,
+    *,
+    identity_map_path: Optional[Path] = None,
+    table_name: str = "",
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """执行一次可重复的迁移，供 CLI 与 Bot 管理指令共用。"""
+    source = source.resolve()
+    if not source.is_file():
+        raise ValueError(f"迁移源文件不存在：{source.name}")
+    auto_map, identity_warnings = _load_koishi_identity_map(source)
+    identity_map = dict(auto_map)
+    if identity_map_path:
+        manual = json.loads(identity_map_path.read_text(encoding="utf-8"))
+        if not isinstance(manual, dict):
+            raise ValueError("identity map 必须是 JSON 对象")
+        identity_map.update({str(k): str(v) for k, v in manual.items()})
+    rows = _load_source(source, table_name)
+    term_rows = _load_terms_source(source)
+    imported, skipped = migrate(rows, target, identity_map, dry_run=dry_run)
+    terms_imported, terms_skipped = migrate_terms(
+        term_rows, admin_target, identity_map, dry_run=dry_run
+    )
+    return {
+        "bindings": imported,
+        "agreements": terms_imported,
+        "skipped": skipped + terms_skipped,
+        "identity_mappings": len(auto_map) // 2,
+        "identity_warnings": identity_warnings,
+        "dry_run": dry_run,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="maibot SQLite 或 JSON 导出")
@@ -287,29 +371,23 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    identity_map: dict[str, str] = {}
-    if args.identity_map:
-        identity_map = {
-            str(k): str(v)
-            for k, v in json.loads(args.identity_map.read_text(encoding="utf-8")).items()
-        }
-    rows = _load_source(args.source, args.table)
-    term_rows = _load_terms_source(args.source)
-    imported, skipped = migrate(
-        rows, args.target, identity_map, dry_run=bool(args.dry_run)
-    )
-    terms_imported, terms_skipped = migrate_terms(
-        term_rows, args.admin_target, identity_map, dry_run=bool(args.dry_run)
+    result = run_migration(
+        args.source,
+        args.target,
+        args.admin_target,
+        identity_map_path=args.identity_map,
+        table_name=args.table,
+        dry_run=bool(args.dry_run),
     )
     mode = "可导入" if args.dry_run else "已导入"
     print(
-        f"绑定{mode} {imported} 条，协议{mode} {terms_imported} 条，"
-        f"跳过 {len(skipped) + len(terms_skipped)} 条"
+        f"绑定{mode} {result['bindings']} 条，协议{mode} {result['agreements']} 条，"
+        f"跳过 {len(result['skipped'])} 条，自动身份映射 {result['identity_mappings']} 个"
     )
     print(f"账号目标：{args.target}\n管理目标：{args.admin_target}")
-    for reason in (skipped + terms_skipped)[:20]:
+    for reason in (result["identity_warnings"] + result["skipped"])[:20]:
         print("-", reason)
-    return 0 if not skipped and not terms_skipped else 2
+    return 0 if not result["skipped"] else 2
 
 
 if __name__ == "__main__":

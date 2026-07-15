@@ -54,4 +54,4 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-"nonebot_plugin_maimaidx" = ["maimaidxhelp.png"]
+"nonebot_plugin_maimaidx" = ["maimaidxhelp.png", "scripts/*.py"]

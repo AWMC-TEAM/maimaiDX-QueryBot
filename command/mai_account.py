@@ -50,6 +50,14 @@ account_opt = on_command("mai查询opt", aliases={"查询opt"})
 account_queue = on_command("maiqueue", aliases={"mai队列"})
 
 _RECALL_FAILED_NOTICE = "⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。\n"
+_ACCOUNT_SETUP_GUIDE = (
+    "尚未建立账号记录，请按以下步骤完成：\n"
+    "1. 发送「用户协议」，阅读网页并发送完整确认词；\n"
+    "2. 发送「mai绑定」，再提交最新的 SGWCMAID 字符串；\n"
+    "3. 按需发送「mai绑定水鱼 <Token>」或「mai绑定落雪 <导入Token>」；\n"
+    "4. 使用 maiu / maiul / maiua 上传水鱼 / 落雪 / 两边。\n"
+    "二维码和 Token 都是敏感凭据，建议在私聊中操作。"
+)
 
 
 def _user_key(event: MessageEvent) -> str:
@@ -331,13 +339,22 @@ async def _(event: MessageEvent):
     key = _user_key(event)
     binding = account_db.get(key)
     if not binding:
-        await account_status.finish("尚未建立账号记录。发送 mai账号 查看使用方法。")
+        await account_status.finish(_ACCOUNT_SETUP_GUIDE)
     lines = ["AWMC 账号状态"]
-    lines.append(f"舞萌账号：{binding.user_name or '未命名'}")
-    lines.append(f"Rating：{binding.rating}")
-    lines.append(f"二维码：{'已绑定' if binding.qrcode else '未绑定'}")
-    lines.append(f"水鱼 Token：{_mask(binding.fish_token)}")
-    lines.append(f"落雪 Token：{_mask(binding.lxns_token)}")
+    if binding.qrcode:
+        lines.append(f"舞萌账号：{binding.user_name or '已绑定'}")
+        lines.append(f"Rating：{binding.rating}")
+        lines.append("二维码：已绑定")
+    else:
+        lines.append("舞萌账号：未绑定\n使用「mai绑定」提交最新 SGWCMAID。")
+    if binding.fish_token:
+        lines.append(f"水鱼 Token：{_mask(binding.fish_token)}")
+    else:
+        lines.append("水鱼 Token：未绑定\n使用「mai绑定水鱼 <Token>」。")
+    if binding.lxns_token:
+        lines.append(f"落雪 Token：{_mask(binding.lxns_token)}")
+    else:
+        lines.append("落雪 Token：未绑定\n使用「mai绑定落雪 <导入Token>」。")
     if binding.last_upload_at:
         lines.append("最近上传：" + time.strftime("%Y-%m-%d %H:%M", time.localtime(binding.last_upload_at)))
     await account_status.finish("\n".join(lines))
@@ -407,14 +424,19 @@ async def _upload(
     binding = account_db.get(key)
     direct_qrcode = extract_sgwcmaid_qrcode(qrcode_arg)
     if not binding:
-        return "尚未建立账号记录，请先绑定上传 Token 和舞萌账号。"
+        return _ACCOUNT_SETUP_GUIDE
     qrcode = direct_qrcode or binding.qrcode
     if not qrcode:
         return "尚未绑定舞萌账号，请使用 mai绑定，或在上传命令后附带 SGWCMAID。"
+    if fish and lxns and not binding.fish_token and not binding.lxns_token:
+        return (
+            "水鱼和落雪上传 Token 均未绑定。\n"
+            "请使用「mai绑定水鱼 <Token>」和「mai绑定落雪 <导入Token>」。"
+        )
     if fish and not binding.fish_token:
-        return "未绑定水鱼 Token，请先使用 mai绑定水鱼。"
+        return "未绑定水鱼 Token，请使用「mai绑定水鱼 <Token>」。"
     if lxns and not binding.lxns_token:
-        return "未绑定落雪导入 Token，请先使用 mai绑定落雪。"
+        return "未绑定落雪导入 Token，请使用「mai绑定落雪 <导入Token>」。"
     operation = "upload_all" if fish and lxns else "upload_fish" if fish else "upload_lx"
     # 三种上传共用一个每日免费额度，避免通过轮流调用水鱼/落雪/同时上传获得三次免费。
     billing_service = "upload"

@@ -11,25 +11,34 @@ from ..libraries.maimaidx_admin_audit import admin_audit
 from ..libraries.maimaidx_platform import billing_user_id
 
 
-DEFAULT_AGREEMENT_URL = "https://wiki.awmc.cc/guide/bot/terms"
+DEFAULT_AGREEMENT_URL = "https://wiki.awmc.team/guide/bot/terms"
 DEFAULT_AGREEMENT_ACCEPT_TEXT = (
     "我已认真阅读网页中的服务说明，并已了解AWMC服务可能带来的风险。"
     "我了解因使用本服务，造成舞萌DX官方账号遭到封禁，责任和AWMC无关。"
     "我确认发送二维码可能会对我的账号产生安全影响，并愿意接受这样的风险。"
     "在阅读说明后，我同意上述协议。"
 )
-DEFAULT_AGREEMENT_VERSION = "2.0.0"
+DEFAULT_AGREEMENT_VERSION = "4"
+_LEGACY_DEFAULT_URL = "https://wiki.awmc.cc/guide/bot/terms"
+_LEGACY_DEFAULT_VERSION = "2.0.0"
 
 
 def agreement_policy() -> dict[str, str]:
+    url = admin_audit.get_setting("agreement_url", DEFAULT_AGREEMENT_URL)
+    version = admin_audit.get_setting("agreement_version", DEFAULT_AGREEMENT_VERSION)
+    # 仅迁移旧版默认值，管理员自行设置的其它链接和版本保持不变。
+    if url == _LEGACY_DEFAULT_URL:
+        url = DEFAULT_AGREEMENT_URL
+        admin_audit.set_setting("agreement_url", url)
+    if version == _LEGACY_DEFAULT_VERSION:
+        version = DEFAULT_AGREEMENT_VERSION
+        admin_audit.set_setting("agreement_version", version)
     return {
-        "url": admin_audit.get_setting("agreement_url", DEFAULT_AGREEMENT_URL),
+        "url": url,
         "accept_text": admin_audit.get_setting(
             "agreement_accept_text", DEFAULT_AGREEMENT_ACCEPT_TEXT
         ),
-        "version": admin_audit.get_setting(
-            "agreement_version", DEFAULT_AGREEMENT_VERSION
-        ),
+        "version": version,
     }
 
 
@@ -44,7 +53,7 @@ def agreement_prompt() -> str:
         f"📋 使用前请阅读 AWMC maiBot 服务协议（v{policy['version']}）：\n"
         f"{policy['url']}\n\n"
         "阅读网页后，请完整复制并发送网页中的确认词。\n"
-        "确认词必须完全一致；Bot 不会在聊天中展示确认词。"
+        "请认真阅读本网页内容和协议。"
     )
 
 

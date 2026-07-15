@@ -147,6 +147,7 @@ MAIMAIDX_ADMIN_WEB_PATH=/maimaidx/admin
 MAIMAIDX_ADMIN_WEB_PUBLIC_URL=https://bot.example.com
 MAIMAIDX_MESSAGE_STATS_ENABLED=true
 MAIMAIDX_COMPACT_MESSAGES=true
+MAIMAIDX_KOISHI_MIGRATION_DIR=data/migration
 ```
 
 WebUI 默认独立监听 `127.0.0.1:8099`，可以直接用 Nginx/Caddy 反向代理；设
@@ -258,6 +259,7 @@ BOTNAME=maimai
 | `maiu` / `maiul` / `maiua` | 上传水鱼 / 落雪 / 同时上传 |
 | `mai发票 <2-6>` / `mai查票` | 票券操作（team 模式） |
 | `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
+| `迁移Koishi 检查/确认 <数据库>` | 超级管理员预检/导入 Koishi maiBot 数据 |
 
 绑定后执行 `更新pc数` 会直接使用已保存账号，不再要求重复发送二维码。
 落雪查询 OAuth 仍使用 `lxbind`；它与 `mai绑定落雪` 的上传 Token 用途不同。
@@ -265,6 +267,10 @@ BOTNAME=maimai
 直接发送 `SGWCMAID...` 时，Bot 会先尝试撤回敏感消息，再同步 PC，并按用户
 已绑定的水鱼/落雪 Token 自动上传。账号与 BREAK 功能首次使用前需发送
 `用户协议`，阅读链接并完整输入网页确认词。
+
+Koishi 数据迁移时，将完整数据库放进 `MAIMAIDX_KOISHI_MIGRATION_DIR`，先执行
+`迁移Koishi 检查 koishi.db`，核对后再执行 `迁移Koishi 确认 koishi.db`。源库只读，
+迁移器只导入 maiBot 账号/Token/协议数据，并可通过 Koishi `binding` 表自动映射 QQ。
 
 ### 倍率票 / 道具
 
