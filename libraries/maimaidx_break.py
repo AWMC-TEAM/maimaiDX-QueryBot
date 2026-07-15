@@ -32,8 +32,9 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'checkin_base_max': '2',
     'query_cost': '1',
     'analysis_cost': '3',
-    # 第 1～7 天的额外奖励；第 7 天以后保持最后一档。
-    'streak_bonus': '0,0,1,1,1,2,2',
+    # 恢复旧版第 1～5 天曲线；之后按 streak_bonus_growth 继续增长，不封顶。
+    'streak_bonus': '3,5,8,12,20',
+    'streak_bonus_growth': '1',
     'bonus_group_1072033605': '0.25',
     'bonus_thursday': '0.5',
     'bonus_group_first': '0.5',
@@ -51,11 +52,12 @@ DEFAULT_CONFIG: Dict[str, str] = {
 LEGACY_ECONOMY_DEFAULTS: Dict[str, str] = {
     'checkin_base_min': '1',
     'checkin_base_max': '5',
-    'streak_bonus': '3,5,8,12,20',
     'bonus_group_1072033605': '0.5',
     'bonus_thursday': '1.0',
     'bonus_group_first': '1.0',
 }
+
+CAPPED_STREAK_DEFAULT = '0,0,1,1,1,2,2'
 
 BONUS_GROUP_ID = int(BOT_QQ_GROUP)
 
@@ -121,6 +123,14 @@ CREATE TABLE IF NOT EXISTS break_service_daily (
 );
 CREATE INDEX IF NOT EXISTS idx_break_service_daily
     ON break_service_daily(date, service);
+CREATE TABLE IF NOT EXISTS break_daily_reward (
+    qqid        INTEGER NOT NULL,
+    date        TEXT NOT NULL,
+    reward_key  TEXT NOT NULL,
+    amount      INTEGER NOT NULL,
+    created_at  REAL NOT NULL,
+    PRIMARY KEY (qqid, date, reward_key)
+);
 """
 
 
@@ -202,11 +212,38 @@ class LotteryResult:
     balance: int
 
 
+@dataclass
+class DailyRewardResult:
+    reward_key: str
+    amount: int
+    balance: int
+    awarded: bool
+
+
 def _parse_config_int(raw: str, default: int) -> int:
     try:
         return int(float(raw))
     except (TypeError, ValueError):
         return default
+
+
+def calculate_streak_bonus(streak: int, bonuses: list[int], growth: int) -> int:
+    """按配置曲线计算连签奖励；超过曲线后线性增长，不封顶。"""
+    if not bonuses:
+        return 0
+    idx = max(int(streak) - 1, 0)
+    if idx < len(bonuses):
+        return max(0, int(bonuses[idx]))
+    return max(0, int(bonuses[-1])) + max(1, int(growth)) * (
+        idx - len(bonuses) + 1
+    )
+
+
+def calculate_luck_break(luck: int) -> tuple[int, int]:
+    """人品值按普通四舍五入取整到十位，再换算为 BREAK。"""
+    value = max(0, min(100, int(luck)))
+    rounded = ((value + 5) // 10) * 10
+    return rounded, rounded // 10
 
 
 class BreakDatabase:
@@ -240,6 +277,7 @@ class BreakDatabase:
             )
         self._conn.commit()
         self._migrate_legacy_economy_defaults()
+        self._restore_uncapped_streak_default()
 
     def _migrate_legacy_economy_defaults(self) -> None:
         """仅替换仍等于旧默认值的配置，保留管理员自定义数据。"""
@@ -257,6 +295,19 @@ class BreakDatabase:
         if changed:
             self._conn.commit()
             log.info('[BREAK] 已将旧版高通胀签到默认值迁移为温和配置')
+
+    def _restore_uncapped_streak_default(self) -> None:
+        """仅恢复上一版的封顶默认值，保留管理员自定义签到曲线。"""
+        row = self._conn.execute(
+            'SELECT value FROM break_config WHERE key = ?', ('streak_bonus',)
+        ).fetchone()
+        if row and str(row['value']) == CAPPED_STREAK_DEFAULT:
+            self._conn.execute(
+                'UPDATE break_config SET value = ? WHERE key = ?',
+                (DEFAULT_CONFIG['streak_bonus'], 'streak_bonus'),
+            )
+            self._conn.commit()
+            log.info('[BREAK] 已恢复连续签到奖励曲线，并启用无上限增长')
 
     def get_config(self, key: str, default: str = '') -> str:
         row = self._conn.execute(
@@ -749,8 +800,79 @@ class BreakDatabase:
         parts = [int(x.strip()) for x in raw.split(',') if x.strip().isdigit()]
         if not parts:
             return 0
-        idx = min(max(streak - 1, 0), len(parts) - 1)
-        return parts[idx]
+        growth = max(
+            1,
+            _parse_config_int(
+                self.get_config(
+                    'streak_bonus_growth', DEFAULT_CONFIG['streak_bonus_growth']
+                ),
+                1,
+            ),
+        )
+        return calculate_streak_bonus(streak, parts, growth)
+
+    def claim_daily_reward(
+        self,
+        qqid: int,
+        reward_key: str,
+        amount: int,
+        *,
+        reason: str,
+        meta: Optional[dict] = None,
+    ) -> DailyRewardResult:
+        """每日幂等奖励；同一用户、日期和 reward_key 只发放一次。"""
+        key = str(reward_key).strip()[:64]
+        if not key:
+            raise ValueError('reward_key 不能为空')
+        value = max(0, int(amount))
+        self._ensure_user(qqid)
+        today = self._today()
+        with self._lock:
+            existing = self._conn.execute(
+                """SELECT amount FROM break_daily_reward
+                   WHERE qqid = ? AND date = ? AND reward_key = ?""",
+                (qqid, today, key),
+            ).fetchone()
+            if existing:
+                return DailyRewardResult(
+                    reward_key=key,
+                    amount=int(existing['amount']),
+                    balance=self.get_balance(qqid),
+                    awarded=False,
+                )
+
+            now = time.time()
+            self._ensure_daily(qqid)
+            self._conn.execute(
+                """INSERT INTO break_daily_reward
+                   (qqid, date, reward_key, amount, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (qqid, today, key, value, now),
+            )
+            self._conn.execute(
+                """UPDATE break_users
+                   SET balance = balance + ?, updated_at = ? WHERE qqid = ?""",
+                (value, now, qqid),
+            )
+            self._conn.execute(
+                """UPDATE break_daily_usage
+                   SET break_gained = break_gained + ?
+                   WHERE qqid = ? AND date = ?""",
+                (value, qqid, today),
+            )
+            log_meta = dict(meta or {})
+            log_meta['reward_key'] = key
+            self._append_log(qqid, value, reason, meta=log_meta)
+            self._conn.commit()
+            row = self._conn.execute(
+                'SELECT balance FROM break_users WHERE qqid = ?', (qqid,)
+            ).fetchone()
+            return DailyRewardResult(
+                reward_key=key,
+                amount=value,
+                balance=int(row['balance']) if row else value,
+                awarded=True,
+            )
 
     def _checkin_base_range(self) -> tuple[int, int]:
         lo = _parse_config_int(self.get_config('checkin_base_min', DEFAULT_CONFIG['checkin_base_min']), 1)
@@ -1154,6 +1276,7 @@ def format_account_profile(profile: AccountProfile, *, title: str = '我的 AWMC
         reason_map = {
             'query': '查分',
             'checkin': '签到',
+            'today_luck': '今日舞萌',
             'b50_analysis': '分析b50',
             'guess_reward': '猜歌奖励',
             'admin_set': '管理员设置',

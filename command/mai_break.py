@@ -56,7 +56,8 @@ async def _require_break_agreement(matcher, event: MessageEvent) -> None:
 async def _():
     text = (
         '【AWMC BREAK 系统】\n'
-        '· AWMC签到 — 每日签到获取 BREAK（基础 1~2，连续签到逐步增加，最高额外 +2）\n'
+        '· AWMC签到 — 每日签到获取 BREAK（基础 1~2，连续签到奖励不封顶）\n'
+        '· 今日舞萌 — 人品值四舍五入后 ÷10，每日领取一次 BREAK\n'
         '· 猜歌 — 每次猜对奖励 1 BREAK，无每日上限\n'
         '· 转账BREAK @用户 数量 — 转给其他用户\n'
         '· BREAK抽奖 [1-10] — 每次默认消耗 2 BREAK，发送“BREAK抽奖 帮助”看奖池\n'

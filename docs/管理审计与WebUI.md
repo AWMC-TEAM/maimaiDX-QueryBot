@@ -20,9 +20,12 @@
 默认签到调整为：
 
 - 基础随机 `1～2` BREAK；
-- 连续第 3 天开始有 `+1`，第 6 天起最高 `+2`；
+- 连续第 1～5 天额外 `+3/+5/+8/+12/+20`，之后默认每天继续 `+1`，不设上限；
 - 指定群 `+25%`、周四 `+50%`、群首签 `+50%`；
 - 旧数据库中仍等于旧默认值的配置会自动迁移，管理员自定义值不覆盖。
+
+`今日舞萌` 会把人品值四舍五入至十位后除以 10，每天首次调用发放一次
+`0～10` BREAK；例如人品值 69 会获得 7 BREAK。重复调用不会重复发放。
 
 猜歌每次猜对固定奖励 `1` BREAK，不设每日上限。猜歌分数倍率仅影响排行榜，
 不会放大 BREAK 奖励。
@@ -51,6 +54,7 @@ guess_break_per_correct
 checkin_base_min
 checkin_base_max
 streak_bonus
+streak_bonus_growth
 upload_fish_cost
 upload_lx_cost
 upload_all_cost

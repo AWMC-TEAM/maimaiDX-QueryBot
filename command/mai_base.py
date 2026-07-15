@@ -5,6 +5,7 @@ from nonebot.params import CommandArg, RegexMatched
 from nonebot.permission import SUPERUSER
 
 from ..config import project_attribution_message
+from ..libraries.maimaidx_break import break_db, calculate_luck_break
 from ..libraries.maimaidx_music import feature_manager
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_player_score import *
@@ -63,11 +64,29 @@ async def _(event: MessageEvent):
     ]
     h = qqhash(event.user_id)
     rp = h % 100
+    rounded_rp, luck_break = calculate_luck_break(rp)
+    reward = break_db.claim_daily_reward(
+        int(event.user_id),
+        'today_luck',
+        luck_break,
+        reason='today_luck',
+        meta={'luck': rp, 'rounded_luck': rounded_rp},
+    )
     wm_value = []
     for i in range(11):
         wm_value.append(h & 3)
         h >>= 2
     msg = f'今日人品值：{rp}\n'
+    if reward.awarded:
+        msg += (
+            f'今日 BREAK：{rp} 四舍五入为 {rounded_rp}，'
+            f'获得 {reward.amount} BREAK（余额 {reward.balance}）\n'
+        )
+    else:
+        msg += (
+            f'今日 BREAK：已领取 {reward.amount} BREAK，'
+            f'不会重复发放（余额 {reward.balance}）\n'
+        )
     for i in range(11):
         if wm_value[i] == 3:
             msg += f'宜 {wm_list[i]}\n'

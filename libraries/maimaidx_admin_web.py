@@ -265,6 +265,11 @@ def register_admin_web() -> bool:
                 if not values or len(values) > 31 or any(item < 0 or item > 20 for item in values):
                     raise ValueError
                 value = ",".join(str(item) for item in values)
+            elif key == "streak_bonus_growth":
+                number = int(value)
+                if not 1 <= number <= 1000:
+                    raise ValueError
+                value = str(number)
             elif key.startswith("bonus_"):
                 number = float(value)
                 if not 0 <= number <= 5:
