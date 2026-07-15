@@ -23,6 +23,7 @@ def load_functions(path: Path, names: set[str], namespace: dict) -> dict:
     return namespace
 
 
+test_config = SimpleNamespace(awmc_ticket_allowed_multipliers="2,3,5")
 account = load_functions(
     ROOT / "command" / "mai_account.py",
     {
@@ -31,9 +32,16 @@ account = load_functions(
         "_pick",
         "_normalize_preview",
         "_normalize_charge_payload",
+        "_allowed_ticket_multipliers",
     },
-    {"Any": Any},
+    {"Any": Any, "maiconfig": test_config},
 )
+
+assert account["_allowed_ticket_multipliers"]() == (2, 3, 5)
+test_config.awmc_ticket_allowed_multipliers = "3，5, 7,invalid"
+assert account["_allowed_ticket_multipliers"]() == (3, 5, 7)
+test_config.awmc_ticket_allowed_multipliers = ""
+assert account["_allowed_ticket_multipliers"]() == (2, 3, 5)
 
 uid, name, rating, preview = account["_normalize_preview"](
     {

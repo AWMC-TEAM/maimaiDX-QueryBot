@@ -29,6 +29,8 @@
   上传失败时会区分 PC 读取、Token 失效及 `write_player`/隐私写入权限问题。
 - 同一用户的 OAuth 刷新改为串行并在加锁后重新读取 Token，避免 Refresh Token
   发生轮换时被并发请求互相作废。
+- 发票默认仅允许 2、3、5 倍，并支持通过
+  `AWMC_TICKET_ALLOWED_MULTIPLIERS=2,3,5` 配置倍率白名单。
 
 ### 修复
 

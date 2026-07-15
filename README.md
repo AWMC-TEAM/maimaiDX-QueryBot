@@ -84,6 +84,8 @@ SDGBT_REGION_ID=1
 SDGBT_PLACE_ID=1403
 # PC -> 水鱼 -> 落雪之间默认等待 3 秒；同一 keychip 下全局串行。
 AWMC_MACHINE_STEP_DELAY_SECONDS=3
+# 发票允许倍率，默认仅 2、3、5 倍。
+AWMC_TICKET_ALLOWED_MULTIPLIERS=2,3,5
 ```
 
 旧变量 `SDGBTECHAPI` 仍兼容。完整模板见仓库根目录 `.env.example`。
@@ -274,7 +276,7 @@ BOTNAME=maimai
 | `lxbind` | 绑定落雪 OAuth，上传无需导入 Token（推荐） |
 | `mai绑定落雪 <导入token>` / `maibindlx <导入token>` | 绑定落雪导入 Token（兼容） |
 | `maiu` / `maiul` / `maiua` | 上传水鱼 / 落雪 / 同时上传 |
-| `发票` / `fp <2-6>` / `mai查票` | 票券操作（team 模式） |
+| `发票` / `fp <2/3/5>` / `mai查票` | 票券操作（team 模式，允许倍率可由 ENV 配置） |
 | `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
 | `迁移Koishi 检查/确认 <数据库>` | 超级管理员预检/导入 Koishi maiBot 数据 |
 
@@ -294,8 +296,7 @@ Koishi 数据迁移时，将完整数据库放进 `MAIMAIDX_KOISHI_MIGRATION_DIR
 
 | 命令 | 说明 |
 |------|------|
-| `拿票 <二维码>` | 获取倍率票（2x~6x） |
-| `/tk2` ~ `/tk6` | 快捷获取对应倍率票 |
+| `发票` / `fp <倍率>` | 获取倍率票（默认允许 2x、3x、5x） |
 | `查票 <二维码>` | 查询票券状态 |
 
 ## 开发

@@ -55,7 +55,7 @@ class SdgbProberClient:
         return {"done": True, "task_id": task_id}
 
     async def get_ticket(self, qr_text: str, ticket_id: int) -> dict:
-        """获取倍率票。ticket_id: 2/3/4/5/6 对应 2x-6x。"""
+        """获取倍率票；允许值由 AWMC_TICKET_ALLOWED_MULTIPLIERS 控制。"""
         self._check_available()
         try:
             return await sw_api.charge_ticket(qr_text, ticket_id)
