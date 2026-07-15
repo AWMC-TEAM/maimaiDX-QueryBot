@@ -575,7 +575,7 @@ async def _(
     key = _user_key(event)
     binding = account_db.get(key)
     if not binding:
-        await account_status.finish(_ACCOUNT_SETUP_GUIDE)
+        await account_status.finish(_ACCOUNT_SETUP_GUIDE, reply_message=True)
     raw = _arg_text(args)
     if raw:
         matcher.set_arg("status_qrcode", Message(raw))
@@ -589,12 +589,12 @@ async def _(
             )
             text = await _render_account_status(event, binding, preview)
             ref = _log(key, "status", "success", "preview_source=sgid_cache")
-            await account_status.finish(text + f"\nRef_ID: {ref}")
+            await account_status.finish(text + f"\nRef_ID: {ref}", reply_message=True)
         except Exception as exc:
             account_db.mark_qrcode_result(key, False)
             matcher.state["status_cache_error"] = type(exc).__name__
             cache_label = "缓存验证失败，需刷新"
-    await account_status.send(_status_qrcode_prompt(cache_label))
+    await account_status.send(_status_qrcode_prompt(cache_label), reply_message=True)
 
 
 @account_status.got("status_qrcode")
@@ -607,12 +607,12 @@ async def _(
     key = _user_key(event)
     binding = account_db.get(key)
     if not binding:
-        await account_status.finish(_ACCOUNT_SETUP_GUIDE)
+        await account_status.finish(_ACCOUNT_SETUP_GUIDE, reply_message=True)
     raw = qrcode_message.extract_plain_text().strip()
     if raw.lower() in {"取消", "cancel", "q", "退出"}:
         text = await _render_account_status(event, binding)
         ref = _log(key, "status", "success", "preview_source=stored,cancelled_refresh")
-        await account_status.finish(text + f"\nRef_ID: {ref}")
+        await account_status.finish(text + f"\nRef_ID: {ref}", reply_message=True)
 
     recall_notice = ""
     try:
@@ -632,12 +632,14 @@ async def _(
                 recall_notice
                 + f"二维码刷新已连续失败 3 次：{redact(reason)}\n本次展示缓存资料。\n"
                 + text
-                + f"\nRef_ID: {ref}"
+                + f"\nRef_ID: {ref}",
+                reply_message=True,
             )
         await account_status.reject(
             recall_notice
             + f"二维码无效或已过期：{redact(reason)}\n"
-            + f"请重新识别并发送（{attempt}/3），或发送「取消」查看缓存资料。"
+            + f"请重新识别并发送（{attempt}/3），或发送「取消」查看缓存资料。",
+            reply_message=True,
         )
 
     if not qrcode:
@@ -650,7 +652,9 @@ async def _(
         await retry(type(exc).__name__)
     text = await _render_account_status(event, binding, preview)
     ref = _log(key, "status", "success", "preview_source=user_refresh")
-    await account_status.finish(recall_notice + text + f"\nRef_ID: {ref}")
+    await account_status.finish(
+        recall_notice + text + f"\nRef_ID: {ref}", reply_message=True
+    )
 
 
 async def _set_token(matcher, event: MessageEvent, args: Message, kind: str):
@@ -857,10 +861,12 @@ async def _(
     else:
         result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=raw)
     if not _upload_retryable(result):
-        await matcher.finish(recall_notice + result)
+        await matcher.finish(recall_notice + result, reply_message=True)
     attempt = 1 if raw else 0
     matcher.state["upload_qrcode_retry"] = attempt
-    await matcher.send(recall_notice + _upload_retry_prompt(result, attempt))
+    await matcher.send(
+        recall_notice + _upload_retry_prompt(result, attempt), reply_message=True
+    )
 
 
 @upload_fish.got("upload_qrcode")
@@ -874,7 +880,7 @@ async def _(
 ):
     raw = qrcode_message.extract_plain_text().strip()
     if raw.lower() in {"取消", "cancel", "q", "退出"}:
-        await matcher.finish("已取消成绩上传。")
+        await matcher.finish("已取消成绩上传。", reply_message=True)
     qrcode = extract_sgwcmaid_qrcode(raw)
     recall_notice = ""
     if qrcode:
@@ -888,16 +894,19 @@ async def _(
         if qrcode else "上传失败：二维码格式无效"
     )
     if not _upload_retryable(result):
-        await matcher.finish(recall_notice + result)
+        await matcher.finish(recall_notice + result, reply_message=True)
     attempt = int(matcher.state.get("upload_qrcode_retry", 0)) + 1
     matcher.state["upload_qrcode_retry"] = attempt
     if attempt >= 3:
         await matcher.finish(
             recall_notice
             + _upload_retry_prompt(result, 3)
-            + "\n已连续失败 3 次，本次上传流程结束，且不扣 BREAK。"
+            + "\n已连续失败 3 次，本次上传流程结束，且不扣 BREAK。",
+            reply_message=True,
         )
-    await matcher.reject(recall_notice + _upload_retry_prompt(result, attempt))
+    await matcher.reject(
+        recall_notice + _upload_retry_prompt(result, attempt), reply_message=True
+    )
 
 
 @account_ping.handle()
