@@ -8,6 +8,99 @@ from loguru import logger as log
 
 from ..config import maiconfig
 
+# 与 maibot WAHLAP_REGIONS 对齐：API 只返回 regionId，需本地映射省份名。
+WAHLAP_REGIONS: Dict[int, str] = {
+    1: "北京",
+    2: "重庆",
+    3: "上海",
+    4: "天津",
+    5: "安徽",
+    6: "福建",
+    7: "甘肃",
+    8: "广东",
+    9: "贵州",
+    10: "海南",
+    11: "河北",
+    12: "黑龙江",
+    13: "河南",
+    14: "湖北",
+    15: "湖南",
+    16: "江苏",
+    17: "江西",
+    18: "吉林",
+    19: "辽宁",
+    20: "青海",
+    21: "陕西",
+    22: "山东",
+    23: "山西",
+    24: "四川",
+    25: "未知25",
+    26: "云南",
+    27: "浙江",
+    28: "广西",
+    29: "内蒙古",
+    30: "宁夏",
+    31: "新疆",
+    32: "西藏",
+}
+
+
+def format_wahlap_region_name(region_id: int) -> str:
+    return WAHLAP_REGIONS.get(region_id, f"未知({region_id})")
+
+
+def format_user_region_block(result: dict) -> str:
+    """将 user/region 响应格式化为与 maibot 一致的游玩地图文本。"""
+    rows = result.get("userRegionList") or result.get("UserRegionList") or []
+    entries: List[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        region_id = row.get("regionId", row.get("RegionId"))
+        play_count = row.get("playCount", row.get("PlayCount"))
+        created = row.get("created") or row.get("Created") or ""
+        try:
+            region_id_int = int(region_id)
+        except (TypeError, ValueError):
+            continue
+        try:
+            play_count_int = int(play_count or 0)
+        except (TypeError, ValueError):
+            play_count_int = 0
+        entries.append(
+            {
+                "regionId": region_id_int,
+                "playCount": play_count_int,
+                "created": str(created).strip(),
+            }
+        )
+
+    if not entries:
+        return "暂无游玩地区记录。"
+
+    entries.sort(key=lambda item: item["playCount"], reverse=True)
+    length = result.get("length", result.get("Length"))
+    try:
+        length_int = int(length) if length is not None else len(entries)
+    except (TypeError, ValueError):
+        length_int = len(entries)
+    total_play_count = sum(item["playCount"] for item in entries)
+
+    lines = [
+        f"记录地区数: {length_int}",
+        f"总游玩次数: {total_play_count}",
+        "",
+        "🗺️ 游玩地区：",
+    ]
+    for item in entries:
+        created = item["created"]
+        created_part = f" · 首次 {created}" if created else ""
+        lines.append(
+            f"  {format_wahlap_region_name(item['regionId'])} · "
+            f"{item['playCount']} 次{created_part}"
+        )
+    return "\n".join(lines)
+
 
 class SwApiError(RuntimeError):
     pass
@@ -191,16 +284,37 @@ class SwApiClient:
         )
         return res.json()
 
-    async def get_user_music(self, qrcode: str) -> List[dict]:
+    async def get_user_music(
+        self,
+        qrcode: str,
+        *,
+        timeout: Optional[float] = None,
+        retry_count: Optional[int] = None,
+    ) -> List[dict]:
         if self.api_mode == "public":
             raise SwApiError("AWMC 公共网关暂不提供 PC 全量数据接口")
         # 全量成绩本身较慢；超时后再叠默认 3 次重试会让落雪 OAuth 上传静默卡数分钟。
-        # 这里最多再试 1 次（共 2 次），避免「卡住很久」的观感。
+        # 默认最多再试 1 次（共 2 次）；上传场景可再收紧 timeout/retry。
+        music_timeout = float(
+            timeout
+            if timeout is not None
+            else getattr(maiconfig, "awmc_user_music_timeout_seconds", 90.0)
+        )
+        music_retries = (
+            retry_count
+            if retry_count is not None
+            else int(getattr(maiconfig, "awmc_user_music_retry_count", 1))
+        )
+        log.info(
+            f"[SwApi] 开始拉取谱面成绩 timeout={music_timeout:.0f}s "
+            f"retry={music_retries}"
+        )
         data = await self._request(
             "POST",
             "/awmc/api/v1/user/music",
             json_body=self._machine_body(qrcode),
-            retry_count=1,
+            timeout=music_timeout,
+            retry_count=music_retries,
         )
         payload = self._parse_envelope(data)
         detail_list = self.flatten_user_music(payload)
@@ -213,29 +327,34 @@ class SwApiClient:
                 "POST",
                 "/v1/upload_b50",
                 params={"qr_text": qrcode, "fish_token": token},
-                timeout=600,
+                timeout=180,
+                retry_count=0,
             )
         data = await self._request(
             "POST",
             "/awmc/api/v1/update-fish",
             json_body=self._machine_body(qrcode, token=token),
-            timeout=120,
+            timeout=90,
+            retry_count=1,
         )
         return self._parse_envelope(data)
 
     async def update_lx(self, qrcode: str, import_token: str) -> dict:
+        # 兼容 Token 路径易在网关侧长时间无响应；严格超时 + 少重试，避免「卡住不动」。
         if self.api_mode == "public":
             return await self._request(
                 "POST",
                 "/v1/upload_lx_b50",
                 params={"qr_text": qrcode, "lxns_code": import_token},
-                timeout=600,
+                timeout=120,
+                retry_count=0,
             )
         data = await self._request(
             "POST",
             "/awmc/api/v1/update-lx",
             json_body=self._machine_body(qrcode, key=import_token, type="maimai"),
-            timeout=120,
+            timeout=90,
+            retry_count=0,
         )
         return self._parse_envelope(data)
 

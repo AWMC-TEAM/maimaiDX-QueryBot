@@ -37,7 +37,7 @@ from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_qrcode_util import extract_sgwcmaid_qrcode
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..libraries.maimaidx_reaction import react_processing
-from ..libraries.maimaidx_sw_api import sw_api
+from ..libraries.maimaidx_sw_api import format_user_region_block, sw_api
 from .mai_agreement import agreement_prompt, has_user_agreed
 
 
@@ -502,10 +502,15 @@ async def _await_upload_success(result: dict, *, lxns: bool) -> dict:
     interval = max(
         1.0, float(getattr(maiconfig, "awmc_upload_poll_interval_seconds", 3.0))
     )
+    # 默认 120s：旧 600s 会让兼容 Token 路径在网关卡住时表现为「上传不动」。
     timeout = max(
-        interval, float(getattr(maiconfig, "awmc_upload_poll_timeout_seconds", 600.0))
+        interval, float(getattr(maiconfig, "awmc_upload_poll_timeout_seconds", 120.0))
     )
     deadline = time.monotonic() + timeout
+    log.info(
+        f"[upload] 轮询异步任务 task_id={task_id} lxns={lxns} "
+        f"timeout={timeout:.0f}s interval={interval:.0f}s"
+    )
     while time.monotonic() < deadline:
         await asyncio.sleep(interval)
         detail = await sw_api.get_upload_task(task_id, lxns=lxns)
@@ -514,7 +519,7 @@ async def _await_upload_success(result: dict, *, lxns: bool) -> dict:
             raise RuntimeError(str(error))
         if detail.get("done") is True:
             return {**result, **detail, "task_id": task_id}
-    raise RuntimeError(f"上传任务 {task_id} 超时，未扣 BREAK")
+    raise RuntimeError(f"上传任务 {task_id} 超时（{timeout:.0f}s），未扣 BREAK")
 
 
 def _log(user_key: str, operation: str, status: str, detail: str = "") -> str:
@@ -1248,15 +1253,8 @@ async def _(event: MessageEvent):
         result = await sw_api.get_user_region(binding.qrcode)
     except Exception as exc:
         await account_region.finish(f"查询失败：{exc}")
-    rows = result.get("userRegionList") or result.get("UserRegionList") or []
-    if not rows:
-        await account_region.finish("暂无游玩地区记录。")
-    lines = ["游玩地区记录："]
-    for row in rows[:50]:
-        region = row.get("regionName") or row.get("RegionName") or row.get("regionId") or row.get("RegionId")
-        count = row.get("playCount") or row.get("PlayCount") or 0
-        lines.append(f"{region}：{count} PC")
-    await account_region.finish("\n".join(lines))
+    # 与 maibot 一致：用 regionId → WAHLAP_REGIONS 映射省份名，勿依赖 regionName。
+    await account_region.finish(format_user_region_block(result))
 
 
 @account_opt.handle()
