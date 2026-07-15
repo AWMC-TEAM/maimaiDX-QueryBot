@@ -65,6 +65,8 @@ class Config(BaseModel):
     maimaidx_admin_web_public_url: str = ''
     maimaidx_audit_retention_days: int = 90
     maimaidx_message_stats_enabled: bool = True
+    # 合并连续提示并省略非必要的“处理中”消息，降低平台发信频率。
+    maimaidx_compact_messages: bool = True
     # 开启后，绑定、上传和发票前需先同意当前用户协议。
     maimaidx_user_agreement_required: bool = True
     # ---------- 曲目数据源切换（可选） ----------

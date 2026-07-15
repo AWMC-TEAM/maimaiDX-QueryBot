@@ -32,7 +32,7 @@ from ..libraries.maimaidx_score_formatter import (
 )
 from ..libraries.maimaidx_song_resolver import SongResolver
 from ..libraries.maimaidx_music import feature_manager
-from ..config import log
+from ..config import log, maiconfig
 from ..libraries.maimaidx_music_info import get_b50_tag_stats
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_player_score import *
@@ -305,7 +305,8 @@ async def _refresh_b50(
     from ..libraries.maimaidx_break import break_billing
     from ..libraries.maimaidx_error import LxnsDataError
 
-    await refresh_b50.send('正在从查分器同步最新成绩并生成 b50，请稍候…', reply_message=True)
+    if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
+        await refresh_b50.send('正在从查分器同步最新成绩并生成 b50，请稍候…', reply_message=True)
     try:
         async with break_billing(event.user_id):
             await get_user_records(
@@ -435,9 +436,12 @@ async def _group_weak(event: MessageEvent):
     text, nodes = await group_weak_rank(
         bot, event.group_id, self_id, nickname, event.user_id
     )
-    await group_weak.send(text, reply_message=True)
     if nodes:
         try:
+            if bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
+                nodes = [build_forward_node(str(self_id), nickname, text)] + nodes
+            else:
+                await group_weak.send(text, reply_message=True)
             # 做一次 JSON 往返，确保仅传递可序列化数据，避免 adapter 层 partial 等导致 TypeError
             messages = json.loads(json.dumps(nodes, ensure_ascii=False))
             await bot.call_api(
@@ -447,8 +451,14 @@ async def _group_weak(event: MessageEvent):
             )
         except TypeError as e:
             log.warning(f'[maimai] 我在群里有多菜 合并转发序列化失败: {e}')
+            if bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
+                await group_weak.finish(text, reply_message=True)
         except Exception as e:
             log.warning(f'[maimai] 我在群里有多菜 合并转发发送失败: {type(e).__name__}: {e}')
+            if bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
+                await group_weak.finish(text, reply_message=True)
+    else:
+        await group_weak.finish(text, reply_message=True)
     await group_weak.finish()
 
 
@@ -1015,7 +1025,8 @@ async def _enable_data_storage(event: MessageEvent):
     qqid = resolve_score_qqid(event)
     success = data_storage.enable_user(qqid)
     if success:
-        await enable_data_storage.send('正在首次同步全量成绩到本地，请稍候…', reply_message=True)
+        if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
+            await enable_data_storage.send('正在首次同步全量成绩到本地，请稍候…', reply_message=True)
         store_ok = await fetch_and_store_user_scores(qqid, source="enable")
         sync_tip = (
             '\n首次同步已完成，「牌子统计」等将优先使用本地快照。'
@@ -1058,7 +1069,8 @@ async def _store_data_now(event: MessageEvent):
         )
         return
     
-    await store_data_now.send('正在获取并存储你的成绩数据，请稍候...', reply_message=True)
+    if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
+        await store_data_now.send('正在获取并存储你的成绩数据，请稍候...', reply_message=True)
     
     success = await fetch_and_store_user_scores(qqid)
     if success:
@@ -1274,7 +1286,8 @@ async def _plate_count_stats(event: MessageEvent, user_id: Optional[int] = Depen
             await plate_count_stats.finish(format_plate_count_message(snap), reply_message=True)
             return
 
-    await plate_count_stats.send("无本地快照或快照为空，正在拉取全量成绩并统计…", reply_message=True)
+    if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
+        await plate_count_stats.send("无本地快照或快照为空，正在拉取全量成绩并统计…", reply_message=True)
     from ..libraries.maimaidx_break import break_billing, take_break_charge_footer
     try:
         async with break_billing(event.user_id):

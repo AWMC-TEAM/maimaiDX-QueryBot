@@ -7,7 +7,7 @@ from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from nonebot.exception import IgnoredException
 from nonebot.params import RegexMatched
 
-from ..config import log
+from ..config import log, maiconfig
 from ..libraries.maimaidx_group_rating import (
     build_forward_node,
     get_group_member_song_scores,
@@ -182,20 +182,26 @@ async def _song_rank(event: MessageEvent, matched = RegexMatched()):
             bot, event.group_id, self_id, nickname, event.user_id, music_id, music_title, level_index
         )
         log.debug(f"[song_rank] my branch result text_len={len(text)}, nodes={len(nodes)}")
-        await song_rank.send(text, reply_message=True)
         if not nodes:
             log.debug("[song_rank] my branch has no nodes, finish")
-            await song_rank.finish()
+            await song_rank.finish(text, reply_message=True)
+        compact = bool(getattr(maiconfig, 'maimaidx_compact_messages', True))
+        if compact:
+            nodes = [build_forward_node(str(self_id), nickname, text)] + nodes
+        else:
+            await song_rank.send(text, reply_message=True)
         try:
             messages = json.loads(json.dumps(nodes, ensure_ascii=False))
             await bot.call_api("send_group_forward_msg", group_id=event.group_id, messages=messages)
             log.debug("[song_rank] my branch forward message sent")
         except TypeError as e:
             log.warning(f"[maimai] 我的歌曲排名 合并转发序列化失败: {e}")
-            await song_rank.finish("合并转发序列化失败，请稍后再试。", reply_message=True)
+            fallback = text + "\n合并转发序列化失败，请稍后再试。" if compact else "合并转发序列化失败，请稍后再试。"
+            await song_rank.finish(fallback, reply_message=True)
         except Exception as e:
             log.warning(f"[maimai] 我的歌曲排名 合并转发发送失败: {type(e).__name__}: {e}")
-            await song_rank.finish("合并转发发送失败，请稍后再试。", reply_message=True)
+            fallback = text + "\n合并转发发送失败，请稍后再试。" if compact else "合并转发发送失败，请稍后再试。"
+            await song_rank.finish(fallback, reply_message=True)
         await song_rank.finish()
 
     # 群榜：只查一次群成绩，并附带当前用户排名提示
@@ -246,4 +252,3 @@ async def _song_rank(event: MessageEvent, matched = RegexMatched()):
         log.warning(f"[maimai] 歌曲排名排行榜 合并转发发送失败: {type(e).__name__}: {e}")
         await song_rank.finish("合并转发发送失败，请稍后再试。", reply_message=False)
     await song_rank.finish(reply_message=False)
-

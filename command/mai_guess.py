@@ -10,6 +10,7 @@ from nonebot.matcher import Matcher
 from nonebot.params import CommandArg, RegexMatched
 from nonebot.rule import Rule
 
+from ..config import maiconfig
 from ..libraries.maimaidx_bot_admin import GUESS_GROUP_MANAGER, PLUGIN_ADMIN_ONLY
 from ..libraries.maimaidx_guess_boost_card import (
     DEFAULT_CARD_HOURS,
@@ -257,25 +258,12 @@ async def _send_guess_answer_bundle(
     reply: bool = False,
 ) -> None:
     lines = [line for line in (header, settlement) if line]
-    if lines:
-        await _safe_matcher_send(
-            matcher, event,
-            MessageSegment.text('\n'.join(lines)),
-            gid,
-            reply=reply,
-            fatal=False,
-        )
-    await _safe_matcher_send(
-        matcher, event, await draw_music_info(data.music), gid, fatal=False,
+    music_info = await draw_music_info(data.music)
+    reveal = (
+        MessageSegment.image(guess.render_pic_reveal(data))
+        if isinstance(data, GuessPicData) else None
     )
-    if isinstance(data, GuessPicData):
-        await _safe_matcher_send(
-            matcher, event,
-            MessageSegment.image(guess.render_pic_reveal(data)),
-            gid,
-            media=True,
-            fatal=False,
-        )
+    final_audio = None
     if (
         isinstance(data, GuessAudioData)
         and data.hint_step < data.stage_count
@@ -288,11 +276,49 @@ async def _send_guess_answer_bundle(
             if final_idx < len(STAGE_LABELS)
             else '完整混音'
         )
+        final_audio = (
+            MessageSegment.text(f'\n[{label}]\n')
+            + MessageSegment.record(str(stage_path))
+        )
+
+    if bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
+        bundle = Message()
+        if lines:
+            bundle += MessageSegment.text('\n'.join(lines) + '\n')
+        bundle += music_info
+        if reveal is not None:
+            bundle += reveal
+        await _safe_matcher_send(
+            matcher, event, bundle, gid,
+            reply=reply,
+            media=reveal is not None,
+            fatal=False,
+        )
+        # 部分 OneBot/QQ 实现不接受图片与语音混在同一条消息中。
+        if final_audio is not None:
+            await _safe_matcher_send(
+                matcher, event, final_audio, gid, media=True, fatal=False,
+            )
+        return
+
+    if lines:
         await _safe_matcher_send(
             matcher, event,
-            MessageSegment.text(f'[{label}]\n')
-            + MessageSegment.record(str(stage_path)),
+            MessageSegment.text('\n'.join(lines)),
             gid,
+            reply=reply,
+            fatal=False,
+        )
+    await _safe_matcher_send(matcher, event, music_info, gid, fatal=False)
+    if reveal is not None:
+        await _safe_matcher_send(
+            matcher, event, reveal, gid,
+            media=True,
+            fatal=False,
+        )
+    if final_audio is not None:
+        await _safe_matcher_send(
+            matcher, event, final_audio, gid,
             media=True,
             fatal=False,
         )
@@ -552,22 +578,24 @@ async def _(event: MessageEvent):
     guess.startpic(gid)
     data = guess.Group[gid]
     try:
+        intro = dedent(f'''\
+            开始猜曲绘！可以直接发送答案！
+            每隔10秒会给出进一步提示。发送 重置猜歌 可结束游戏。
+            当前难度：{data.difficulty}，当前干扰类型：{'、'.join(data.interference_labels)}
+            积分：难度越高基础分越高（1～3分）；首次扩增前猜中可叠加首阶段×2、首答×2，理论最高4倍。
+        ''')
+        first_pic = MessageSegment.image(guess.render_pic_crop(data))
+        compact = bool(getattr(maiconfig, 'maimaidx_compact_messages', True))
         await _safe_matcher_send(
             guess_music_pic, event,
-            dedent(f'''\
-                开始猜曲绘！可以直接发送答案！
-                每隔10秒会给出进一步提示。发送 重置猜歌 可结束游戏。
-                当前难度：{data.difficulty}，当前干扰类型：{'、'.join(data.interference_labels)}
-                积分：难度越高基础分越高（1～3分）；首次扩增前猜中可叠加首阶段×2、首答×2，理论最高4倍。
-            '''),
+            MessageSegment.text(intro + '\n') + first_pic if compact else intro,
             gid,
+            media=compact,
         )
-        await _safe_matcher_send(
-            guess_music_pic, event,
-            MessageSegment.image(guess.render_pic_crop(data)),
-            gid,
-            media=True,
-        )
+        if not compact:
+            await _safe_matcher_send(
+                guess_music_pic, event, first_pic, gid, media=True,
+            )
 
         hint_interval = 10
         timeout_after_clear = 30
@@ -640,11 +668,13 @@ async def _(event: MessageEvent):
         await guess_music_audio.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     data = None
+    compact = bool(getattr(maiconfig, 'maimaidx_compact_messages', True))
     try:
         try:
-            await _safe_matcher_send(
-                guess_music_audio, event, '正在准备猜曲音频，请稍候…', gid,
-            )
+            if not compact:
+                await _safe_matcher_send(
+                    guess_music_audio, event, '正在准备猜曲音频，请稍候…', gid,
+                )
             log.info(f'[GuessAudio] 猜曲子开局 gid={gid}')
             data = await guess.prepare_audio_round()
             if data is None:
@@ -671,17 +701,17 @@ async def _(event: MessageEvent):
             if guess_score.audio_season_double_active()
             else ''
         )
-        await _safe_matcher_send(
-            guess_music_audio, event,
-            dedent(f'''\
-                猜曲子开始！共 {stage_count} 个阶段，每段约 30 秒，
-                每隔 {STAGE_INTERVAL} 秒会放出更完整的混音。
-                第四阶段结束后仍有 {STAGE_FINAL_GRACE} 秒作答时间。{season_line}
-                请输入歌曲 id、标题或别名猜歌（DX 与标准视为不同曲目）。
-                发送 重置猜歌 可结束本局。
-            '''),
-            gid,
-        )
+        intro = dedent(f'''\
+            猜曲子开始！共 {stage_count} 个阶段，每段约 30 秒，
+            每隔 {STAGE_INTERVAL} 秒会放出更完整的混音。
+            第四阶段结束后仍有 {STAGE_FINAL_GRACE} 秒作答时间。{season_line}
+            请输入歌曲 id、标题或别名猜歌（DX 与标准视为不同曲目）。
+            发送 重置猜歌 可结束本局。
+        ''')
+        if not compact:
+            await _safe_matcher_send(
+                guess_music_audio, event, intro, gid,
+            )
 
         for stage_idx in range(stage_count):
             if _guess_loop_should_stop(gid):
@@ -694,16 +724,21 @@ async def _(event: MessageEvent):
                 f'[GuessAudio] 发送阶段 {stage_idx + 1}/{stage_count} gid={gid} '
                 f'file={stage_path.name} size={stage_path.stat().st_size}'
             )
+            stage_text = f'{stage_idx + 1}/{stage_count} [{label}]'
+            if compact and stage_idx == 0:
+                stage_text = intro + '\n' + stage_text
+            if compact and stage_idx == stage_count - 1:
+                stage_text += f'\n最后 {STAGE_FINAL_GRACE} 秒作答时间！'
             await _safe_matcher_send(
                 guess_music_audio, event,
-                MessageSegment.text(f'{stage_idx + 1}/{stage_count} [{label}]\n')
+                MessageSegment.text(stage_text + '\n')
                 + MessageSegment.record(str(stage_path)),
                 gid,
                 media=True,
             )
             cur.hint_step = stage_idx + 1
 
-            if stage_idx == stage_count - 1:
+            if stage_idx == stage_count - 1 and not compact:
                 await _safe_matcher_send(
                     guess_music_audio, event,
                     f'第四阶段已放出，最后 {STAGE_FINAL_GRACE} 秒作答时间！',
@@ -740,9 +775,10 @@ async def _(event: PrivateMessageEvent, match=RegexMatched()):
     force = match.group(1) is not None
     log.info(f'[GuessAudio] 收到「更新猜曲音频」qq={event.user_id} force={force}')
     hint = '强制重建' if force else '增量烘焙'
-    await update_guess_audio.send(
-        f'开始{hint}猜曲音频（热门池），耗时取决于曲目数量与是否安装 demucs，请稍候…'
-    )
+    if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
+        await update_guess_audio.send(
+            f'开始{hint}猜曲音频（热门池），耗时取决于曲目数量与是否安装 demucs，请稍候…'
+        )
     try:
         report = await build_hot_audio_cache(force=force)
     except asyncio.CancelledError:

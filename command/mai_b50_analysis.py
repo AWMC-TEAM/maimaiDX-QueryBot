@@ -78,7 +78,8 @@ async def _handle(matcher: Matcher, event: MessageEvent, args: Message = Command
     pending = '正在查询 B50，请稍候…'
     if is_analysis_peak_hour():
         pending += f'（峰时双倍计费，本次消耗 {analysis_cost()} BREAK）'
-    await matcher.send(pending, reply_message=True)
+    if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
+        await matcher.send(pending, reply_message=True)
 
     if style:
         mod_result = check_user_input(style)

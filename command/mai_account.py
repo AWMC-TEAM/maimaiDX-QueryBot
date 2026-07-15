@@ -49,6 +49,8 @@ account_region = on_command("mai地图", aliases={"游玩地图"})
 account_opt = on_command("mai查询opt", aliases={"查询opt"})
 account_queue = on_command("maiqueue", aliases={"mai队列"})
 
+_RECALL_FAILED_NOTICE = "⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。\n"
+
 
 def _user_key(event: MessageEvent) -> str:
     return str(billing_user_id(event))
@@ -266,24 +268,25 @@ async def _(
     if raw.lower() in {"取消", "cancel", "q", "退出"}:
         await account_bind.finish("已取消舞萌账号绑定。")
     qrcode = extract_sgwcmaid_qrcode(raw)
+    recall_notice = ""
     if qrcode:
         try:
             await bot.delete_msg(message_id=event.message_id)
         except Exception:
-            await account_bind.send(
-                "⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。"
-            )
+            recall_notice = _RECALL_FAILED_NOTICE
 
     async def retry(reason: str) -> None:
         attempt = int(matcher.state.get("account_bind_retry", 0)) + 1
         matcher.state["account_bind_retry"] = attempt
         if attempt >= 3:
             await account_bind.finish(
-                f"二维码验证已连续失败 3 次：{reason}\n"
+                recall_notice
+                + f"二维码验证已连续失败 3 次：{reason}\n"
                 "绑定流程已结束，请重新获取二维码后再发送 mai绑定。"
             )
         await account_bind.reject(
-            f"二维码无效或已过期：{reason}\n"
+            recall_notice
+            + f"二维码无效或已过期：{reason}\n"
             f"请重新获取并发送 SGWCMAID（{attempt}/3）。\n"
             "发送“取消”可退出。"
         )
@@ -306,7 +309,7 @@ async def _(
         await retry(f"{type(exc).__name__}（Ref_ID: {ref}）")
     label = name or "已识别玩家"
     await account_bind.finish(
-        f"绑定成功：{label}\nRating：{rating}\nRef_ID: {ref}"
+        recall_notice + f"绑定成功：{label}\nRating：{rating}\nRef_ID: {ref}"
     )
 
 
@@ -483,20 +486,21 @@ async def _(
 ):
     fish, lxns = _upload_mode(matcher)
     raw = _arg_text(args)
+    recall_notice = ""
     if extract_sgwcmaid_qrcode(raw):
         try:
             await bot.delete_msg(message_id=event.message_id)
         except Exception:
-            await matcher.send("⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。")
+            recall_notice = _RECALL_FAILED_NOTICE
     if raw and not extract_sgwcmaid_qrcode(raw):
         result = "上传失败：二维码格式无效"
     else:
         result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=raw)
     if not _upload_retryable(result):
-        await matcher.finish(result)
+        await matcher.finish(recall_notice + result)
     attempt = 1 if raw else 0
     matcher.state["upload_qrcode_retry"] = attempt
-    await matcher.send(_upload_retry_prompt(result, attempt))
+    await matcher.send(recall_notice + _upload_retry_prompt(result, attempt))
 
 
 @upload_fish.got("upload_qrcode")
@@ -512,26 +516,28 @@ async def _(
     if raw.lower() in {"取消", "cancel", "q", "退出"}:
         await matcher.finish("已取消成绩上传。")
     qrcode = extract_sgwcmaid_qrcode(raw)
+    recall_notice = ""
     if qrcode:
         try:
             await bot.delete_msg(message_id=event.message_id)
         except Exception:
-            await matcher.send("⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。")
+            recall_notice = _RECALL_FAILED_NOTICE
     fish, lxns = _upload_mode(matcher)
     result = (
         await _upload(event, fish=fish, lxns=lxns, qrcode_arg=qrcode or "")
         if qrcode else "上传失败：二维码格式无效"
     )
     if not _upload_retryable(result):
-        await matcher.finish(result)
+        await matcher.finish(recall_notice + result)
     attempt = int(matcher.state.get("upload_qrcode_retry", 0)) + 1
     matcher.state["upload_qrcode_retry"] = attempt
     if attempt >= 3:
         await matcher.finish(
-            _upload_retry_prompt(result, 3)
+            recall_notice
+            + _upload_retry_prompt(result, 3)
             + "\n已连续失败 3 次，本次上传流程结束，且不扣 BREAK。"
         )
-    await matcher.reject(_upload_retry_prompt(result, attempt))
+    await matcher.reject(recall_notice + _upload_retry_prompt(result, attempt))
 
 
 @account_ping.handle()
