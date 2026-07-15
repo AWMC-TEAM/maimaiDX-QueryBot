@@ -399,6 +399,9 @@ def _result_text(result: dict) -> str:
         return f"任务已提交，任务 ID：{task_id}"
     count = result.get("count")
     if count is not None:
+        skipped = result.get("skipped")
+        if skipped:
+            return f"已处理 {count} 条成绩（跳过 {skipped} 条无效谱面）"
         return f"已处理 {count} 条成绩"
     return "操作已完成"
 
@@ -1161,6 +1164,7 @@ async def _upload(
                         qqid = 0
                     pc_scores = _lxns_scores_from_pc_cache(qqid) if qqid else None
                     if pc_scores:
+                        lxns_stage = "向落雪写入成绩"
                         log.info(
                             f"[upload] 落雪 OAuth：机台会话内改用 PC 缓存 "
                             f"{len(pc_scores)} 条 user={key}"

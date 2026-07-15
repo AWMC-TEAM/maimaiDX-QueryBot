@@ -1,8 +1,9 @@
 """落雪 OAuth 新旧响应与 PC 成绩转换回归测试（无需启动 NoneBot）。"""
 
+import re
 import ast
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -15,6 +16,9 @@ NAMES = {
     "_parse_oauth_token_response",
     "_parse_user_api_response",
     "_lxns_song_id_type",
+    "_parse_invalid_score",
+    "_dx_raw_id_fallback",
+    "_public_score_payload",
     "convert_sega_music_scores",
     "convert_pc_records_to_lxns_scores",
 }
@@ -32,7 +36,12 @@ namespace = {
     "Dict": Dict,
     "List": List,
     "Optional": Optional,
+    "Tuple": Tuple,
     "httpx": httpx,
+    "_INVALID_SCORE_RE": re.compile(
+        r'invalid score \(id:\s*(\d+),\s*type:\s*([a-zA-Z_]+),\s*level_index:\s*(\d+)\)',
+        re.IGNORECASE,
+    ),
 }
 exec(compile(ast.Module(body=selected, type_ignores=[]), str(SOURCE), "exec"), namespace)
 
@@ -104,6 +113,7 @@ assert scores == [
         "dx_score": 1234,
         "fc": "app",
         "fs": "fsd",
+        "_raw_music_id": 10834,
     },
     {
         "id": 1,
@@ -111,6 +121,7 @@ assert scores == [
         "level_index": 0,
         "achievements": 97.0,
         "dx_score": 0,
+        "_raw_music_id": 1,
     },
 ]
 
@@ -123,8 +134,8 @@ pc_convert = namespace["convert_pc_records_to_lxns_scores"]
 pc_scores = pc_convert(
     [
         _Rec(
-            song_id=10834,
-            level_index=3,
+            song_id=11407,
+            level_index=0,
             achievements=100.5,
             dx_score=12,
             fc="ap",
@@ -132,9 +143,18 @@ pc_scores = pc_convert(
         )
     ]
 )
-assert pc_scores[0]["id"] == 834
+assert pc_scores[0]["id"] == 1407
 assert pc_scores[0]["type"] == "dx"
-assert pc_scores[0]["fc"] == "ap"
-assert "fs" not in pc_scores[0]
+assert pc_scores[0]["_raw_music_id"] == 11407
+
+invalid = namespace["_parse_invalid_score"](
+    "invalid score (id: 1407, type: dx, level_index: 0): song not found"
+)
+assert invalid == (1407, "dx", 0)
+alt = namespace["_dx_raw_id_fallback"](pc_scores[0])
+assert alt is not None and alt["id"] == 11407
+public = namespace["_public_score_payload"](alt)
+assert "_raw_music_id" not in public
+assert public["id"] == 11407
 
 print("LXNS OAuth tests: ok")

@@ -6,17 +6,23 @@
   - OAuth2 用户授权（查自己的 b50 / recent / scores 等私有数据）
 """
 
+import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import httpx
 
-from ..config import maiconfig
+from ..config import log, maiconfig
 
 _BASE_URL = 'https://maimai.lxns.net'
 # 落雪「无回调模式」标准 OOB 地址（授权后直接在页面显示授权码）
 _DEFAULT_REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob'
+
+_INVALID_SCORE_RE = re.compile(
+    r'invalid score \(id:\s*(\d+),\s*type:\s*([a-zA-Z_]+),\s*level_index:\s*(\d+)\)',
+    re.IGNORECASE,
+)
 
 
 class LxnsApiError(RuntimeError):
@@ -308,6 +314,8 @@ def convert_sega_music_scores(detail_list: List[dict]) -> List[dict]:
             'level_index': level_index,
             'achievements': achievement,
             'dx_score': dx_score,
+            # 仅客户端兜底用；POST 前会剥离。DX 被拒时可回退成 Sega 原始 ID（如 11407）。
+            '_raw_music_id': raw_id,
         }
         fc = combo_map.get(item.get('comboStatus'))
         fs = sync_map.get(item.get('syncStatus'))
@@ -348,6 +356,8 @@ def convert_pc_records_to_lxns_scores(records: List[Any]) -> List[dict]:
             'level_index': level_index,
             'achievements': achievement,
             'dx_score': dx_score,
+            # 仅客户端兜底用；POST 前会剥离。DX 被拒时可回退成 Sega 原始 ID（如 11407）。
+            '_raw_music_id': raw_id,
         }
         fc = str(getattr(item, 'fc', '') or '').strip() or None
         fs = str(getattr(item, 'fs', '') or '').strip() or None
@@ -364,46 +374,169 @@ def convert_pc_records_to_lxns_scores(records: List[Any]) -> List[dict]:
     return list(best.values())
 
 
+def _public_score_payload(score: dict) -> dict:
+    """去掉客户端私有字段，只提交落雪 API 接受的键。"""
+    return {k: v for k, v in score.items() if not str(k).startswith('_')}
+
+
+def _parse_invalid_score(message: str) -> Optional[Tuple[int, str, int]]:
+    match = _INVALID_SCORE_RE.search(str(message or ''))
+    if not match:
+        return None
+    return int(match.group(1)), str(match.group(2)).lower(), int(match.group(3))
+
+
+def _score_key(score: dict) -> Tuple[int, str, int]:
+    return (
+        int(score.get('id') or 0),
+        str(score.get('type') or '').lower(),
+        int(score.get('level_index') or 0),
+    )
+
+
+def _dx_raw_id_fallback(score: dict) -> Optional[dict]:
+    """DX 取余 ID 不被落雪识别时，回退为 Sega 原始 ID（如 1407 → 11407）。"""
+    song_type = str(score.get('type') or '').lower()
+    song_id = int(score.get('id') or 0)
+    if song_type != 'dx' or song_id <= 0:
+        return None
+    raw = score.get('_raw_music_id')
+    try:
+        raw_id = int(raw) if raw is not None else 0
+    except (TypeError, ValueError):
+        raw_id = 0
+    if raw_id >= 10000:
+        alt_id = raw_id
+    elif song_id < 10000:
+        alt_id = song_id + 10000
+    else:
+        return None
+    if alt_id == song_id:
+        return None
+    updated = dict(score)
+    updated['id'] = alt_id
+    return updated
+
+
 async def user_upload_scores(access_token: str, scores: List[dict]) -> Dict[str, Any]:
-    """使用 OAuth ``write_player`` 权限上传当前用户成绩。"""
+    """使用 OAuth ``write_player`` 权限上传当前用户成绩。
+
+    遇到 ``song not found`` 时：
+    1. DX 曲目先把 id 回退成 Sega 原始 ID（1407→11407）再试一次；
+    2. 仍失败则 skip 该谱面，继续上传其余成绩。
+    """
     if not scores:
         raise ValueError('没有可上传到落雪的有效成绩')
 
     from .maimaidx_admin_audit import admin_audit
 
     uploaded = 0
+    skipped: List[str] = []
     started = time.time()
-    # 单批 HTTP 15s；多批另有总时限，避免「分批无超时」一直卡住。
     timeout = httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0)
-    # 全量成绩可能分多批；总等待控制在约 45s（非无限），与 B50 的 15s 区分开。
     overall_deadline = time.monotonic() + 45.0
+    # 单批内对 invalid score 的修复/跳过次数上限，避免一张坏谱面反复打爆超时。
+    max_repairs_per_batch = 40
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            # 控制单次请求体大小；成绩接口按谱面覆盖，分批重试是幂等的。
             for offset in range(0, len(scores), 500):
                 remaining = overall_deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError(
-                        f'落雪成绩上传总超时（已写入 {uploaded}/{len(scores)} 条）'
+                        f'落雪成绩上传总超时（已写入 {uploaded}/{len(scores)} 条，'
+                        f'跳过 {len(skipped)} 条）'
                     )
-                batch = scores[offset:offset + 500]
-                resp = await client.post(
-                    f'{_BASE_URL}/api/v0/user/maimai/player/scores',
-                    headers=_oauth_headers(access_token),
-                    json={'scores': batch},
+                pending = [dict(item) for item in scores[offset:offset + 500]]
+                tried_alt: set[Tuple[int, str, int]] = set()
+                repairs = 0
+                while pending:
+                    remaining = overall_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f'落雪成绩上传总超时（已写入 {uploaded} 条，跳过 {len(skipped)} 条）'
+                        )
+                    payload = [_public_score_payload(item) for item in pending]
+                    resp = await client.post(
+                        f'{_BASE_URL}/api/v0/user/maimai/player/scores',
+                        headers=_oauth_headers(access_token),
+                        json={'scores': payload},
+                    )
+                    try:
+                        _parse_user_api_response(resp, operation='OAuth 成绩上传')
+                        uploaded += len(pending)
+                        break
+                    except LxnsApiError as exc:
+                        invalid = _parse_invalid_score(str(exc))
+                        if not invalid or repairs >= max_repairs_per_batch:
+                            raise
+                        bad_id, bad_type, bad_level = invalid
+                        target_idx = next(
+                            (
+                                i
+                                for i, item in enumerate(pending)
+                                if _score_key(item) == (bad_id, bad_type, bad_level)
+                            ),
+                            None,
+                        )
+                        if target_idx is None:
+                            raise
+                        bad = pending[target_idx]
+                        alt = _dx_raw_id_fallback(bad)
+                        alt_key = _score_key(alt) if alt else None
+                        if (
+                            alt is not None
+                            and alt_key is not None
+                            and _score_key(bad) not in tried_alt
+                            and alt_key not in tried_alt
+                        ):
+                            tried_alt.add(_score_key(bad))
+                            tried_alt.add(alt_key)
+                            pending[target_idx] = alt
+                            repairs += 1
+                            log.warning(
+                                f'[lxns.upload] DX id 回退 {_score_key(bad)} → {alt_key}'
+                            )
+                            continue
+                        label = f'{bad_type}:{bad_id}@{bad_level}'
+                        skipped.append(label)
+                        pending.pop(target_idx)
+                        repairs += 1
+                        log.warning(f'[lxns.upload] 跳过无效成绩 {label}: {exc}')
+                        if not pending:
+                            break
+            if uploaded <= 0:
+                detail = '、'.join(skipped[:5])
+                more = f' 等 {len(skipped)} 条' if len(skipped) > 5 else ''
+                raise LxnsApiError(
+                    f'落雪未接受任何成绩'
+                    + (f'（已跳过 {detail}{more}）' if skipped else ''),
+                    status_code=400,
                 )
-                _parse_user_api_response(resp, operation='OAuth 成绩上传')
-                uploaded += len(batch)
     except Exception as exc:
         admin_audit.add_step(
             'http.lxns.upload', 'error',
-            {'error': str(exc), 'uploaded': uploaded}, started_at=started,
+            {
+                'error': str(exc),
+                'uploaded': uploaded,
+                'skipped': len(skipped),
+            },
+            started_at=started,
         )
         raise
     admin_audit.add_step(
-        'http.lxns.upload', 'success', {'count': uploaded}, started_at=started,
+        'http.lxns.upload',
+        'success',
+        {'count': uploaded, 'skipped': len(skipped)},
+        started_at=started,
     )
-    return {'success': True, 'count': uploaded, 'oauth': True}
+    return {
+        'success': True,
+        'count': uploaded,
+        'skipped': len(skipped),
+        'skipped_scores': skipped[:20],
+        'oauth': True,
+    }
+
 
 
 async def dev_get_scores(friend_code: int) -> Optional[list]:
