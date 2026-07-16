@@ -19,6 +19,12 @@ from ..libraries.maimaidx_admin_audit import admin_audit, redact
 from ..libraries.maimaidx_bot_admin import PLUGIN_ADMIN_ONLY, is_plugin_admin
 from ..libraries.maimaidx_platform import get_event_group_id
 from ..libraries.maimaidx_platform import billing_user_id
+from ..libraries.maimaidx_break import (
+    break_db,
+    format_break_insufficient_message,
+    is_superuser_exempt,
+)
+from ..libraries.maimaidx_request_rate import request_meter
 
 
 audit_query = on_command("查询REF", aliases={"查询Ref_ID", "ref查询"}, permission=PLUGIN_ADMIN_ONLY)
@@ -74,6 +80,13 @@ def _event_summary(event: Event) -> dict:
     return {"message_length": text_len, "segment_types": segment_types[:30]}
 
 
+def _event_request_key(bot: Bot, event: Event) -> str:
+    event_id = getattr(event, "message_id", None) or getattr(event, "id", None)
+    if event_id is None:
+        event_id = f"object-{id(event)}"
+    return f"{getattr(bot, 'self_id', '')}:{event_id}"
+
+
 @_message_recorder.handle()
 async def _(event: Event):
     if not bool(getattr(maiconfig, "maimaidx_message_stats_enabled", True)):
@@ -119,10 +132,46 @@ async def _audit_and_ban_preprocessor(
                 pass
         raise IgnoredException("maimaidx user banned")
 
-    # 图片扫码监听会匹配所有图片；普通图片不创建 REF，识别到舞萌二维码后
-    # 由业务层的 _log 按需开启完整链路，避免审计库被普通图片刷大。
+    # 图片扫码监听会匹配所有图片；普通图片既不计真实请求，也不触发附加费。
+    # 识别到舞萌二维码后的业务调用仍会由账号流水记录。
     if bool(getattr(type(matcher), "_maimaidx_deferred_audit", False)):
         return
+
+    if bool(getattr(maiconfig, "maimaidx_busy_surcharge_enabled", True)):
+        window = max(
+            1.0, float(getattr(maiconfig, "maimaidx_busy_window_seconds", 60.0))
+        )
+        free_requests = max(
+            0, int(getattr(maiconfig, "maimaidx_busy_free_requests", 30))
+        )
+        surcharge = max(
+            0, int(getattr(maiconfig, "maimaidx_busy_surcharge_break", 1))
+        )
+        request_count = request_meter.record(
+            _event_request_key(bot, event), window_seconds=window
+        )
+        if request_count is not None and request_count > free_requests and surcharge:
+            payer = int(billing_user_id(event))
+            if not is_superuser_exempt(payer):
+                meta = {
+                    "window_seconds": window,
+                    "free_requests": free_requests,
+                    "request_count": request_count,
+                }
+                if not break_db.try_consume(
+                    payer, surcharge, "busy_request_surcharge", meta=meta
+                ):
+                    balance = break_db.get_balance(payer)
+                    await bot.send(
+                        event,
+                        "当前使用人数较多，本次请求需额外支付 "
+                        f"{surcharge} BREAK。\n"
+                        + format_break_insufficient_message(payer, surcharge, balance),
+                    )
+                    raise IgnoredException("maimaidx busy surcharge insufficient")
+                state["__maimaidx_busy_charge"] = {
+                    **meta, "charged": surcharge, "balance": break_db.get_balance(payer)
+                }
 
     ref_id = admin_audit.start_trace(
         command=_command_name(matcher, event, state),
@@ -133,6 +182,11 @@ async def _audit_and_ban_preprocessor(
     )
     state["__maimaidx_ref_id"] = ref_id
     state["__maimaidx_ref_token"] = admin_audit.set_current_ref(ref_id)
+    busy_charge = state.get("__maimaidx_busy_charge")
+    if busy_charge:
+        admin_audit.add_step(
+            "break.busy_surcharge", "success", busy_charge, ref_id=ref_id
+        )
 
 
 @run_postprocessor

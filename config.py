@@ -86,6 +86,11 @@ class Config(BaseModel):
     maimaidx_admin_web_public_url: str = ''
     maimaidx_audit_retention_days: int = 90
     maimaidx_message_stats_enabled: bool = True
+    # 60 秒内前 30 个真实功能请求免费；超出的每个请求向触发者加收 1 BREAK。
+    maimaidx_busy_surcharge_enabled: bool = True
+    maimaidx_busy_window_seconds: float = 60.0
+    maimaidx_busy_free_requests: int = 30
+    maimaidx_busy_surcharge_break: int = 1
     # 合并连续提示并省略非必要的“处理中”消息，降低平台发信频率。
     maimaidx_compact_messages: bool = True
     # 开始处理时对触发消息贴的 QQ 表情 ID（NapCat set_msg_emoji_like）；空=关闭。

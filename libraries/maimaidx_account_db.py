@@ -398,5 +398,43 @@ class AccountDatabase:
             except sqlite3.IntegrityError:
                 return False
 
+    def get_usage_stats(self, user_key: str, *, recent_limit: int = 10) -> dict:
+        """汇总账号功能的今日/累计调用，并返回最近操作记录。"""
+        key = str(user_key)
+        today_start = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+        with self._lock:
+            summary = self._conn.execute(
+                """SELECT
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
+                       SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS error,
+                       SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS today_total,
+                       SUM(CASE WHEN created_at >= ? AND status = 'success' THEN 1 ELSE 0 END) AS today_success,
+                       SUM(CASE WHEN created_at >= ? AND status != 'success' THEN 1 ELSE 0 END) AS today_error
+                   FROM account_operation_log WHERE user_key = ?""",
+                (today_start, today_start, today_start, key),
+            ).fetchone()
+            operations = self._conn.execute(
+                """SELECT operation, COUNT(*) AS count
+                   FROM account_operation_log
+                   WHERE user_key = ?
+                   GROUP BY operation ORDER BY count DESC, operation""",
+                (key,),
+            ).fetchall()
+            recent = self._conn.execute(
+                """SELECT ref_id, operation, status, detail, created_at
+                   FROM account_operation_log WHERE user_key = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (key, max(1, min(int(recent_limit), 50))),
+            ).fetchall()
+        row = dict(summary) if summary else {}
+        return {
+            **{name: int(row.get(name) or 0) for name in (
+                'total', 'success', 'error', 'today_total', 'today_success', 'today_error'
+            )},
+            'operations': {str(item['operation']): int(item['count']) for item in operations},
+            'recent': [dict(item) for item in recent],
+        }
+
 
 account_db = AccountDatabase()

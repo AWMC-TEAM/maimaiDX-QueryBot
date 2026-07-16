@@ -44,7 +44,7 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'upload_fish_cost': '2',
     'upload_lx_cost': '2',
     'upload_all_cost': '3',
-    'ticket_cost_per_multiplier': '2',
+    'ticket_cost_per_multiplier': '3',
     'transfer_fee': '0',
     'lottery_cost': '2',
 }
@@ -159,6 +159,15 @@ class AccountProfile(BaseModel):
     data_source: str = 'divingfish'
     theme: str = 'default'
     storage_enabled: bool = False
+    account_bound: bool = False
+    account_today_total: int = 0
+    account_today_success: int = 0
+    account_today_error: int = 0
+    account_total: int = 0
+    account_total_success: int = 0
+    account_total_error: int = 0
+    account_operation_counts: Dict[str, int] = Field(default_factory=dict)
+    recent_account_logs: List[dict] = Field(default_factory=list)
     recent_logs: List[BreakLogEntry] = Field(default_factory=list)
 
 
@@ -277,7 +286,22 @@ class BreakDatabase:
             )
         self._conn.commit()
         self._migrate_legacy_economy_defaults()
+        self._migrate_ticket_cost_default()
         self._restore_uncapped_streak_default()
+
+    def _migrate_ticket_cost_default(self) -> None:
+        """将上一版发票默认价从倍率 ×2 迁移为倍率 ×3。"""
+        row = self._conn.execute(
+            'SELECT value FROM break_config WHERE key = ?',
+            ('ticket_cost_per_multiplier',),
+        ).fetchone()
+        if row and str(row['value']) == '2':
+            self._conn.execute(
+                'UPDATE break_config SET value = ? WHERE key = ?',
+                (DEFAULT_CONFIG['ticket_cost_per_multiplier'], 'ticket_cost_per_multiplier'),
+            )
+            self._conn.commit()
+            log.info('[BREAK] 已将发票价格迁移为倍率 ×3')
 
     def _migrate_legacy_economy_defaults(self) -> None:
         """仅替换仍等于旧默认值的配置，保留管理员自定义数据。"""
@@ -1206,11 +1230,14 @@ def settle_analysis_charge(qqid: int) -> None:
 
 
 def get_account_profile(qqid: int) -> AccountProfile:
+    from .maimaidx_account_db import account_db
     from .maimaidx_data_storage import data_storage
     from .maimaidx_lxns_db import lxns_db
 
     user = break_db.get_user_row(qqid)
     daily = break_db.get_daily_row(qqid)
+    account = account_db.get(str(qqid))
+    account_usage = account_db.get_usage_stats(str(qqid))
     today = break_db._today()
     return AccountProfile(
         qqid=qqid,
@@ -1230,11 +1257,26 @@ def get_account_profile(qqid: int) -> AccountProfile:
         data_source=lxns_db.get_source(qqid),
         theme=lxns_db.get_theme(qqid),
         storage_enabled=data_storage.is_enabled(qqid),
+        account_bound=bool(account and account.is_bound),
+        account_today_total=account_usage['today_total'],
+        account_today_success=account_usage['today_success'],
+        account_today_error=account_usage['today_error'],
+        account_total=account_usage['total'],
+        account_total_success=account_usage['success'],
+        account_total_error=account_usage['error'],
+        account_operation_counts=account_usage['operations'],
+        recent_account_logs=account_usage['recent'],
         recent_logs=break_db.get_recent_logs(qqid, 5),
     )
 
 
 def format_account_profile(profile: AccountProfile, *, title: str = '我的 AWMC 账号') -> str:
+    return '\n\n'.join(format_account_profile_sections(profile, title=title))
+
+
+def format_account_profile_sections(
+    profile: AccountProfile, *, title: str = '我的 AWMC 账号'
+) -> List[str]:
     def _ts(val: Optional[float]) -> str:
         if not val:
             return '暂无'
@@ -1245,39 +1287,68 @@ def format_account_profile(profile: AccountProfile, *, title: str = '我的 AWMC
     checkin = '已完成' if profile.checked_in_today else '未签到'
     free = '已用' if profile.free_used_today else '可用'
 
-    lines = [
+    account_state = '已绑定' if profile.account_bound else '未绑定'
+    overview = [
         f'📋 {title}',
         '━━━━━━━━━━━━━━',
         f'🆔 QQ：{profile.qqid}',
         f'💳 BREAK 余额：{profile.balance}',
         f'📅 连续签到：{profile.streak} 天 · 上次签到：{profile.last_checkin_date or "暂无"}',
         f'🎁 今日签到：{checkin}',
-        '',
+        f'🔗 舞萌账号：{account_state}',
+    ]
+    today_lines = [
         '📊 今日使用',
         f'  · 查分器 API：{profile.today_query_count} 次（消耗 {profile.today_break_spent} BREAK 合计含分析）',
         f'  · 分析 b50：{profile.today_analysis_count} 次',
         f'  · 今日 BREAK 获得：+{profile.today_break_gained}',
         f'  · 每日免费查分：{free}',
-        '',
+        f'  · 账号功能：{profile.account_today_total} 次'
+        f'（成功 {profile.account_today_success} / 失败 {profile.account_today_error}）',
+    ]
+    total_lines = [
         '📈 累计统计',
         f'  · 查分 API 总计：{profile.total_query_count} 次',
         f'  · 分析 b50 总计：{profile.total_analysis_count} 次',
         f'  · 上次查分：{_ts(profile.last_query_at)}',
         f'  · 上次分析：{_ts(profile.last_analysis_at)}',
-        '',
+        f'  · 账号功能总计：{profile.account_total} 次'
+        f'（成功 {profile.account_total_success} / 失败 {profile.account_total_error}）',
+    ]
+    operation_labels = {
+        'bind': '账号绑定', 'unbind': '账号解绑', 'status': '账号状态',
+        'upload': '成绩上传', 'ticket': '发票', 'bind_fish': '绑定水鱼',
+        'bind_lx': '绑定落雪',
+    }
+    if profile.account_operation_counts:
+        detail = ' / '.join(
+            f'{operation_labels.get(name, name)} {count}'
+            for name, count in profile.account_operation_counts.items()
+        )
+        total_lines.append(f'  · 功能分布：{detail}')
+    preference_lines = [
         '⚙️ 插件偏好',
         f'  · 查分数据源：{src}',
         f'  · B50 主题：{profile.theme}',
         f'  · 数据存储：{storage}',
     ]
+    recent_lines: List[str] = []
+    if profile.recent_account_logs:
+        recent_lines.append('🧾 最近账号功能记录（最多 10 条）')
+        for entry in profile.recent_account_logs:
+            ts = datetime.fromtimestamp(float(entry['created_at'])).strftime('%m-%d %H:%M')
+            status = '成功' if entry['status'] == 'success' else '失败'
+            label = operation_labels.get(str(entry['operation']), str(entry['operation']))
+            recent_lines.append(f'  · {ts}  {label} · {status} · {entry["ref_id"]}')
     if profile.recent_logs:
-        lines.append('')
-        lines.append('📝 最近 BREAK 记录（最多 5 条）')
+        recent_lines.append('')
+        recent_lines.append('📝 最近 BREAK 记录（最多 5 条）')
         reason_map = {
             'query': '查分',
             'checkin': '签到',
             'today_luck': '今日舞萌',
             'b50_analysis': '分析b50',
+            'busy_request_surcharge': '高负载请求附加费',
             'guess_reward': '猜歌奖励',
             'admin_set': '管理员设置',
             'admin_add': '管理员调整',
@@ -1286,8 +1357,11 @@ def format_account_profile(profile: AccountProfile, *, title: str = '我的 AWMC
             ts = datetime.fromtimestamp(entry.created_at).strftime('%m-%d %H:%M')
             sign = '+' if entry.delta >= 0 else ''
             label = reason_map.get(entry.reason, entry.reason)
-            lines.append(f'  · {ts}  {sign}{entry.delta}  {label}')
-    return '\n'.join(lines)
+            recent_lines.append(f'  · {ts}  {sign}{entry.delta}  {label}')
+    sections = [overview, today_lines, total_lines, preference_lines]
+    if recent_lines:
+        sections.append(recent_lines)
+    return ['\n'.join(lines) for lines in sections]
 
 
 def format_checkin_result(result: CheckinResult) -> str:

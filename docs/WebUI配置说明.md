@@ -153,7 +153,7 @@ https://bot.example.com/ops/maimai/api/...
 | `upload_fish_cost` | 2 | 上传水鱼价格 |
 | `upload_lx_cost` | 2 | 上传落雪价格 |
 | `upload_all_cost` | 3 | 同时上传价格 |
-| `ticket_cost_per_multiplier` | 2 | 发票每倍率单价 |
+| `ticket_cost_per_multiplier` | 3 | 发票每倍率单价 |
 | `transfer_fee` | 0 | BREAK 转账手续费 |
 | `lottery_cost` | 2 | BREAK 抽奖每次成本 |
 

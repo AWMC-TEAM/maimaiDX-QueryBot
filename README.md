@@ -86,6 +86,11 @@ SDGBT_PLACE_ID=1403
 AWMC_MACHINE_STEP_DELAY_SECONDS=3
 # 发票允许倍率，默认仅 2、3、5 倍。
 AWMC_TICKET_ALLOWED_MULTIPLIERS=2,3,5
+# 高负载计费：60 秒前 30 个真实功能请求免费，第 31 个起加收 1 BREAK。
+MAIMAIDX_BUSY_SURCHARGE_ENABLED=true
+MAIMAIDX_BUSY_WINDOW_SECONDS=60
+MAIMAIDX_BUSY_FREE_REQUESTS=30
+MAIMAIDX_BUSY_SURCHARGE_BREAK=1
 ```
 
 旧变量 `SDGBTECHAPI` 仍兼容。完整模板见仓库根目录 `.env.example`。
@@ -276,7 +281,7 @@ BOTNAME=maimai
 | `lxbind` | 绑定落雪 OAuth，上传无需导入 Token（推荐） |
 | `mai绑定落雪 <导入token>` / `maibindlx <导入token>` | 绑定落雪导入 Token（兼容） |
 | `maiu` / `导` / `maiul` / `maiua` | 上传水鱼 / 落雪 / 同时上传 |
-| `发票` / `fp <2/3/5>` / `mai查票` | 票券操作（team 模式，允许倍率可由 ENV 配置） |
+| `发票` / `fp <2/3/5>` / `mai查票` | 票券操作（默认倍率 × 3 BREAK，允许倍率可由 ENV 配置） |
 | `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
 | `迁移Koishi 检查/确认 <数据库>` | 超级管理员预检/导入 Koishi maiBot 数据 |
 

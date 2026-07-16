@@ -1,7 +1,7 @@
 from typing import Optional
 
 from nonebot import on_command
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageEvent, MessageSegment
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment
 from nonebot.params import CommandArg, Depends
 from nonebot.permission import SUPERUSER
 
@@ -9,11 +9,14 @@ from ..libraries.maimaidx_break import (
     DEFAULT_CONFIG,
     break_db,
     format_account_profile,
+    format_account_profile_sections,
     format_analysis_pricing_help,
     format_checkin_result,
     get_account_profile,
 )
 from ..libraries.maimaidx_platform import billing_user_id
+from ..libraries.maimaidx_group_rating import build_forward_node
+from ..config import log, maiconfig
 from .mai_agreement import agreement_prompt, has_user_agreed
 
 awmc_checkin = on_command('AWMC签到', aliases={'签到', 'awmc签到'})
@@ -127,10 +130,25 @@ async def _(event: MessageEvent):
 
 
 @my_awmc.handle()
-async def _(event: MessageEvent):
-    qqid = int(event.get_user_id())
+async def _(bot: Bot, event: MessageEvent):
+    qqid = int(billing_user_id(event))
     profile = get_account_profile(qqid)
-    await my_awmc.finish(format_account_profile(profile), reply_message=True)
+    sections = format_account_profile_sections(profile)
+    nickname = str(getattr(maiconfig, 'botName', None) or 'AWMC Bot')
+    nodes = [build_forward_node(str(event.self_id), nickname, section) for section in sections]
+    try:
+        if isinstance(event, GroupMessageEvent):
+            await bot.call_api(
+                'send_group_forward_msg', group_id=event.group_id, messages=nodes
+            )
+        else:
+            await bot.call_api(
+                'send_private_forward_msg', user_id=event.user_id, messages=nodes
+            )
+    except Exception as exc:
+        log.warning(f'[BREAK] 我的AWMC合并转发失败，回退文本：{type(exc).__name__}: {exc}')
+        await my_awmc.finish(format_account_profile(profile), reply_message=True)
+    await my_awmc.finish()
 
 
 @awmc_admin_view.handle()

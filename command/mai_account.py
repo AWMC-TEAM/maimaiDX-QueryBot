@@ -618,7 +618,7 @@ def _log(user_key: str, operation: str, status: str, detail: str = "") -> str:
 
 def _service_cost(service: str, *, multiple: int = 1) -> int:
     if service == "ticket":
-        unit = int(break_db.get_config("ticket_cost_per_multiplier", "2"))
+        unit = int(break_db.get_config("ticket_cost_per_multiplier", "3"))
         return max(0, unit) * max(1, multiple)
     defaults = {"upload_fish": "2", "upload_lx": "2", "upload_all": "3"}
     return max(0, int(break_db.get_config(f"{service}_cost", defaults[service])))
@@ -661,7 +661,7 @@ async def _():
     fish_cost = break_db.get_config("upload_fish_cost", "2")
     lx_cost = break_db.get_config("upload_lx_cost", "2")
     all_cost = break_db.get_config("upload_all_cost", "3")
-    ticket_unit = break_db.get_config("ticket_cost_per_multiplier", "2")
+    ticket_unit = break_db.get_config("ticket_cost_per_multiplier", "3")
     ticket_multipliers = "/".join(map(str, _allowed_ticket_multipliers()))
     await account_help.finish(
         "AWMC 账号功能（已合并到 QueryBot）\n"
@@ -672,7 +672,7 @@ async def _():
         "maiu / maiul / maiua：上传水鱼 / 落雪 / 同时上传\n"
         f"发票 / fp <{ticket_multipliers}> / mai查票 / mai地图 / maiping\n"
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
-        f"发票价格：倍率 × {ticket_unit} BREAK（例：2倍=4，3倍=6）\n"
+        f"发票价格：倍率 × {ticket_unit} BREAK（例：2倍=6，3倍=9）\n"
         "成绩上传与发票各自每日首次成功免费，失败不扣费。\n"
         "发送“用户协议”阅读和确认服务条款。"
     )
