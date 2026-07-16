@@ -19,6 +19,10 @@ assert module.auto_qrcode_workflow_key(pc=True, fish=True, lxns=False) == (
 )
 assert module.auto_qrcode_fallback_seconds(pc=True, fish=True, lxns=True) == 71
 assert "首次预计约 71 秒" in module.format_processing_estimate(71, 0)
+assert module.upload_workflow_key(fish=True, lxns=False) == "explicit_upload:fish"
+assert module.upload_workflow_key(fish=False, lxns=True) == "explicit_upload:lxns"
+assert module.upload_workflow_key(fish=True, lxns=True) == "explicit_upload:all"
+assert module.upload_fallback_seconds(fish=True, lxns=True) == 70
 
 with tempfile.TemporaryDirectory() as td:
     estimator = module.ProcessingTimeEstimator(
@@ -38,5 +42,10 @@ playcount_source = (root / "command" / "mai_playcount.py").read_text(
 assert "processing_time_estimator.estimate(" in playcount_source
 assert "processing_time_estimator.record(" in playcount_source
 assert "Bot 无法撤回原凭据消息，请立即手动撤回" in playcount_source
+
+account_source = (root / "command" / "mai_account.py").read_text(encoding="utf-8")
+assert "📤 已受理，正在上传到" in account_source
+assert "processing_time_estimator.record(" in account_source
+assert "上游服务未返回错误详情" in account_source
 
 print("processing time estimator tests: ok")

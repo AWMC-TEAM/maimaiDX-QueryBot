@@ -34,9 +34,22 @@ account = load_functions(
         "_normalize_charge_payload",
         "_allowed_ticket_multipliers",
         "auto_upload_channels",
+        "_exception_detail",
+        "_upload_failure_message",
     },
-    {"Any": Any, "maiconfig": test_config},
+    {
+        "Any": Any,
+        "maiconfig": test_config,
+        "asyncio": asyncio,
+        "httpx": __import__("httpx"),
+        "redact": lambda value: value,
+    },
 )
+
+assert "请求超时" in account["_upload_failure_message"](TimeoutError())
+assert "RuntimeError（上游服务未返回错误详情）" in account[
+    "_upload_failure_message"
+](RuntimeError())
 
 assert account["_allowed_ticket_multipliers"]() == (2, 3, 5)
 assert account["auto_upload_channels"]() == (False, False)

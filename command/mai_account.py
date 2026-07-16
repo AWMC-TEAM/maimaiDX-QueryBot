@@ -37,6 +37,12 @@ from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_qrcode_util import extract_sgwcmaid_qrcode
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
+from ..libraries.maimaidx_processing_time import (
+    format_processing_estimate,
+    processing_time_estimator,
+    upload_fallback_seconds,
+    upload_workflow_key,
+)
 from ..libraries.maimaidx_reaction import react_processing
 from ..libraries.maimaidx_sw_api import format_user_region_block, sw_api
 from .mai_agreement import agreement_prompt, has_user_agreed
@@ -406,6 +412,31 @@ def _result_text(result: dict) -> str:
     return "操作已完成"
 
 
+def _exception_detail(exc: BaseException) -> str:
+    """保证面向用户和审计日志的异常原因永不为空。"""
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)):
+        return "请求超时，上游服务未在规定时间内响应"
+    if isinstance(exc, httpx.ConnectError):
+        return "无法连接上游服务，请稍后重试"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"上游服务返回 HTTP {exc.response.status_code}"
+
+    detail = redact(str(exc)).strip()
+    if detail:
+        return detail
+
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None and cause is not exc:
+        cause_detail = _exception_detail(cause)
+        if cause_detail:
+            return cause_detail
+    return f"{type(exc).__name__}（上游服务未返回错误详情）"
+
+
+def _upload_failure_message(exc: BaseException) -> str:
+    return f"上传失败：{_exception_detail(exc)}"
+
+
 def _oauth_qqid(event: MessageEvent) -> Optional[int]:
     try:
         return resolve_score_qqid(event)
@@ -458,7 +489,7 @@ def _oauth_token_rejected(exc: Exception) -> bool:
 
 
 def _lxns_upload_failure_text(exc: Exception, *, stage: str) -> str:
-    detail = redact(str(exc)).strip() or type(exc).__name__
+    detail = _exception_detail(exc)
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return f"{stage}超时（{detail[:120]}）"
     if isinstance(exc, LxnsApiError) and exc.status_code == 403:
@@ -1089,7 +1120,7 @@ async def _upload(
                 )
             except Exception as exc:
                 failure_message = f"上传失败：{_lxns_upload_failure_text(exc, stage='向落雪写入成绩')}"
-                ref = _log(key, "upload", "error", str(exc))
+                ref = _log(key, "upload", "error", _exception_detail(exc))
                 return failure_message + f"\nRef_ID: {ref}"
 
     if not _machine_locked:
@@ -1104,7 +1135,7 @@ async def _upload(
                     _qrcode_verified=_qrcode_verified,
                 )
         except MachineBusyError as exc:
-            return f"上传失败：{exc}"
+            return _upload_failure_message(exc)
 
     direct_qrcode = extract_sgwcmaid_qrcode(qrcode_arg)
     qrcode = direct_qrcode or binding.qrcode
@@ -1222,10 +1253,10 @@ async def _upload(
         ref = _log(key, operation, "success", f"charged={charge.charged},free={charge.free}")
         return "上传完成\n" + "\n".join(results) + f"\n{_charge_text(charge)}\nRef_ID: {ref}"
     except Exception as exc:
-        failure_message = f"上传失败：{exc}"
+        failure_message = _upload_failure_message(exc)
         if _upload_retryable(failure_message):
             account_db.mark_qrcode_result(key, False)
-        ref = _log(key, "upload", "error", str(exc))
+        ref = _log(key, "upload", "error", _exception_detail(exc))
         return failure_message + f"\nRef_ID: {ref}"
 
 
@@ -1257,12 +1288,29 @@ def _upload_retryable(message: str) -> bool:
 
 
 def _upload_retry_prompt(message: str, attempt: int) -> str:
-    reason = message.split("\nRef_ID:", 1)[0].removeprefix("上传失败：")
+    reason = message.split("\nRef_ID:", 1)[0].removeprefix("上传失败：").strip()
+    if not reason:
+        reason = "上游服务未返回错误详情，请换新二维码后重试"
     retry_label = f"已尝试 {attempt}/3" if attempt else "尚未重试，最多可尝试 3 次"
     return (
         f"上传未完成：{redact(reason)}\n"
         f"请重新获取并发送最新 SGWCMAID 或官方二维码链接（{retry_label}）。\n"
         "Bot 会尝试撤回凭据消息；发送“取消”可退出。"
+    )
+
+
+def _upload_started_message(*, fish: bool, lxns: bool) -> tuple[str, str]:
+    operation = upload_workflow_key(fish=fish, lxns=lxns)
+    seconds, samples = processing_time_estimator.estimate(
+        operation,
+        fallback_seconds=upload_fallback_seconds(fish=fish, lxns=lxns),
+    )
+    channel = "水鱼和落雪" if fish and lxns else "水鱼" if fish else "落雪"
+    return (
+        operation,
+        f"📤 已受理，正在上传到{channel}。\n"
+        + format_processing_estimate(seconds, samples)
+        + "\n处理完成后会另行发送结果，请勿重复提交。",
     )
 
 
@@ -1285,9 +1333,17 @@ async def _(
     if raw and not extract_sgwcmaid_qrcode(raw):
         result = "上传失败：二维码格式无效"
     else:
+        timing_key, started_message = _upload_started_message(fish=fish, lxns=lxns)
+        await matcher.send(recall_notice + started_message, reply_message=False)
+        started_at = time.perf_counter()
         result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=raw)
+        if result.startswith("上传完成"):
+            processing_time_estimator.record(
+                timing_key, time.perf_counter() - started_at
+            )
+        recall_notice = ""
     if not _upload_retryable(result):
-        await matcher.finish(recall_notice + result, reply_message=True)
+        await matcher.finish(recall_notice + result, reply_message=False)
     attempt = 1 if raw else 0
     matcher.state["upload_qrcode_retry"] = attempt
     track_event(session_key("upload_qrcode", event), event)
@@ -1319,13 +1375,21 @@ async def _(
         except Exception:
             recall_notice = _RECALL_FAILED_NOTICE
     fish, lxns = _upload_mode(matcher)
-    result = (
-        await _upload(event, fish=fish, lxns=lxns, qrcode_arg=qrcode or "")
-        if qrcode else "上传失败：二维码格式无效"
-    )
+    if qrcode:
+        timing_key, started_message = _upload_started_message(fish=fish, lxns=lxns)
+        await matcher.send(recall_notice + started_message, reply_message=False)
+        started_at = time.perf_counter()
+        result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=qrcode)
+        if result.startswith("上传完成"):
+            processing_time_estimator.record(
+                timing_key, time.perf_counter() - started_at
+            )
+        recall_notice = ""
+    else:
+        result = "上传失败：二维码格式无效"
     if not _upload_retryable(result):
         finish_pending(pending_key)
-        await matcher.finish(recall_notice + result, reply_message=True)
+        await matcher.finish(recall_notice + result, reply_message=False)
     attempt = int(matcher.state.get("upload_qrcode_retry", 0)) + 1
     matcher.state["upload_qrcode_retry"] = attempt
     if attempt >= 3:

@@ -1,4 +1,4 @@
-"""二维码自动处理耗时统计与动态预计时间。"""
+"""二维码与成绩上传耗时统计及动态预计时间。"""
 
 from __future__ import annotations
 
@@ -94,6 +94,29 @@ def auto_qrcode_fallback_seconds(*, pc: bool, fish: bool, lxns: bool) -> int:
     if fish and lxns:
         seconds += 3
     return seconds
+
+
+def upload_workflow_key(*, fish: bool, lxns: bool) -> str:
+    if fish and lxns:
+        channel = "all"
+    elif fish:
+        channel = "fish"
+    elif lxns:
+        channel = "lxns"
+    else:
+        channel = "none"
+    return f"explicit_upload:{channel}"
+
+
+def upload_fallback_seconds(*, fish: bool, lxns: bool) -> int:
+    """无历史样本时，按上传渠道给出保守的首次预计时间。"""
+    if fish and lxns:
+        return 70
+    if lxns:
+        return 50
+    if fish:
+        return 40
+    return 10
 
 
 def format_processing_estimate(seconds: int, samples: int) -> str:
