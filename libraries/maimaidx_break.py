@@ -46,6 +46,7 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'upload_lx_cost': '2',
     'upload_all_cost': '3',
     'ticket_cost_per_multiplier': '3',
+    'ticket_unused_penalty': '20',
     'transfer_fee': '0',
     'lottery_cost': '2',
     'red_packet_expire_minutes': '10',

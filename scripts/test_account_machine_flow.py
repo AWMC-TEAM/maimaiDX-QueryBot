@@ -34,6 +34,7 @@ account = load_functions(
         "_normalize_preview",
         "_normalize_charge_payload",
         "_ticket_stock",
+        "_unused_ticket_stocks",
         "_matching_charge_task",
         "_ticket_valid_timestamp",
         "_format_ticket_status",
@@ -120,6 +121,15 @@ assert ok and tickets == [] and free_tickets == []
 assert account["_ticket_stock"](
     [{"chargeId": 2, "stock": 1}, {"ChargeId": "2", "Stock": "2"}], 2
 ) == 3
+assert account["_unused_ticket_stocks"](
+    [
+        {"chargeId": 2, "stock": 1},
+        {"chargeId": 3, "stock": 8, "validDate": "2000-01-01 00:00:00"},
+        {"chargeId": 5, "stock": 2},
+        {"chargeId": 7, "stock": 99},
+    ],
+    now=time.mktime(time.strptime("2026-01-01", "%Y-%m-%d")),
+) == {2: 1, 5: 2}
 
 ticket_text = account["_format_ticket_status"](
     {
@@ -220,6 +230,9 @@ assert "PC缓存" in upload_src
 assert "binding, _ = await _read_verified_preview(" in upload_src
 assert "before_charge = await sw_api.get_user_charge(binding.qrcode)" in upload_src
 assert "verified_stock = await _await_ticket_delivery(" in upload_src
+assert "raise UnusedTicketPenaltyError(unused_stocks)" in upload_src
+assert '"ticket_unused_penalty"' in upload_src
+assert "你智商可好？发一堆票和意为？已吃掉" in upload_src
 
 break_src = (ROOT / "command" / "mai_break.py").read_text(encoding="utf-8")
 assert "'我的awmc'" in break_src

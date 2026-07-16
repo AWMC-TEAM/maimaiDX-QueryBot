@@ -195,6 +195,33 @@ def _ticket_stock(rows: list[dict], charge_id: int) -> int:
     return total
 
 
+def _unused_ticket_stocks(
+    rows: list[dict], *, now: Optional[float] = None
+) -> dict[int, int]:
+    """返回仍未使用的 2/3/5 倍票库存。"""
+    current = float(time.time() if now is None else now)
+    valid_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and (
+            _ticket_valid_timestamp(row) is None
+            or _ticket_valid_timestamp(row) > current
+        )
+    ]
+    return {
+        charge_id: stock
+        for charge_id in (2, 3, 5)
+        if (stock := _ticket_stock(valid_rows, charge_id)) > 0
+    }
+
+
+class UnusedTicketPenaltyError(RuntimeError):
+    def __init__(self, stocks: dict[int, int]):
+        self.stocks = stocks
+        super().__init__("账号仍有未使用的倍率票")
+
+
 def _matching_charge_task(
     payload: dict, charge_id: int, mai_uid: str
 ) -> Optional[dict]:
@@ -881,6 +908,7 @@ async def _():
         f"发票 / fp <{ticket_multipliers}> / mai查票 / mai地图 / maiping\n"
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
         f"发票价格：倍率 × {ticket_unit} BREAK（例：2倍=6，3倍=9）\n"
+        "已有 2/3/5 倍票未使用时重复发票，将拦截并扣除 20 BREAK。\n"
         "成绩上传与发票各自每日首次成功免费，失败不扣费。\n"
         "发送“用户协议”阅读和确认服务条款。"
     )
@@ -1665,6 +1693,9 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
             )
             if not before_ok:
                 raise RuntimeError("发票前无法读取票券库存，已取消提交以避免错误扣费")
+            unused_stocks = _unused_ticket_stocks(before_rows + before_free_rows)
+            if unused_stocks:
+                raise UnusedTicketPenaltyError(unused_stocks)
             baseline_stock = _ticket_stock(before_rows + before_free_rows, multiple)
             previous_task_ts: Optional[str] = ""
             try:
@@ -1704,6 +1735,38 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
             key, "ticket", "success",
             f"multiple={multiple},stock={verified_stock},"
             f"charged={charge.charged},free={charge.free}",
+        )
+    except UnusedTicketPenaltyError as exc:
+        penalty = max(
+            1, int(break_db.get_config("ticket_unused_penalty", "20") or 20)
+        )
+        meta = {"unused_stocks": exc.stocks, "requested_multiple": multiple}
+        if not break_db.try_consume(
+            int(key), penalty, "ticket_unused_penalty", meta=meta
+        ):
+            balance = break_db.get_balance(int(key))
+            ref = _log(
+                key,
+                "ticket_unused_penalty",
+                "error",
+                f"penalty={penalty},balance={balance},stocks={exc.stocks}",
+            )
+            await account_ticket.finish(
+                f"检测到账号还有未使用的倍率票，本次发票已拦截。\n"
+                f"处罚需要 {penalty} BREAK，但当前仅有 {balance}。\nRef_ID: {ref}",
+                reply_message=True,
+            )
+        balance = break_db.get_balance(int(key))
+        ref = _log(
+            key,
+            "ticket_unused_penalty",
+            "success",
+            f"penalty={penalty},balance={balance},stocks={exc.stocks}",
+        )
+        await account_ticket.finish(
+            f"你智商可好？发一堆票和意为？已吃掉{penalty}个绝赞。\n"
+            f"当前余额：{balance} BREAK\nRef_ID: {ref}",
+            reply_message=True,
         )
     except Exception as exc:
         detail = _exception_detail(exc)
