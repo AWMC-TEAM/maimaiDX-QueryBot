@@ -111,6 +111,29 @@ async def _send_progress(bot: Bot, event: MessageEvent, text: str):
         pass
 
 
+async def _recall_sensitive_qrcode_message(
+    bot: Bot, event: MessageEvent, *, timeout_seconds: float = 3.0
+) -> bool:
+    """尽快撤回二维码原消息；OneBot 无响应时不得拖住后续反馈。"""
+    started_at = time.perf_counter()
+    try:
+        await asyncio.wait_for(
+            bot.delete_msg(message_id=event.message_id),
+            timeout=max(0.5, float(timeout_seconds)),
+        )
+    except Exception as exc:
+        log.warning(
+            f'[QrcodeAuto] 敏感消息撤回失败：{type(exc).__name__} '
+            f'({time.perf_counter() - started_at:.2f}s)'
+        )
+        return False
+    log.info(
+        f'[QrcodeAuto] 敏感消息已撤回 '
+        f'({time.perf_counter() - started_at:.2f}s)'
+    )
+    return True
+
+
 # ============================================================================
 # 更新PC数（绑定二维码）
 # ============================================================================
@@ -442,14 +465,14 @@ async def _process_auto_qrcode(
     source: str,
 ):
     """统一处理文字、链接及图片识别出的舞萌凭据。"""
-    # 先贴表情再撤回，避免用户长时间无反馈。
-    await react_processing(bot, event)
-    recalled = True
-    try:
-        await bot.delete_msg(message_id=event.message_id)
-    except Exception as exc:
-        recalled = False
-        log.warning(f'[QrcodeAuto] 敏感消息撤回失败：{type(exc).__name__}')
+    # 图片/文本一旦识别为敏感凭据就优先撤回；OneBot 偶发不返回时最多等 3 秒，
+    # 随后立刻告知用户手动撤回，不能让撤回动作卡住整条同步链路。
+    recalled = await _recall_sensitive_qrcode_message(bot, event)
+    if not recalled:
+        try:
+            await asyncio.wait_for(react_processing(bot, event), timeout=2.0)
+        except asyncio.TimeoutError:
+            log.warning('[QrcodeAuto] 处理表情响应超时（2.00s）')
 
     from .mai_agreement import agreement_prompt, has_user_agreed
 
