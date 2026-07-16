@@ -33,11 +33,19 @@ account = load_functions(
         "_normalize_preview",
         "_normalize_charge_payload",
         "_allowed_ticket_multipliers",
+        "auto_upload_channels",
     },
     {"Any": Any, "maiconfig": test_config},
 )
 
 assert account["_allowed_ticket_multipliers"]() == (2, 3, 5)
+assert account["auto_upload_channels"]() == (False, False)
+assert account["auto_upload_channels"](fish_token="fish") == (True, False)
+assert account["auto_upload_channels"](lxns_token="lx") == (False, True)
+assert account["auto_upload_channels"](has_lxns_oauth=True) == (False, True)
+assert account["auto_upload_channels"](
+    fish_token="fish", has_lxns_oauth=True
+) == (True, True)
 test_config.awmc_ticket_allowed_multipliers = "3，5, 7,invalid"
 assert account["_allowed_ticket_multipliers"]() == (3, 5, 7)
 test_config.awmc_ticket_allowed_multipliers = ""
@@ -120,6 +128,9 @@ assert fake_db.saved[1]["scope"] == "read_player write_player"
 
 # 落雪 OAuth 主路径失败后不得再静默回退 update_lx（会二次占用已消耗的二维码并长时间挂起）。
 upload_src = (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
+assert 'if type(matcher) is upload_fish:\n        return True, False' in upload_src
+assert 'if type(matcher) is upload_lx:\n        return False, True' in upload_src
+assert 'if type(matcher) is upload_all:\n        return True, True' in upload_src
 assert "不再回退 update_lx" in upload_src
 assert "OAuth Token 已失效且自动刷新失败" in upload_src
 assert "仅无 OAuth 时才用导入 Token" in upload_src
@@ -159,5 +170,3 @@ assert "overall_deadline" in lxns_client_src
 assert "convert_pc_records_to_lxns_scores" in lxns_client_src
 
 print("account machine flow tests: ok")
-
-

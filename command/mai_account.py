@@ -669,7 +669,7 @@ async def _():
         "mai状态 / mymai：查看详细状态，缓存失效时引导刷新二维码\n"
         "mai绑定水鱼 [Token] / maibindfish：无参数时交互引导，最多重试 3 次\n"
         "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
-        "maiu / maiul / maiua：上传水鱼 / 落雪 / 同时上传\n"
+        "maiu：仅水鱼；maiul：仅落雪；maiua：水鱼和落雪全部上传\n"
         f"发票 / fp <{ticket_multipliers}> / mai查票 / mai地图 / maiping\n"
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
         f"发票价格：倍率 × {ticket_unit} BREAK（例：2倍=6，3倍=9）\n"
@@ -1237,6 +1237,13 @@ def _upload_mode(matcher: Matcher) -> tuple[bool, bool]:
     if type(matcher) is upload_all:
         return True, True
     raise ValueError("未知上传指令")
+
+
+def auto_upload_channels(
+    *, fish_token: str = "", lxns_token: str = "", has_lxns_oauth: bool = False
+) -> tuple[bool, bool]:
+    """直接二维码默认按 maiua 处理，但只上传用户实际绑定的渠道。"""
+    return bool(fish_token), bool(lxns_token or has_lxns_oauth)
 
 
 def _upload_retryable(message: str) -> bool:

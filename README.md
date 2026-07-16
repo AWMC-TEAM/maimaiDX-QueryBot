@@ -280,7 +280,9 @@ BOTNAME=maimai
 | `mai绑定水鱼 [token]` / `maibindfish [token]` | 绑定水鱼上传 Token；无参数时提供获取链接并交互等待，最多重试 3 次 |
 | `lxbind` | 绑定落雪 OAuth，上传无需导入 Token（推荐） |
 | `mai绑定落雪 <导入token>` / `maibindlx <导入token>` | 绑定落雪导入 Token（兼容） |
-| `maiu` / `导` / `maiul` / `maiua` | 上传水鱼 / 落雪 / 同时上传 |
+| `maiu` / `导` | 仅上传水鱼 |
+| `maiul` | 仅上传落雪 |
+| `maiua` | 同时上传水鱼与落雪 |
 | `发票` / `fp <2/3/5>` / `mai查票` | 票券操作（默认倍率 × 3 BREAK，允许倍率可由 ENV 配置） |
 | `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
 | `迁移Koishi 检查/确认 <数据库>` | 超级管理员预检/导入 Koishi maiBot 数据 |
@@ -290,7 +292,8 @@ BOTNAME=maimai
 
 直接发送 `SGWCMAID...`、舞萌官方二维码链接或含二维码的图片时，Bot 会自动识别并先尝试撤回敏感消息。
 没有账号记录时自动验真绑定，已有记录时更新凭据；随后同步 PC，并按用户已绑定的水鱼 Token / 落雪
-OAuth（或兼容 Token）自动上传。普通图片和非舞萌二维码会静默忽略。账号与 BREAK 功能首次使用前需发送
+OAuth（或兼容 Token）自动上传：只绑定一边就上传一边，两边都绑定则全部上传。识别成功后会立即提示
+撤回状态与根据近期同类流程平均值计算的预计处理时间。普通图片和非舞萌二维码会静默忽略。账号与 BREAK 功能首次使用前需发送
 `用户协议`，阅读链接并完整输入网页确认词。
 
 Koishi 数据迁移时，将完整数据库放进 `MAIMAIDX_KOISHI_MIGRATION_DIR`，先执行

@@ -6,7 +6,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "libraries" / "maimaidx_break.py"
-FUNCTIONS = {"calculate_streak_bonus", "calculate_luck_break"}
+FUNCTIONS = {
+    "calculate_streak_bonus",
+    "calculate_luck_break",
+    "calculate_checkin_reward",
+}
 
 tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
 selected = [
@@ -22,6 +26,7 @@ exec(compile(ast.Module(body=selected, type_ignores=[]), str(SOURCE), "exec"), n
 
 streak_bonus = namespace["calculate_streak_bonus"]
 luck_break = namespace["calculate_luck_break"]
+checkin_reward = namespace["calculate_checkin_reward"]
 
 curve = [3, 5, 8, 12, 20]
 assert [streak_bonus(day, curve, 1) for day in range(1, 9)] == [
@@ -51,5 +56,12 @@ assert {
     95: (100, 10),
     99: (100, 10),
 }
+
+assert checkin_reward(2, 0.25, 5, 1) == 8
+assert checkin_reward(2, 0.25, 5, 2) == 15
+
+source = SOURCE.read_text(encoding="utf-8")
+assert "BONUS_GROUP_IDS = {int(BOT_QQ_GROUP), 993795066}" in source
+assert "DOUBLE_CHECKIN_GROUP_IDS = {669800745}" in source
 
 print("BREAK reward formula tests: ok")

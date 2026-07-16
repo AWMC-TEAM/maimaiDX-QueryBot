@@ -20,6 +20,12 @@ from ..libraries.maimaidx_machine_session import (
     wait_between_machine_steps,
 )
 from ..libraries.maimaidx_reaction import react_processing
+from ..libraries.maimaidx_processing_time import (
+    auto_qrcode_fallback_seconds,
+    auto_qrcode_workflow_key,
+    format_processing_estimate,
+    processing_time_estimator,
+)
 from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_playcount_fetcher import playcount_fetcher
@@ -460,19 +466,78 @@ async def _process_auto_qrcode(
         return
 
     qqid = int(billing_user_id(event))
+    from ..libraries.maimaidx_account_db import account_db
+    from .mai_account import _has_lxns_oauth, auto_upload_channels
+
+    prefix = (
+        MessageSegment.at(event.user_id) + MessageSegment.text('\n')
+        if isinstance(event, GroupMessageEvent)
+        else Message()
+    )
+    recall_status = (
+        '🔒 原凭据消息已自动撤回。'
+        if recalled
+        else '⚠️ Bot 无法撤回原凭据消息，请立即手动撤回。'
+    )
     if qqid in _waiting_qrcode:
         _waiting_qrcode.pop(qqid, None)
-
     if _qrcode_dedupe_hit(qqid, qrcode_data):
         log.info(
             f'[QrcodeAuto] 跳过重复请求 group={getattr(event, "group_id", "private")} qq={qqid} '
             f'qrcode={qrcode_log_preview(qrcode_data)}'
         )
+        await bot.send(
+            event,
+            message=prefix + MessageSegment.text(
+                '✅ 已识别舞萌二维码。\n'
+                + recall_status
+                + '\n检测到一分钟内重复提交，本次不再重复处理。'
+            ),
+        )
         return
-
     if qqid in _qrcode_auto_processing:
         log.info(f'[QrcodeAuto] 用户 {qqid} 已有进行中的同步，跳过')
+        await bot.send(
+            event,
+            message=prefix + MessageSegment.text(
+                '✅ 已识别舞萌二维码。\n'
+                + recall_status
+                + '\n你已有进行中的同步，本次不再重复排队。'
+            ),
+        )
         return
+
+    previous = account_db.get(str(qqid))
+    fish, lxns = auto_upload_channels(
+        fish_token=previous.fish_token if previous else '',
+        lxns_token=previous.lxns_token if previous else '',
+        has_lxns_oauth=_has_lxns_oauth(event),
+    )
+    pc_enabled = bool(playcount_fetcher.sdgb_available)
+    workflow_key = auto_qrcode_workflow_key(
+        pc=pc_enabled, fish=fish, lxns=lxns
+    )
+    estimate, samples = processing_time_estimator.estimate(
+        workflow_key,
+        fallback_seconds=auto_qrcode_fallback_seconds(
+            pc=pc_enabled, fish=fish, lxns=lxns
+        ),
+    )
+    recognition_lines = ['✅ 已识别舞萌二维码。']
+    recognition_lines.append(recall_status)
+    recognition_lines.append(format_processing_estimate(estimate, samples))
+    sync_action = '同步 PC' if pc_enabled else '验证并绑定账号'
+    if fish and lxns:
+        recognition_lines.append(f'将自动{sync_action}，并上传水鱼和落雪。')
+    elif fish:
+        recognition_lines.append(f'将自动{sync_action}，并上传水鱼。')
+    elif lxns:
+        recognition_lines.append(f'将自动{sync_action}，并上传落雪。')
+    else:
+        recognition_lines.append(f'将自动{sync_action}；尚未绑定上传渠道。')
+    await bot.send(
+        event, message=prefix + MessageSegment.text('\n'.join(recognition_lines))
+    )
 
     _qrcode_auto_processing.add(qqid)
     t0 = time.perf_counter()
@@ -480,9 +545,6 @@ async def _process_auto_qrcode(
         f'[QrcodeAuto] 开始同步 source={source} group={getattr(event, "group_id", "private")} qq={qqid} '
         f'qrcode={qrcode_log_preview(qrcode_data)}'
     )
-    from ..libraries.maimaidx_account_db import account_db
-
-    previous = account_db.get(str(qqid))
     had_binding = bool(previous and previous.qrcode)
     count: Optional[int] = None
     try:
@@ -493,11 +555,17 @@ async def _process_auto_qrcode(
                 else:
                     await _verify_or_auto_bind_account(qqid, qrcode_data)
 
-                from .mai_account import _has_lxns_oauth, _upload
+                from .mai_account import _upload
 
                 binding = account_db.get(str(qqid))
-                fish = bool(binding and binding.fish_token)
-                lxns = bool(binding and binding.lxns_token) or _has_lxns_oauth(event)
+                fish, lxns = auto_upload_channels(
+                    fish_token=binding.fish_token if binding else '',
+                    lxns_token=binding.lxns_token if binding else '',
+                    has_lxns_oauth=_has_lxns_oauth(event),
+                )
+                actual_workflow_key = auto_qrcode_workflow_key(
+                    pc=pc_enabled, fish=fish, lxns=lxns
+                )
                 upload_result: Optional[str] = None
                 if fish or lxns:
                     # PC/二维码校验完成后再开始查分器上传，避免同一 keychip
@@ -605,6 +673,9 @@ async def _process_auto_qrcode(
             f'[QrcodeAuto] 同步成功 source={source} '
             f'group={getattr(event, "group_id", "private")} qq={qqid} records={record_label} '
             f'({time.perf_counter() - t0:.2f}s) qrcode={qrcode_log_preview(qrcode_data)}'
+        )
+        processing_time_estimator.record(
+            actual_workflow_key, time.perf_counter() - t0
         )
         prefix = (
             MessageSegment.at(event.user_id) + MessageSegment.text('\n')

@@ -59,7 +59,8 @@ LEGACY_ECONOMY_DEFAULTS: Dict[str, str] = {
 
 CAPPED_STREAK_DEFAULT = '0,0,1,1,1,2,2'
 
-BONUS_GROUP_ID = int(BOT_QQ_GROUP)
+BONUS_GROUP_IDS = {int(BOT_QQ_GROUP), 993795066}
+DOUBLE_CHECKIN_GROUP_IDS = {669800745}
 
 _CREATE_SQL = """\
 CREATE TABLE IF NOT EXISTS break_users (
@@ -253,6 +254,21 @@ def calculate_luck_break(luck: int) -> tuple[int, int]:
     value = max(0, min(100, int(luck)))
     rounded = ((value + 5) // 10) * 10
     return rounded, rounded // 10
+
+
+def calculate_checkin_reward(
+    base: int,
+    multiplier_sum: float,
+    streak_bonus: int,
+    reward_multiplier: int = 1,
+) -> int:
+    """签到最终奖励：加算百分比与连签奖励计算完成后，再应用群倍数。"""
+    return int(
+        round(
+            (int(base) * (1 + float(multiplier_sum)) + int(streak_bonus))
+            * max(1, int(reward_multiplier))
+        )
+    )
 
 
 class BreakDatabase:
@@ -940,10 +956,15 @@ class BreakDatabase:
         bonus_labels: List[str] = []
         multiplier_sum = 0.0
 
-        if group_id == BONUS_GROUP_ID:
-            bonus = float(self.get_config('bonus_group_1072033605', '0.5'))
+        if group_id in BONUS_GROUP_IDS:
+            bonus = float(
+                self.get_config(
+                    'bonus_group_1072033605',
+                    DEFAULT_CONFIG['bonus_group_1072033605'],
+                )
+            )
             multiplier_sum += bonus
-            bonus_labels.append(f'指定群 +{int(bonus * 100)}%')
+            bonus_labels.append(f'指定群 {group_id} +{int(bonus * 100)}%')
 
         if date.today().weekday() == 3:
             bonus = float(self.get_config('bonus_thursday', '1.0'))
@@ -965,7 +986,12 @@ class BreakDatabase:
             streak = 1
 
         streak_bonus = self._streak_bonus(streak)
-        reward = int(round(base * (1 + multiplier_sum) + streak_bonus))
+        reward_multiplier = 2 if group_id in DOUBLE_CHECKIN_GROUP_IDS else 1
+        if reward_multiplier > 1:
+            bonus_labels.append(f'指定群 {group_id} ×{reward_multiplier}')
+        reward = calculate_checkin_reward(
+            base, multiplier_sum, streak_bonus, reward_multiplier
+        )
 
         now = time.time()
         self._conn.execute(
@@ -998,6 +1024,7 @@ class BreakDatabase:
                 'group_id': group_id,
                 'base': base,
                 'base_range': [base_min, base_max],
+                'reward_multiplier': reward_multiplier,
             },
         )
         self._conn.commit()

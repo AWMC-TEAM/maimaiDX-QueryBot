@@ -144,7 +144,7 @@ https://bot.example.com/ops/maimai/api/...
 | `checkin_base_max` | 2 | 签到随机上限 |
 | `streak_bonus` | `3,5,8,12,20` | 连续签到前几天的额外值 |
 | `streak_bonus_growth` | `1` | 超过上述天数后每天继续增加的值；不设总上限 |
-| `bonus_group_1072033605` | 0.25 | 指定群加成 |
+| `bonus_group_1072033605` | 0.25 | 群 1072033605、993795066 的共同签到加成 |
 | `bonus_thursday` | 0.5 | 周四加成 |
 | `bonus_group_first` | 0.5 | 群首签加成 |
 | `query_cost` | 1 | 查分 API 非首免价格 |
