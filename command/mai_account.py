@@ -1270,6 +1270,36 @@ def _upload_mode(matcher: Matcher) -> tuple[bool, bool]:
     raise ValueError("未知上传指令")
 
 
+def _upload_preflight_error(
+    event: MessageEvent, *, fish: bool, lxns: bool
+) -> Optional[str]:
+    """在发送“已受理”前完成不需要网络请求的基础校验。"""
+    if bool(getattr(maiconfig, "maimaidx_user_agreement_required", True)):
+        if not has_user_agreed(event):
+            return agreement_prompt()
+
+    binding = account_db.get(_user_key(event))
+    if not binding:
+        return _ACCOUNT_SETUP_GUIDE
+
+    has_lxns_upload = bool(binding.lxns_token or _has_lxns_oauth(event))
+    if lxns and _lxns_oauth_missing_write_scope(event):
+        return (
+            "落雪 OAuth 授权缺少 write_player 写入权限。"
+            "请让管理员在落雪 OAuth 应用中启用该权限，然后重新发送 lxbind 授权。"
+        )
+    if fish and lxns and not binding.fish_token and not has_lxns_upload:
+        return (
+            "水鱼和落雪上传均未绑定。\n"
+            "请使用「mai绑定水鱼 <Token>」，并发送「lxbind」完成落雪 OAuth。"
+        )
+    if fish and not binding.fish_token:
+        return "未绑定水鱼 Token，请使用「mai绑定水鱼 <Token>」。"
+    if lxns and not has_lxns_upload:
+        return "未绑定落雪上传，请先发送「lxbind」完成 OAuth。"
+    return None
+
+
 def auto_upload_channels(
     *, fish_token: str = "", lxns_token: str = "", has_lxns_oauth: bool = False
 ) -> tuple[bool, bool]:
@@ -1321,6 +1351,9 @@ async def _(
     matcher: Matcher, bot: Bot, event: MessageEvent, args: Message = CommandArg()
 ):
     fish, lxns = _upload_mode(matcher)
+    preflight_error = _upload_preflight_error(event, fish=fish, lxns=lxns)
+    if preflight_error:
+        await matcher.finish(preflight_error, reply_message=False)
     raw = _arg_text(args)
     # 先贴表情再撤回凭据，让用户立刻看到「已开始处理」。
     await react_processing(bot, event)
@@ -1366,6 +1399,11 @@ async def _(
     if raw.lower() in {"取消", "cancel", "q", "退出"}:
         finish_pending(pending_key)
         await matcher.finish("已取消成绩上传。", reply_message=True)
+    fish, lxns = _upload_mode(matcher)
+    preflight_error = _upload_preflight_error(event, fish=fish, lxns=lxns)
+    if preflight_error:
+        finish_pending(pending_key)
+        await matcher.finish(preflight_error, reply_message=False)
     await react_processing(bot, event)
     qrcode = extract_sgwcmaid_qrcode(raw)
     recall_notice = ""
@@ -1374,7 +1412,6 @@ async def _(
             await bot.delete_msg(message_id=event.message_id)
         except Exception:
             recall_notice = _RECALL_FAILED_NOTICE
-    fish, lxns = _upload_mode(matcher)
     if qrcode:
         timing_key, started_message = _upload_started_message(fish=fish, lxns=lxns)
         await matcher.send(recall_notice + started_message, reply_message=False)
