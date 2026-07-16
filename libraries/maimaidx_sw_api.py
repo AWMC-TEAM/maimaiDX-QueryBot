@@ -380,13 +380,15 @@ class SwApiClient:
     async def charge_ticket(self, qrcode: str, charge_id: int) -> dict:
         if self.api_mode == "public":
             raise SwApiError("AWMC 公共网关暂不支持发放票券")
-        data = await self._request(
+        # /charge 是异步入队接口。保留 code/msg 原始信封，不能把 code=0 的
+        # 文本 msg 解析成 {"raw": ...}，否则调用方无法区分入队成功与最终到账。
+        return await self._request(
             "POST",
             "/awmc/api/v1/charge",
             json_body=self._machine_body(qrcode, charge=charge_id),
             timeout=60,
+            retry_count=0,
         )
-        return self._parse_envelope(data)
 
     async def get_user_charge(self, qrcode: str) -> dict:
         if self.api_mode == "public":
