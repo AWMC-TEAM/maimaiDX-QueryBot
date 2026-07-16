@@ -1,11 +1,10 @@
 from typing import Optional
 
-from nonebot import get_bots, on_command
+from nonebot import get_bots, on_command, require
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment
 from nonebot.matcher import Matcher
 from nonebot.params import Arg, CommandArg, Depends
 from nonebot.permission import SUPERUSER
-from nonebot_plugin_apscheduler import scheduler
 
 from ..libraries.maimaidx_break import (
     DEFAULT_CONFIG,
@@ -21,6 +20,9 @@ from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..config import log, maiconfig
 from .mai_agreement import agreement_prompt, has_user_agreed
+
+require('nonebot_plugin_apscheduler')
+from nonebot_plugin_apscheduler import scheduler  # noqa: E402
 
 awmc_checkin = on_command('AWMC签到', aliases={'签到', 'awmc签到'})
 my_awmc = on_command(
