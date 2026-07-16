@@ -176,6 +176,25 @@ def _normalize_charge_payload(payload: dict) -> tuple[bool, list[dict], list[dic
     )
 
 
+def _ticket_stock(rows: list[dict], charge_id: int) -> int:
+    total = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_id = _pick(row, "chargeId", "ChargeId", "chargeID", "ChargeID")
+        try:
+            matches = int(raw_id) == int(charge_id)
+        except (TypeError, ValueError):
+            matches = False
+        if not matches:
+            continue
+        try:
+            total += max(0, int(_pick(row, "stock", "Stock", default=0) or 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 def _binding_or_error(event: MessageEvent) -> tuple[str, Optional[AccountBinding], Optional[str]]:
     key = _user_key(event)
     binding = account_db.get(key)
@@ -536,9 +555,9 @@ async def _oauth_upload_lxns_scores(
     *,
     source: str,
 ) -> dict:
-    """OAuth 个人 API：POST /api/v0/user/maimai/player/scores，15s 内必须结束。"""
+    """OAuth 个人 API：POST /api/v0/user/maimai/player/scores，默认 120s 上限。"""
     upload_timeout = float(
-        getattr(maiconfig, "awmc_b50_upload_timeout_seconds", 15.0) or 15.0
+        getattr(maiconfig, "awmc_b50_upload_timeout_seconds", 120.0) or 120.0
     )
     try:
         return await asyncio.wait_for(
@@ -610,9 +629,9 @@ async def _await_upload_success(result: dict, *, lxns: bool) -> dict:
     interval = max(
         1.0, float(getattr(maiconfig, "awmc_upload_poll_interval_seconds", 2.0))
     )
-    # 与 B50 上传同量级（默认 15s）；旧 120/600s 会表现为「上传不动」。
+    # B50 生成偶尔较慢，默认允许 120s；进度消息会提前告知用户正在处理。
     timeout = max(
-        interval, float(getattr(maiconfig, "awmc_upload_poll_timeout_seconds", 15.0))
+        interval, float(getattr(maiconfig, "awmc_upload_poll_timeout_seconds", 120.0))
     )
     deadline = time.monotonic() + timeout
     log.info(
@@ -1471,22 +1490,51 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         cost = _service_cost("ticket", multiple=multiple)
         break_db.ensure_service_affordable(int(key), "ticket", cost)
         async with machine_session():
+            try:
+                binding, _ = await _read_verified_preview(
+                    binding, binding.qrcode, save_qrcode=False
+                )
+            except Exception as exc:
+                account_db.mark_qrcode_result(key, False)
+                raise RuntimeError(
+                    "二维码已过期、失效或与当前绑定账号不一致，"
+                    "请重新发送最新 SGWCMAID 或二维码图片后再发票"
+                ) from exc
+            await wait_between_machine_steps()
             result = await sw_api.charge_ticket(binding.qrcode, multiple)
-        _ensure_business_success(result)
+            _ensure_business_success(result)
+            ticket_ok, _, _ = _normalize_charge_payload(result)
+            if not ticket_ok:
+                raise RuntimeError("发票接口未返回明确的票券发放成功状态")
+            await wait_between_machine_steps()
+            verified_charge = await sw_api.get_user_charge(binding.qrcode)
+            charge_ok, rows, free_rows = _normalize_charge_payload(verified_charge)
+            if not charge_ok:
+                raise RuntimeError("发票后查询账号票券失败，无法确认到账")
+            verified_stock = _ticket_stock(rows + free_rows, multiple)
+            if verified_stock <= 0:
+                raise RuntimeError(
+                    f"发票接口返回成功，但账号中未确认到 {multiple} 倍票；本次不扣 BREAK"
+                )
         charge = break_db.settle_service_success(
-            int(key), "ticket", cost, meta={"multiple": multiple}
+            int(key),
+            "ticket",
+            cost,
+            meta={"multiple": multiple, "verified_stock": verified_stock},
         )
         ref = _log(
             key, "ticket", "success",
-            f"multiple={multiple},charged={charge.charged},free={charge.free}",
+            f"multiple={multiple},stock={verified_stock},"
+            f"charged={charge.charged},free={charge.free}",
         )
     except Exception as exc:
-        ref = _log(key, "ticket", "error", str(exc))
+        detail = _exception_detail(exc)
+        ref = _log(key, "ticket", "error", detail)
         await account_ticket.finish(
-            f"发票失败：{exc}\nRef_ID: {ref}", reply_message=True
+            f"发票失败：{detail}\nRef_ID: {ref}", reply_message=True
         )
     await account_ticket.finish(
-        f"{multiple} 倍票请求完成：{_result_text(result)}\n"
+        f"{multiple} 倍票已发放并确认到账（当前库存 {verified_stock} 张）。\n"
         f"{_charge_text(charge)}\nRef_ID: {ref}",
         reply_message=True,
     )

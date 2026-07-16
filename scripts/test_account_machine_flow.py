@@ -32,6 +32,7 @@ account = load_functions(
         "_pick",
         "_normalize_preview",
         "_normalize_charge_payload",
+        "_ticket_stock",
         "_allowed_ticket_multipliers",
         "auto_upload_channels",
         "_exception_detail",
@@ -98,6 +99,9 @@ ok, tickets, free_tickets = account["_normalize_charge_payload"](
     {"userId": 123456, "length": 0, "userChargeList": None}
 )
 assert ok and tickets == [] and free_tickets == []
+assert account["_ticket_stock"](
+    [{"chargeId": 2, "stock": 1}, {"ChargeId": "2", "Stock": "2"}], 2
+) == 3
 
 
 class FakeLxnsDb:
@@ -162,18 +166,25 @@ sw_api_src = (ROOT / "libraries" / "maimaidx_sw_api.py").read_text(encoding="utf
 assert "awmc_user_music_timeout_seconds" in sw_api_src
 assert "awmc_b50_upload_timeout_seconds" in sw_api_src
 assert "_b50_upload_timeout" in sw_api_src
-# B50 上传（水鱼 + 落雪）统一 15s 硬超时，零重试。
+# B50 上传（水鱼 + 落雪）统一 120s 硬超时，零重试。
 assert "upload_timeout = self._b50_upload_timeout()" in sw_api_src
 assert "retry_count=0" in sw_api_src
 
 config_src = (ROOT / "config.py").read_text(encoding="utf-8")
-assert "awmc_b50_upload_timeout_seconds: float = 15.0" in config_src
-assert "awmc_upload_poll_timeout_seconds: float = 15.0" in config_src
+assert "awmc_b50_upload_timeout_seconds: float = 120.0" in config_src
+assert "awmc_upload_poll_timeout_seconds: float = 120.0" in config_src
 assert "awmc_user_music_timeout_seconds: float = 15.0" in config_src
 assert "awmc_lxns_pc_cache_seconds" in config_src
 assert "_lxns_scores_from_pc_cache" in upload_src
 assert "convert_pc_records_to_lxns_scores" in upload_src
 assert "PC缓存" in upload_src
+assert "binding, _ = await _read_verified_preview(" in upload_src
+assert "verified_charge = await sw_api.get_user_charge(binding.qrcode)" in upload_src
+assert "发票接口返回成功，但账号中未确认到" in upload_src
+
+break_src = (ROOT / "command" / "mai_break.py").read_text(encoding="utf-8")
+assert "'我的awmc'" in break_src
+assert "'awmc状态'" in break_src
 assert "def _upload_preflight_error(" in upload_src
 preflight_pos = upload_src.index("preflight_error = _upload_preflight_error(")
 accepted_pos = upload_src.index("timing_key, started_message = _upload_started_message(")

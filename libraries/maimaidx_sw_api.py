@@ -287,7 +287,7 @@ class SwApiClient:
     def _b50_upload_timeout(self) -> float:
         return max(
             1.0,
-            float(getattr(maiconfig, "awmc_b50_upload_timeout_seconds", 15.0)),
+            float(getattr(maiconfig, "awmc_b50_upload_timeout_seconds", 120.0)),
         )
 
     async def get_user_music(
@@ -328,7 +328,7 @@ class SwApiClient:
         return detail_list
 
     async def update_fish(self, qrcode: str, token: str) -> dict:
-        # 与落雪 B50 上传同为 15s 硬超时，失败快返，不做长等待重试。
+        # B50 生成偶尔较慢，允许 120s，但仍禁止自动重试造成重复提交。
         upload_timeout = self._b50_upload_timeout()
         if self.api_mode == "public":
             return await self._request(
@@ -348,7 +348,7 @@ class SwApiClient:
         return self._parse_envelope(data)
 
     async def update_lx(self, qrcode: str, import_token: str) -> dict:
-        # 兼容 Token 备选路径；严格 15s 超时 + 零重试，避免「卡住不动」。
+        # 兼容 Token 备选路径；允许 120s，但保持零重试避免重复提交。
         upload_timeout = self._b50_upload_timeout()
         if self.api_mode == "public":
             return await self._request(

@@ -20,7 +20,9 @@ from ..config import log, maiconfig
 from .mai_agreement import agreement_prompt, has_user_agreed
 
 awmc_checkin = on_command('AWMC签到', aliases={'签到', 'awmc签到'})
-my_awmc = on_command('我的AWMC', aliases={'AWMC状态', '我的账号'})
+my_awmc = on_command(
+    '我的AWMC', aliases={'我的awmc', 'AWMC状态', 'awmc状态', '我的账号'}
+)
 awmc_admin_set = on_command('设置BREAK', permission=SUPERUSER)
 awmc_admin_add = on_command('增减BREAK', permission=SUPERUSER)
 awmc_admin_config = on_command('BREAK配置', permission=SUPERUSER)

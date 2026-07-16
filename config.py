@@ -49,10 +49,10 @@ class Config(BaseModel):
     awmc_api_retry_delay_seconds: float = 1.0
     awmc_upload_poll_interval_seconds: float = 2.0
     # 水鱼 / 落雪 B50 上传（update-fish / update-lx）单次 HTTP 超时。
-    awmc_b50_upload_timeout_seconds: float = 15.0
-    # 公共网关异步上传轮询上限；与 B50 上传同量级，避免任务轮询卡很久。
-    awmc_upload_poll_timeout_seconds: float = 15.0
-    # 落雪 OAuth 拉机台全量成绩；与 B50 上传同为 15s 硬超时，超时立即失败。
+    awmc_b50_upload_timeout_seconds: float = 120.0
+    # 公共网关异步上传轮询上限；允许较慢的查分器完整处理。
+    awmc_upload_poll_timeout_seconds: float = 120.0
+    # 落雪 OAuth 拉机台全量成绩保持 15s 硬超时，超时立即失败。
     # 有新鲜 PC 缓存时优先用本地成绩，不再打这条接口。
     awmc_user_music_timeout_seconds: float = 15.0
     awmc_user_music_retry_count: int = 0
