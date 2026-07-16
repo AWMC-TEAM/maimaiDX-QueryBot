@@ -2,6 +2,7 @@ import re
 from typing import List, Optional
 
 _TAIL_PUNCT = '!！?？.。~～…·,，、:：;；-—'
+_LATIN_GUESS_RE = re.compile(r'[a-z0-9]+')
 
 
 def normalize_guess_text(text: str, strictness: int = 1) -> str:
@@ -17,6 +18,32 @@ def normalize_guess_text(text: str, strictness: int = 1) -> str:
             text,
         )
     return text
+
+
+def _is_relaxed_latin_match(guess: str, answer: str) -> bool:
+    """Allow a meaningful Latin fragment, with at most one typo, to match."""
+    if (
+        len(guess) < 3
+        or len(guess) > len(answer)
+        or not _LATIN_GUESS_RE.fullmatch(guess)
+        or not _LATIN_GUESS_RE.fullmatch(answer)
+    ):
+        return False
+    if guess in answer:
+        return True
+
+    # Compare against same-length windows so a short guess can match part of a
+    # longer title. Stop as soon as more than one character differs.
+    for start in range(len(answer) - len(guess) + 1):
+        differences = 0
+        for left, right in zip(guess, answer[start:start + len(guess)]):
+            if left != right:
+                differences += 1
+                if differences > 1:
+                    break
+        if differences <= 1:
+            return True
+    return False
 
 
 def match_guess_answer(
@@ -44,6 +71,8 @@ def match_guess_answer(
         if not norm_ans:
             continue
         if norm_guess == norm_ans:
+            return True
+        if not ans_s.isdigit() and _is_relaxed_latin_match(norm_guess, norm_ans):
             return True
         if (
             pic_difficulty is not None
