@@ -1,9 +1,11 @@
 from typing import Optional
 
-from nonebot import on_command
+from nonebot import get_bots, on_command
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment
-from nonebot.params import CommandArg, Depends
+from nonebot.matcher import Matcher
+from nonebot.params import Arg, CommandArg, Depends
 from nonebot.permission import SUPERUSER
+from nonebot_plugin_apscheduler import scheduler
 
 from ..libraries.maimaidx_break import (
     DEFAULT_CONFIG,
@@ -16,6 +18,7 @@ from ..libraries.maimaidx_break import (
 )
 from ..libraries.maimaidx_platform import billing_user_id
 from ..libraries.maimaidx_group_rating import build_forward_node
+from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..config import log, maiconfig
 from .mai_agreement import agreement_prompt, has_user_agreed
 
@@ -30,6 +33,15 @@ awmc_admin_view = on_command('查看AWMC', permission=SUPERUSER)
 awmc_help = on_command('AWMC帮助', aliases={'BREAK帮助'})
 break_transfer = on_command('转账BREAK', aliases={'BREAK转账'})
 break_lottery = on_command('BREAK抽奖', aliases={'抽奖BREAK'})
+break_red_packet_send = on_command(
+    '发红包', aliases={'发BREAK红包', 'BREAK红包', '发break红包'}
+)
+break_red_packet_claim = on_command(
+    '抢红包', aliases={'领红包', '抢BREAK红包', '抢break红包'}
+)
+break_red_packet_status = on_command(
+    '红包状态', aliases={'红包记录', '查看红包'}
+)
 
 LOTTERY_HELP = (
     '【BREAK 抽奖】\n'
@@ -66,6 +78,8 @@ async def _():
         '· 猜歌 — 每次猜对奖励 1 BREAK，无每日上限\n'
         '· 转账BREAK @用户 数量 — 转给其他用户\n'
         '· BREAK抽奖 [1-10] — 每次默认消耗 2 BREAK，发送“BREAK抽奖 帮助”看奖池\n'
+        '· 发红包 [总额] [份数] — 群内发送 BREAK 手气红包，也可按提示逐步输入\n'
+        '· 抢红包 — 领取本群当前红包；红包状态 — 查看领取明细\n'
         '· 我的AWMC — 查看账号状态与使用统计\n'
         '· 查分指令 — 每日首次实际请求查分器 API 免费，之后每次扣 1 BREAK（缓存命中不扣）\n'
         + format_analysis_pricing_help()
@@ -122,6 +136,184 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
         f'获得：{result.prize} BREAK\n当前余额：{result.balance}',
         reply_message=True,
     )
+
+
+def _red_packet_group_id(event: MessageEvent) -> Optional[int]:
+    if isinstance(event, GroupMessageEvent):
+        return int(event.group_id)
+    return None
+
+
+@break_red_packet_send.handle()
+async def _(
+    matcher: Matcher,
+    event: MessageEvent,
+    message: Message = CommandArg(),
+):
+    await _require_break_agreement(break_red_packet_send, event)
+    if _red_packet_group_id(event) is None:
+        await break_red_packet_send.finish('BREAK 红包只能在群聊中发送。')
+    raw = message.extract_plain_text().strip()
+    if raw.lower() in {'帮助', '说明', 'help', '?'}:
+        await break_red_packet_send.finish(
+            '【BREAK 手气红包】\n'
+            '用法：发红包 总额 份数\n'
+            '例：发红包 20 5\n'
+            '也可以只发送“发红包”，Bot 会依次询问总额和份数。\n'
+            '群友发送“抢红包”领取，每人限领一次；10 分钟后未领金额自动退回。\n'
+            'BREAK 是 Bot 内部积分，不具有现金价值。',
+            reply_message=True,
+        )
+    parts = raw.split()
+    if len(parts) > 2:
+        await break_red_packet_send.finish(
+            '参数太多啦。用法：发红包 总额 份数', reply_message=True
+        )
+    pending_key = session_key('break_red_packet', event)
+    track_event(pending_key, event)
+    if parts:
+        matcher.set_arg('red_packet_total', Message(parts[0]))
+    if len(parts) == 2:
+        matcher.set_arg('red_packet_count', Message(parts[1]))
+
+
+@break_red_packet_send.got(
+    'red_packet_total', prompt='请输入红包总额（正整数 BREAK），发送“取消”可退出。'
+)
+async def _(
+    matcher: Matcher,
+    event: MessageEvent,
+    total_message: Message = Arg('red_packet_total'),
+):
+    pending_key = session_key('break_red_packet', event)
+    raw = total_message.extract_plain_text().strip()
+    if raw.lower() in {'取消', 'cancel', 'q', '退出'}:
+        finish_pending(pending_key)
+        await break_red_packet_send.finish('已取消发送红包。')
+    if not raw.isdigit() or int(raw) <= 0:
+        track_event(pending_key, event)
+        await break_red_packet_send.reject(
+            '红包总额必须是正整数，请重新输入；发送“取消”可退出。'
+        )
+    matcher.state['red_packet_total_value'] = int(raw)
+
+
+@break_red_packet_send.got(
+    'red_packet_count', prompt='请输入红包份数（正整数），发送“取消”可退出。'
+)
+async def _(
+    matcher: Matcher,
+    event: MessageEvent,
+    count_message: Message = Arg('red_packet_count'),
+):
+    pending_key = session_key('break_red_packet', event)
+    raw = count_message.extract_plain_text().strip()
+    if raw.lower() in {'取消', 'cancel', 'q', '退出'}:
+        finish_pending(pending_key)
+        await break_red_packet_send.finish('已取消发送红包。')
+    if not raw.isdigit() or int(raw) <= 0:
+        track_event(pending_key, event)
+        await break_red_packet_send.reject(
+            '红包份数必须是正整数，请重新输入；发送“取消”可退出。'
+        )
+    group_id = _red_packet_group_id(event)
+    if group_id is None:
+        finish_pending(pending_key)
+        await break_red_packet_send.finish('BREAK 红包只能在群聊中发送。')
+    try:
+        result = break_db.create_red_packet(
+            int(billing_user_id(event)),
+            group_id,
+            int(matcher.state['red_packet_total_value']),
+            int(raw),
+        )
+    except Exception as exc:
+        finish_pending(pending_key)
+        await break_red_packet_send.finish(f'红包发送失败：{exc}', reply_message=True)
+    finish_pending(pending_key)
+    expire_minutes = max(
+        1,
+        int(float(break_db.get_config('red_packet_expire_minutes', '10'))),
+    )
+    await break_red_packet_send.finish(
+        '🧧 BREAK 手气红包来啦！\n'
+        f'总额：{result.total_amount} BREAK · 共 {result.total_count} 份\n'
+        f'红包编号：{result.packet_id}\n'
+        '发送“抢红包”即可领取，每人限领一次。\n'
+        f'{expire_minutes} 分钟后未领取的余额会自动退回。',
+        reply_message=True,
+    )
+
+
+@break_red_packet_claim.handle()
+async def _(event: MessageEvent):
+    await _require_break_agreement(break_red_packet_claim, event)
+    group_id = _red_packet_group_id(event)
+    if group_id is None:
+        await break_red_packet_claim.finish('BREAK 红包只能在群聊中领取。')
+    try:
+        result = break_db.claim_red_packet(int(billing_user_id(event)), group_id)
+    except Exception as exc:
+        await break_red_packet_claim.finish(f'领取失败：{exc}', reply_message=True)
+    tail = '\n🎉 红包已经被领完啦！' if result.completed else (
+        f'\n剩余 {result.remaining_count} 份，共 {result.remaining_amount} BREAK。'
+    )
+    await break_red_packet_claim.finish(
+        f'🧧 领取成功：{result.amount} BREAK\n'
+        f'当前余额：{result.recipient_balance} BREAK{tail}',
+        reply_message=True,
+    )
+
+
+@break_red_packet_status.handle()
+async def _(event: MessageEvent):
+    group_id = _red_packet_group_id(event)
+    if group_id is None:
+        await break_red_packet_status.finish('红包状态只能在群聊中查看。')
+    status = break_db.get_red_packet_status(group_id)
+    if status is None:
+        await break_red_packet_status.finish('本群还没有红包记录。', reply_message=True)
+    labels = {'active': '领取中', 'completed': '已领完', 'expired': '已过期'}
+    claim_lines = [f'· {qqid}：{amount} BREAK' for qqid, amount in status.claims]
+    detail = '\n'.join(claim_lines) if claim_lines else '· 暂无人领取'
+    await break_red_packet_status.finish(
+        f'【红包 {status.packet_id} · {labels.get(status.status, status.status)}】\n'
+        f'发送者：{status.sender_qqid}\n'
+        f'总额 {status.total_amount} BREAK · {status.total_count} 份\n'
+        f'剩余 {status.remaining_amount} BREAK · {status.remaining_count} 份\n'
+        f'领取明细：\n{detail}',
+        reply_message=True,
+    )
+
+
+@scheduler.scheduled_job(
+    'interval', minutes=1, id='break_red_packet_expiry', replace_existing=True
+)
+async def _expire_break_red_packets() -> None:
+    refunds = break_db.expire_red_packets()
+    if not refunds:
+        return
+    bots = get_bots()
+    bot = next(iter(bots.values()), None)
+    for item in refunds:
+        log.info(
+            f'[BREAK红包] {item.packet_id} 已过期，退回 {item.refund} BREAK '
+            f'to={item.sender_qqid}'
+        )
+        if bot is None:
+            continue
+        try:
+            await bot.send_group_msg(
+                group_id=item.group_id,
+                message=(
+                    f'🧧 红包 {item.packet_id} 已过期，'
+                    f'剩余 {item.refund} BREAK 已退回发送者。'
+                ),
+            )
+        except Exception as exc:
+            log.warning(
+                f'[BREAK红包] 过期通知发送失败：{type(exc).__name__}: {exc}'
+            )
 
 
 @awmc_checkin.handle()
