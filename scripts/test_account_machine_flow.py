@@ -2,6 +2,7 @@
 
 import ast
 import asyncio
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -33,6 +34,9 @@ account = load_functions(
         "_normalize_preview",
         "_normalize_charge_payload",
         "_ticket_stock",
+        "_matching_charge_task",
+        "_ticket_valid_timestamp",
+        "_format_ticket_status",
         "_allowed_ticket_multipliers",
         "auto_upload_channels",
         "_exception_detail",
@@ -40,8 +44,10 @@ account = load_functions(
     },
     {
         "Any": Any,
+        "Optional": Optional,
         "maiconfig": test_config,
         "asyncio": asyncio,
+        "time": time,
         "httpx": __import__("httpx"),
         "redact": lambda value: value,
     },
@@ -93,6 +99,18 @@ ok, tickets, free_tickets = account["_normalize_charge_payload"](
 assert ok
 assert tickets[0]["chargeId"] == 2
 assert free_tickets[0]["stock"] == 2
+assert account["_matching_charge_task"](
+    {
+        "code": 0,
+        "tasks": [
+            {"chargeId": 2, "userId": "123", "status": "pending", "ts": "1"},
+            {"chargeId": 2, "userId": "123", "status": "done", "ts": "2"},
+            {"chargeId": 3, "userId": "123", "status": "processing", "ts": "3"},
+        ],
+    },
+    2,
+    "123",
+)["status"] == "done"
 
 # 新接口无票时列表可能为 null，但 userId + list 字段仍代表有效响应。
 ok, tickets, free_tickets = account["_normalize_charge_payload"](
@@ -102,6 +120,27 @@ assert ok and tickets == [] and free_tickets == []
 assert account["_ticket_stock"](
     [{"chargeId": 2, "stock": 1}, {"ChargeId": "2", "Stock": "2"}], 2
 ) == 3
+
+ticket_text = account["_format_ticket_status"](
+    {
+        "userId": 987654321,
+        "qrcode": "SGWCMAID-SECRET",
+        "returnCode": 1,
+        "userChargeList": [
+            {"chargeId": 2, "stock": 1, "validDate": "2099-01-02 03:04:05"},
+            {"chargeId": 3, "stock": 0},
+        ],
+        "userFreeChargeList": [{"chargeId": 1, "stock": 2}],
+    },
+    now=time.mktime(time.strptime("2099-01-01", "%Y-%m-%d")),
+)
+assert "有效票券共 3 张" in ticket_text
+assert "2 倍票 × 1" in ticket_text and "免费票券 × 2" in ticket_text
+assert "987654321" not in ticket_text and "userId" not in ticket_text
+assert "SGWCMAID" not in ticket_text and "qrcode" not in ticket_text
+assert account["_format_ticket_status"](
+    {"userId": 123456, "length": 0, "userChargeList": None}
+) == "🎫 舞萌票券状态\n当前没有有效票券。"
 
 
 class FakeLxnsDb:
@@ -179,8 +218,8 @@ assert "_lxns_scores_from_pc_cache" in upload_src
 assert "convert_pc_records_to_lxns_scores" in upload_src
 assert "PC缓存" in upload_src
 assert "binding, _ = await _read_verified_preview(" in upload_src
-assert "verified_charge = await sw_api.get_user_charge(binding.qrcode)" in upload_src
-assert "发票接口返回成功，但账号中未确认到" in upload_src
+assert "before_charge = await sw_api.get_user_charge(binding.qrcode)" in upload_src
+assert "verified_stock = await _await_ticket_delivery(" in upload_src
 
 break_src = (ROOT / "command" / "mai_break.py").read_text(encoding="utf-8")
 assert "'我的awmc'" in break_src

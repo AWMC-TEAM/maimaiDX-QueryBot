@@ -39,7 +39,10 @@ _TOKEN_ASSIGN_RE = re.compile(
     r"(?i)(token|secret|password|qrcode|qr_text|sgid)=([^&\s]+)"
 )
 _ARCADE_UID_RE = re.compile(
-    r"(?i)(mai_uid|arcade_uid|userId|UserID)\s*[:=]\s*[0-9]+"
+    r'''(?ix)
+    (["']?(?:mai_uid|arcade_uid|userId|UserID)["']?\s*[:=]\s*)
+    ["']?[0-9]+["']?
+    '''
 )
 
 
@@ -70,7 +73,7 @@ def redact(value: Any, *, depth: int = 0) -> Any:
     text = _BARE_MAID_RE.sub("MAID[REDACTED]", text)
     text = _BEARER_RE.sub("Bearer [REDACTED]", text)
     text = _TOKEN_ASSIGN_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
-    text = _ARCADE_UID_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
+    text = _ARCADE_UID_RE.sub(lambda m: f"{m.group(1)}[REDACTED]", text)
     return text[:4000]
 
 

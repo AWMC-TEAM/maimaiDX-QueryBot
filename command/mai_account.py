@@ -195,6 +195,164 @@ def _ticket_stock(rows: list[dict], charge_id: int) -> int:
     return total
 
 
+def _matching_charge_task(
+    payload: dict, charge_id: int, mai_uid: str
+) -> Optional[dict]:
+    """从服务端发票队列中找当前账号、当前倍率最新的一笔任务。"""
+    tasks = payload.get("tasks") if isinstance(payload, dict) else None
+    if not isinstance(tasks, list):
+        return None
+    matches = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        try:
+            same_charge = int(_pick(task, "chargeId", "ChargeId")) == int(charge_id)
+        except (TypeError, ValueError):
+            same_charge = False
+        task_uid = str(_pick(task, "userId", "UserID", default="") or "")
+        if same_charge and task_uid == str(mai_uid):
+            matches.append(task)
+    return max(matches, key=lambda task: str(task.get("ts") or ""), default=None)
+
+
+async def _await_ticket_delivery(
+    qrcode: str,
+    charge_id: int,
+    mai_uid: str,
+    baseline_stock: int,
+    previous_task_ts: Optional[str] = "",
+) -> int:
+    """轮询队列及真实票券库存；只有库存增加才算发放成功。"""
+    interval = max(
+        1.0, float(getattr(maiconfig, "awmc_ticket_poll_interval_seconds", 3.0))
+    )
+    timeout = max(
+        interval,
+        float(getattr(maiconfig, "awmc_ticket_poll_timeout_seconds", 600.0)),
+    )
+    deadline = time.monotonic() + timeout
+    saw_active_task = False
+    last_task_status = ""
+    last_query_error = ""
+    log.info(
+        f"[ticket] 开始确认到账 uid={mai_uid} charge={charge_id} "
+        f"baseline={baseline_stock} timeout={timeout:.0f}s interval={interval:.0f}s"
+    )
+    while time.monotonic() < deadline:
+        await asyncio.sleep(interval)
+        # 库存增加是唯一的最终成功条件；即使队列记录已消失或查询暂时失败，
+        # 只要账号实际到账就可安全结算。
+        try:
+            current = await sw_api.get_user_charge(qrcode)
+            charge_ok, rows, free_rows = _normalize_charge_payload(current)
+            if charge_ok:
+                stock = _ticket_stock(rows + free_rows, charge_id)
+                if stock > baseline_stock:
+                    log.info(
+                        f"[ticket] 已确认到账 uid={mai_uid} charge={charge_id} "
+                        f"stock={stock} baseline={baseline_stock}"
+                    )
+                    return stock
+        except Exception as exc:
+            last_query_error = _exception_detail(exc)
+            log.warning(f"[ticket] 查询票券库存失败，将继续轮询：{last_query_error}")
+
+        try:
+            queue = await sw_api.get_charge_queue()
+            _ensure_business_success(queue)
+            task = _matching_charge_task(queue, charge_id, mai_uid)
+            if (
+                task is not None
+                and previous_task_ts is not None
+                and str(task.get("ts") or "") == previous_task_ts
+            ):
+                # 提交前已经存在的同账号同倍率历史任务，不属于本次请求。
+                task = None
+            if task is not None:
+                last_task_status = str(task.get("status") or "").lower()
+                if last_task_status in ("pending", "processing"):
+                    saw_active_task = True
+                elif last_task_status == "failed" and (
+                    previous_task_ts is not None or saw_active_task
+                ):
+                    raise RuntimeError(str(task.get("msg") or "发票充值队列任务失败"))
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            last_query_error = _exception_detail(exc)
+            log.warning(f"[ticket] 查询发票队列失败，继续复核库存：{last_query_error}")
+
+    queue_hint = f"，队列末次状态 {last_task_status}" if last_task_status else ""
+    active_hint = "，曾检测到任务处理中" if saw_active_task else ""
+    error_hint = f"，末次查询错误：{last_query_error}" if last_query_error else ""
+    raise RuntimeError(
+        f"发票轮询超时（{timeout:.0f} 秒），未确认票券库存增加"
+        f"{queue_hint}{active_hint}{error_hint}；本次不扣 BREAK"
+    )
+
+
+def _ticket_valid_timestamp(row: dict) -> Optional[float]:
+    raw = _pick(row, "validDate", "ValidDate", "validUntil", "ValidUntil")
+    if raw in (None, ""):
+        return None
+    normalized = str(raw).strip().replace(" ", "T")[:19]
+    try:
+        return time.mktime(time.strptime(normalized, "%Y-%m-%dT%H:%M:%S"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_ticket_status(payload: dict, *, now: Optional[float] = None) -> str:
+    """只用票种、库存和有效期生成用户回复，绝不回显上游账号字段。"""
+    ok, rows, free_rows = _normalize_charge_payload(payload)
+    if not ok:
+        raise RuntimeError("上游服务未返回有效的票券状态")
+    current = float(time.time() if now is None else now)
+
+    def collect(source: list[dict], *, free: bool) -> tuple[list[str], int]:
+        lines: list[str] = []
+        total = 0
+        for row in source:
+            if not isinstance(row, dict):
+                continue
+            try:
+                stock = max(0, int(_pick(row, "stock", "Stock", default=0) or 0))
+            except (TypeError, ValueError):
+                stock = 0
+            if stock <= 0:
+                continue
+            valid_ts = _ticket_valid_timestamp(row)
+            if valid_ts is not None and valid_ts <= current:
+                continue
+            total += stock
+            raw_id = _pick(row, "chargeId", "ChargeId", "chargeID", "ChargeID")
+            try:
+                charge_id = int(raw_id)
+            except (TypeError, ValueError):
+                charge_id = 0
+            if free:
+                label = f"免费 {charge_id} 倍票" if charge_id > 1 else "免费票券"
+            else:
+                label = f"{charge_id} 倍票" if charge_id > 0 else "倍率票券"
+            line = f"· {label} × {stock}"
+            if valid_ts is not None:
+                line += time.strftime("\n  有效期至：%Y-%m-%d %H:%M", time.localtime(valid_ts))
+            lines.append(line)
+        return lines, total
+
+    paid_lines, paid_total = collect(rows, free=False)
+    free_lines, free_total = collect(free_rows, free=True)
+    if not paid_lines and not free_lines:
+        return "🎫 舞萌票券状态\n当前没有有效票券。"
+    output = [f"🎫 舞萌票券状态\n有效票券共 {paid_total + free_total} 张"]
+    if paid_lines:
+        output.append("【倍率票】\n" + "\n".join(paid_lines))
+    if free_lines:
+        output.append("【免费票】\n" + "\n".join(free_lines))
+    return "\n\n".join(output)
+
+
 def _binding_or_error(event: MessageEvent) -> tuple[str, Optional[AccountBinding], Optional[str]]:
     key = _user_key(event)
     binding = account_db.get(key)
@@ -1501,26 +1659,46 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
                     "请重新发送最新 SGWCMAID 或二维码图片后再发票"
                 ) from exc
             await wait_between_machine_steps()
+            before_charge = await sw_api.get_user_charge(binding.qrcode)
+            before_ok, before_rows, before_free_rows = _normalize_charge_payload(
+                before_charge
+            )
+            if not before_ok:
+                raise RuntimeError("发票前无法读取票券库存，已取消提交以避免错误扣费")
+            baseline_stock = _ticket_stock(before_rows + before_free_rows, multiple)
+            previous_task_ts: Optional[str] = ""
+            try:
+                before_queue = await sw_api.get_charge_queue()
+                previous_task = _matching_charge_task(
+                    before_queue, multiple, binding.mai_uid
+                )
+                if previous_task is not None:
+                    previous_task_ts = str(previous_task.get("ts") or "")
+            except Exception as exc:
+                previous_task_ts = None
+                log.warning(
+                    f"[ticket] 提交前队列快照失败，将仅依赖库存确认："
+                    f"{_exception_detail(exc)}"
+                )
+            await wait_between_machine_steps()
             result = await sw_api.charge_ticket(binding.qrcode, multiple)
             _ensure_business_success(result)
-            ticket_ok, _, _ = _normalize_charge_payload(result)
-            if not ticket_ok:
-                raise RuntimeError("发票接口未返回明确的票券发放成功状态")
-            await wait_between_machine_steps()
-            verified_charge = await sw_api.get_user_charge(binding.qrcode)
-            charge_ok, rows, free_rows = _normalize_charge_payload(verified_charge)
-            if not charge_ok:
-                raise RuntimeError("发票后查询账号票券失败，无法确认到账")
-            verified_stock = _ticket_stock(rows + free_rows, multiple)
-            if verified_stock <= 0:
-                raise RuntimeError(
-                    f"发票接口返回成功，但账号中未确认到 {multiple} 倍票；本次不扣 BREAK"
-                )
+            verified_stock = await _await_ticket_delivery(
+                binding.qrcode,
+                multiple,
+                binding.mai_uid,
+                baseline_stock,
+                previous_task_ts,
+            )
         charge = break_db.settle_service_success(
             int(key),
             "ticket",
             cost,
-            meta={"multiple": multiple, "verified_stock": verified_stock},
+            meta={
+                "multiple": multiple,
+                "baseline_stock": baseline_stock,
+                "verified_stock": verified_stock,
+            },
         )
         ref = _log(
             key, "ticket", "success",
@@ -1542,17 +1720,20 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
 
 @account_ticket_status.handle()
 async def _(event: MessageEvent):
-    _, binding, error = _binding_or_error(event)
+    key, binding, error = _binding_or_error(event)
     if error or binding is None:
         await account_ticket_status.finish(error or "账号未绑定")
     try:
         async with machine_session():
             result = await sw_api.get_user_charge(binding.qrcode)
+        text = _format_ticket_status(result)
     except Exception as exc:
-        await account_ticket_status.finish(f"查询失败：{exc}")
-    await account_ticket_status.finish(
-        "票券状态：\n" + json.dumps(result, ensure_ascii=False, indent=2)[:3000]
-    )
+        detail = _exception_detail(exc)
+        ref = _log(key, "ticket_status", "error", detail)
+        await account_ticket_status.finish(
+            f"票券查询失败：{detail}\nRef_ID: {ref}", reply_message=True
+        )
+    await account_ticket_status.finish(text, reply_message=True)
 
 
 @account_region.handle()
