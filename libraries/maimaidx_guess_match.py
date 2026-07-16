@@ -21,7 +21,7 @@ def normalize_guess_text(text: str, strictness: int = 1) -> str:
 
 
 def _is_relaxed_latin_match(guess: str, answer: str) -> bool:
-    """Allow a meaningful Latin fragment, with at most one typo, to match."""
+    """Allow a Latin fragment; only a 3-char fragment may contain one typo."""
     if (
         len(guess) < 3
         or len(guess) > len(answer)
@@ -31,6 +31,12 @@ def _is_relaxed_latin_match(guess: str, answer: str) -> bool:
         return False
     if guess in answer:
         return True
+
+    # Keep typo tolerance narrowly scoped to the requested short-fragment case
+    # (for example, "man" matching the "men" in "goodmen"). Longer guesses
+    # must be exact so misspelled full titles do not become valid answers.
+    if len(guess) != 3:
+        return False
 
     # Compare against same-length windows so a short guess can match part of a
     # longer title. Stop as soon as more than one character differs.
