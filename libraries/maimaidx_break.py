@@ -12,6 +12,7 @@ import json
 import random
 import sqlite3
 import time
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -47,6 +48,9 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'ticket_cost_per_multiplier': '3',
     'transfer_fee': '0',
     'lottery_cost': '2',
+    'red_packet_expire_minutes': '10',
+    'red_packet_max_total': '10000',
+    'red_packet_max_count': '100',
 }
 
 LEGACY_ECONOMY_DEFAULTS: Dict[str, str] = {
@@ -131,6 +135,29 @@ CREATE TABLE IF NOT EXISTS break_daily_reward (
     amount      INTEGER NOT NULL,
     created_at  REAL NOT NULL,
     PRIMARY KEY (qqid, date, reward_key)
+);
+CREATE TABLE IF NOT EXISTS break_red_packet (
+    id                TEXT PRIMARY KEY,
+    group_id          INTEGER NOT NULL,
+    sender_qqid       INTEGER NOT NULL,
+    total_amount      INTEGER NOT NULL,
+    total_count       INTEGER NOT NULL,
+    remaining_amount  INTEGER NOT NULL,
+    remaining_count   INTEGER NOT NULL,
+    status            TEXT NOT NULL,
+    created_at        REAL NOT NULL,
+    expires_at        REAL NOT NULL,
+    finished_at       REAL
+);
+CREATE INDEX IF NOT EXISTS idx_break_red_packet_group
+    ON break_red_packet(group_id, status, created_at DESC);
+CREATE TABLE IF NOT EXISTS break_red_packet_claim (
+    packet_id  TEXT NOT NULL,
+    qqid       INTEGER NOT NULL,
+    amount     INTEGER NOT NULL,
+    claimed_at REAL NOT NULL,
+    PRIMARY KEY (packet_id, qqid),
+    FOREIGN KEY (packet_id) REFERENCES break_red_packet(id)
 );
 """
 
@@ -230,6 +257,46 @@ class DailyRewardResult:
     awarded: bool
 
 
+@dataclass
+class RedPacketCreateResult:
+    packet_id: str
+    total_amount: int
+    total_count: int
+    expires_at: float
+    sender_balance: int
+
+
+@dataclass
+class RedPacketClaimResult:
+    packet_id: str
+    amount: int
+    remaining_amount: int
+    remaining_count: int
+    recipient_balance: int
+    completed: bool
+
+
+@dataclass
+class RedPacketRefundResult:
+    packet_id: str
+    group_id: int
+    sender_qqid: int
+    refund: int
+
+
+@dataclass
+class RedPacketStatus:
+    packet_id: str
+    sender_qqid: int
+    total_amount: int
+    total_count: int
+    remaining_amount: int
+    remaining_count: int
+    status: str
+    expires_at: float
+    claims: List[tuple[int, int]] = field(default_factory=list)
+
+
 def _parse_config_int(raw: str, default: int) -> int:
     try:
         return int(float(raw))
@@ -254,6 +321,17 @@ def calculate_luck_break(luck: int) -> tuple[int, int]:
     value = max(0, min(100, int(luck)))
     rounded = ((value + 5) // 10) * 10
     return rounded, rounded // 10
+
+
+def calculate_red_packet_claim(remaining_amount: int, remaining_count: int) -> int:
+    """生成手气红包金额，并保证其余每份至少 1 BREAK。"""
+    remaining_amount = int(remaining_amount)
+    remaining_count = int(remaining_count)
+    if remaining_count <= 1:
+        return remaining_amount
+    max_available = remaining_amount - (remaining_count - 1)
+    average_twice = max(1, remaining_amount * 2 // remaining_count)
+    return random.randint(1, min(max_available, average_twice))
 
 
 def calculate_checkin_reward(
@@ -630,6 +708,255 @@ class BreakDatabase:
             self._append_log(recipient, amount, 'transfer_in', meta={'from': sender, 'amount': amount})
             self._conn.commit()
             return TransferResult(sender_balance-total, self.get_balance(recipient), amount, fee)
+
+    def expire_red_packets(self, now: Optional[float] = None) -> List[RedPacketRefundResult]:
+        """关闭已过期红包并将未领取余额原路退回。"""
+        current = float(now if now is not None else time.time())
+        refunds: List[RedPacketRefundResult] = []
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT * FROM break_red_packet
+                   WHERE status='active' AND expires_at<=?""",
+                (current,),
+            ).fetchall()
+            for row in rows:
+                refund = int(row['remaining_amount'])
+                sender = int(row['sender_qqid'])
+                packet_id = str(row['id'])
+                if refund > 0:
+                    self._ensure_user(sender)
+                    self._conn.execute(
+                        'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
+                        (refund, current, sender),
+                    )
+                    created_date = datetime.fromtimestamp(float(row['created_at'])).date().isoformat()
+                    self._conn.execute(
+                        """UPDATE break_daily_usage
+                           SET break_spent=MAX(0, break_spent-?)
+                           WHERE qqid=? AND date=?""",
+                        (refund, sender, created_date),
+                    )
+                    self._append_log(
+                        sender,
+                        refund,
+                        'red_packet_refund',
+                        meta={'packet_id': packet_id, 'group_id': int(row['group_id'])},
+                    )
+                self._conn.execute(
+                    """UPDATE break_red_packet
+                       SET status='expired', finished_at=? WHERE id=? AND status='active'""",
+                    (current, packet_id),
+                )
+                refunds.append(
+                    RedPacketRefundResult(
+                        packet_id, int(row['group_id']), sender, refund
+                    )
+                )
+            self._conn.commit()
+        return refunds
+
+    def create_red_packet(
+        self,
+        sender: int,
+        group_id: int,
+        total_amount: int,
+        total_count: int,
+    ) -> RedPacketCreateResult:
+        total_amount, total_count = int(total_amount), int(total_count)
+        if total_amount <= 0 or total_count <= 0:
+            raise ValueError('红包总额和份数必须大于 0')
+        if total_amount < total_count:
+            raise ValueError('红包总额不能小于份数（每份至少 1 BREAK）')
+        max_total = max(
+            1, _parse_config_int(self.get_config('red_packet_max_total', '10000'), 10000)
+        )
+        max_count = max(
+            1, _parse_config_int(self.get_config('red_packet_max_count', '100'), 100)
+        )
+        if total_amount > max_total:
+            raise ValueError(f'单个红包最多 {max_total} BREAK')
+        if total_count > max_count:
+            raise ValueError(f'单个红包最多 {max_count} 份')
+
+        self.expire_red_packets()
+        self._ensure_user(sender)
+        self._ensure_daily(sender)
+        now = time.time()
+        expire_minutes = max(
+            1,
+            _parse_config_int(
+                self.get_config('red_packet_expire_minutes', '10'), 10
+            ),
+        )
+        expires_at = now + expire_minutes * 60
+        packet_id = uuid.uuid4().hex[:8].upper()
+        with self._lock:
+            active = self._conn.execute(
+                """SELECT id FROM break_red_packet
+                   WHERE group_id=? AND status='active' LIMIT 1""",
+                (int(group_id),),
+            ).fetchone()
+            if active:
+                raise ValueError('本群还有一个未结束的红包，请抢完或等待过期后再发')
+            row = self._conn.execute(
+                'SELECT balance FROM break_users WHERE qqid=?', (sender,)
+            ).fetchone()
+            balance = int(row['balance']) if row else 0
+            if balance < total_amount:
+                raise BreakInsufficientError(total_amount, balance, qqid=sender)
+            try:
+                self._conn.execute(
+                    'UPDATE break_users SET balance=balance-?, updated_at=? WHERE qqid=?',
+                    (total_amount, now, sender),
+                )
+                self._conn.execute(
+                    """UPDATE break_daily_usage SET break_spent=break_spent+?
+                       WHERE qqid=? AND date=?""",
+                    (total_amount, sender, self._today()),
+                )
+                self._conn.execute(
+                    """INSERT INTO break_red_packet
+                       (id, group_id, sender_qqid, total_amount, total_count,
+                        remaining_amount, remaining_count, status, created_at, expires_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
+                    (
+                        packet_id,
+                        int(group_id),
+                        sender,
+                        total_amount,
+                        total_count,
+                        total_amount,
+                        total_count,
+                        now,
+                        expires_at,
+                    ),
+                )
+                self._append_log(
+                    sender,
+                    -total_amount,
+                    'red_packet_create',
+                    meta={
+                        'packet_id': packet_id,
+                        'group_id': int(group_id),
+                        'count': total_count,
+                    },
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return RedPacketCreateResult(
+            packet_id, total_amount, total_count, expires_at, balance - total_amount
+        )
+
+    def claim_red_packet(self, qqid: int, group_id: int) -> RedPacketClaimResult:
+        self.expire_red_packets()
+        self._ensure_user(qqid)
+        self._ensure_daily(qqid)
+        now = time.time()
+        with self._lock:
+            packet = self._conn.execute(
+                """SELECT * FROM break_red_packet
+                   WHERE group_id=? AND status='active'
+                   ORDER BY created_at DESC LIMIT 1""",
+                (int(group_id),),
+            ).fetchone()
+            if not packet:
+                raise ValueError('本群当前没有可以领取的红包')
+            packet_id = str(packet['id'])
+            if int(packet['sender_qqid']) == int(qqid):
+                raise ValueError('不能领取自己发出的红包')
+            claimed = self._conn.execute(
+                'SELECT 1 FROM break_red_packet_claim WHERE packet_id=? AND qqid=?',
+                (packet_id, qqid),
+            ).fetchone()
+            if claimed:
+                raise ValueError('你已经领取过这个红包了')
+            remaining_amount = int(packet['remaining_amount'])
+            remaining_count = int(packet['remaining_count'])
+            amount = calculate_red_packet_claim(remaining_amount, remaining_count)
+            after_amount = remaining_amount - amount
+            after_count = remaining_count - 1
+            completed = after_count == 0
+            status = 'completed' if completed else 'active'
+            try:
+                self._conn.execute(
+                    """INSERT INTO break_red_packet_claim
+                       (packet_id, qqid, amount, claimed_at) VALUES (?, ?, ?, ?)""",
+                    (packet_id, qqid, amount, now),
+                )
+                self._conn.execute(
+                    """UPDATE break_red_packet SET remaining_amount=?, remaining_count=?,
+                       status=?, finished_at=? WHERE id=? AND status='active'""",
+                    (
+                        after_amount,
+                        after_count,
+                        status,
+                        now if completed else None,
+                        packet_id,
+                    ),
+                )
+                self._conn.execute(
+                    'UPDATE break_users SET balance=balance+?, updated_at=? WHERE qqid=?',
+                    (amount, now, qqid),
+                )
+                self._conn.execute(
+                    """UPDATE break_daily_usage SET break_gained=break_gained+?
+                       WHERE qqid=? AND date=?""",
+                    (amount, qqid, self._today()),
+                )
+                self._append_log(
+                    qqid,
+                    amount,
+                    'red_packet_claim',
+                    meta={
+                        'packet_id': packet_id,
+                        'group_id': int(group_id),
+                        'sender': int(packet['sender_qqid']),
+                    },
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            balance_row = self._conn.execute(
+                'SELECT balance FROM break_users WHERE qqid=?', (qqid,)
+            ).fetchone()
+        return RedPacketClaimResult(
+            packet_id,
+            amount,
+            after_amount,
+            after_count,
+            int(balance_row['balance']) if balance_row else amount,
+            completed,
+        )
+
+    def get_red_packet_status(self, group_id: int) -> Optional[RedPacketStatus]:
+        self.expire_red_packets()
+        with self._lock:
+            packet = self._conn.execute(
+                """SELECT * FROM break_red_packet WHERE group_id=?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (int(group_id),),
+            ).fetchone()
+            if not packet:
+                return None
+            claims = self._conn.execute(
+                """SELECT qqid, amount FROM break_red_packet_claim
+                   WHERE packet_id=? ORDER BY claimed_at""",
+                (str(packet['id']),),
+            ).fetchall()
+        return RedPacketStatus(
+            packet_id=str(packet['id']),
+            sender_qqid=int(packet['sender_qqid']),
+            total_amount=int(packet['total_amount']),
+            total_count=int(packet['total_count']),
+            remaining_amount=int(packet['remaining_amount']),
+            remaining_count=int(packet['remaining_count']),
+            status=str(packet['status']),
+            expires_at=float(packet['expires_at']),
+            claims=[(int(row['qqid']), int(row['amount'])) for row in claims],
+        )
 
     def lottery(self, qqid: int, count: int = 1) -> LotteryResult:
         count = max(1, min(int(count), 10))
