@@ -19,4 +19,12 @@ assert meter.record("31", now=31, window_seconds=60) == 31
 # t=1 的请求仍在窗口内；t=0 已过期，因此窗口内仍是 31 个请求。
 assert meter.record("later", now=61, window_seconds=60) == 31
 
+root = path.parent.parent
+runtime_source = (root / "command" / "mai_admin_runtime.py").read_text(
+    encoding="utf-8"
+)
+qq_bind_source = (root / "command" / "mai_qq_bind.py").read_text(encoding="utf-8")
+assert '_maimaidx_passive_recorder' in runtime_source
+assert "setattr(_qq_member_recorder, '_maimaidx_passive_recorder', True)" in qq_bind_source
+
 print("busy surcharge meter tests: ok")

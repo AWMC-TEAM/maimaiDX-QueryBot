@@ -104,7 +104,9 @@ async def _audit_and_ban_preprocessor(
     if not _plugin_matcher(matcher):
         return
     # 全量消息统计只计数，不为每条普通聊天创建 REF 链路，也不触发封禁提示。
-    if type(matcher) is _message_recorder:
+    if type(matcher) is _message_recorder or bool(
+        getattr(type(matcher), "_maimaidx_passive_recorder", False)
+    ):
         return
     uid = str(event.get_user_id())
     ban_keys = [uid]

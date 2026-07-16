@@ -20,6 +20,7 @@ group_member_list = on_command('群成员记录', permission=PLUGIN_ADMIN_ONLY)
 
 # 官方 QQ：群消息时登记 member_openid（无全量拉群 API，仅能积累见过的成员）
 _qq_member_recorder = on_message(priority=99, block=False)
+setattr(_qq_member_recorder, '_maimaidx_passive_recorder', True)
 
 
 def _event_group_id(event) -> Optional[str]:
