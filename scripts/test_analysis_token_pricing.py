@@ -83,6 +83,9 @@ assert usage == {
 assert not usage_helpers["_response_token_usage"](
     SimpleNamespace(usage=None)
 )["available"]
+assert not usage_helpers["_response_token_usage"](
+    {"usage": {"total_tokens": 12000}}
+)["available"]
 dict_usage = usage_helpers["_response_token_usage"](
     {
         "usage": {

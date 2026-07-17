@@ -62,12 +62,6 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
     qq = int(event.get_user_id())
     billing_qq = int(platform_user_id(event))
 
-    try:
-        ensure_analysis_affordable(billing_qq)
-    except BreakInsufficientError as e:
-        await matcher.finish(str(e), reply_message=True)
-        return
-
     if not maiconfig.b50_llm_key:
         await matcher.finish('未配置 b50_llm_key，请在 .env 中填写 API Key', reply_message=True)
         return
@@ -115,6 +109,14 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
     peer_stats = get_peer_stats()
     context = build_context(b50_data, peer_stats)
     context['player']['qq'] = str(legacy_qq)
+
+    # 查询 B50 可能单独产生查分器费用；应在该费用结算后、调用 LLM 前，
+    # 再按锐评最高价校验余额，避免模型已生成却无法完成 Token 结算。
+    try:
+        ensure_analysis_affordable(billing_qq)
+    except BreakInsufficientError as e:
+        await matcher.finish(str(e), reply_message=True)
+        return
 
     try:
         analysis_text, token_usage = await generate_analysis(context, maiconfig, style)

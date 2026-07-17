@@ -96,7 +96,8 @@ def _response_token_usage(response: Any) -> dict[str, Any]:
     )
     cached_input_tokens = _i(field(prompt_details, "cached_tokens"))
     return {
-        "available": input_tokens > 0 or output_tokens > 0 or total_tokens > 0,
+        # 只有 total_tokens 无法按输入/输出差异定价，视为 usage 不完整并走兜底价。
+        "available": input_tokens > 0 or output_tokens > 0,
         "input_tokens": max(0, input_tokens),
         "output_tokens": max(0, output_tokens),
         "total_tokens": max(0, total_tokens),
