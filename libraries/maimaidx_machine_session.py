@@ -1,7 +1,6 @@
 """Serialize workflows that share the configured arcade machine identity."""
 
 import asyncio
-import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -12,7 +11,6 @@ from ..config import log, maiconfig
 # logins can invalidate one another even when they belong to different users,
 # so this lock is intentionally global rather than keyed by QQ/user ID.
 _machine_lock = asyncio.Lock()
-_last_machine_release_at = 0.0
 
 
 class MachineBusyError(RuntimeError):
@@ -26,7 +24,6 @@ async def machine_session() -> AsyncIterator[None]:
     等待超时由 ``AWMC_MACHINE_LOCK_TIMEOUT_SECONDS`` 控制（默认 60s）；
     设为 ``0`` 表示无限等待（旧行为）。
     """
-    global _last_machine_release_at
     timeout = float(getattr(maiconfig, "awmc_machine_lock_timeout_seconds", 60.0) or 0.0)
     if timeout > 0:
         if _machine_lock.locked():
@@ -42,34 +39,6 @@ async def machine_session() -> AsyncIterator[None]:
             log.info("[machine_session] 机台锁被占用，无限等待中")
         await _machine_lock.acquire()
     try:
-        cooldown = max(
-            0.0,
-            float(
-                getattr(
-                    maiconfig,
-                    "awmc_machine_operation_cooldown_seconds",
-                    1.0,
-                )
-                or 0.0
-            ),
-        )
-        remaining = cooldown - (time.monotonic() - _last_machine_release_at)
-        if remaining > 0:
-            log.info(
-                f"[machine_session] 距离上次账号操作过近，等待 {remaining:.2f}s"
-            )
-            await asyncio.sleep(remaining)
         yield
     finally:
-        _last_machine_release_at = time.monotonic()
         _machine_lock.release()
-
-
-async def wait_between_machine_steps() -> None:
-    """Leave a short gap between consecutive machine-side login operations."""
-    delay = max(
-        0.0,
-        float(getattr(maiconfig, "awmc_machine_step_delay_seconds", 3.0) or 0.0),
-    )
-    if delay:
-        await asyncio.sleep(delay)

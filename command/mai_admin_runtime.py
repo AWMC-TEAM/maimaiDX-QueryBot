@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Optional
 
@@ -26,6 +25,10 @@ from ..libraries.maimaidx_break import (
     is_superuser_exempt,
 )
 from ..libraries.maimaidx_request_rate import request_meter
+from ..libraries.maimaidx_user_operation import (
+    finish_account_operation,
+    try_begin_account_operation,
+)
 
 
 audit_query = on_command("查询REF", aliases={"查询Ref_ID", "ref查询"}, permission=PLUGIN_ADMIN_ONLY)
@@ -36,7 +39,6 @@ admin_web_cmd = on_command("管理面板", aliases={"WebUI"}, permission=PLUGIN_
 
 _message_recorder = on_message(priority=99, block=False)
 _ban_notified: dict[str, float] = {}
-_active_user_operations: set[str] = set()
 
 
 @get_driver().on_startup
@@ -70,7 +72,7 @@ def _serial_user_operation(matcher: Matcher) -> bool:
 def _release_user_operation(state: T_State) -> None:
     key = state.pop("__maimaidx_serial_user_operation", None)
     if key is not None:
-        _active_user_operations.discard(str(key))
+        finish_account_operation(key)
 
 
 def _command_name(matcher: Matcher, event: Event, state: T_State) -> str:
@@ -163,14 +165,10 @@ async def _audit_and_ban_preprocessor(
 
     if _serial_user_operation(matcher):
         operation_key = str(billing_user_id(event))
-        if operation_key in _active_user_operations:
-            await bot.send(
-                event,
-                "你已有一个操作正在进行，请等待完成后再试。\n"
-                "同一账号同时只能执行一个操作。",
-            )
+        if not try_begin_account_operation(operation_key):
+            # 同一账号只允许一个账号流程。重复请求静默丢弃，
+            # 避免用“等待/已受理”之类过程消息刷屏。
             raise IgnoredException("serial user operation already active")
-        _active_user_operations.add(operation_key)
         state["__maimaidx_serial_user_operation"] = operation_key
 
     busy_surcharge_exempt = _busy_surcharge_exempt(matcher)
@@ -213,21 +211,6 @@ async def _audit_and_ban_preprocessor(
                 state["__maimaidx_busy_charge"] = {
                     **meta, "charged": surcharge, "balance": break_db.get_balance(payer)
                 }
-
-    if state.get("__maimaidx_serial_user_operation") is not None:
-        confirmation = "操作已确认，1 秒后开始处理；请勿重复提交。"
-        try:
-            if isinstance(event, MessageEvent):
-                await bot.send(
-                    event,
-                    MessageSegment.reply(event.message_id)
-                    + MessageSegment.text("\n" + confirmation),
-                )
-            else:
-                await bot.send(event, confirmation)
-        except Exception as exc:
-            log.warning(f"发送操作确认失败：{type(exc).__name__}: {exc}")
-        await asyncio.sleep(1.0)
 
     ref_id = admin_audit.start_trace(
         command=_command_name(matcher, event, state),

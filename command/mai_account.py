@@ -31,16 +31,13 @@ from ..libraries.maimaidx_lxns_db import lxns_db
 from ..libraries.maimaidx_machine_session import (
     MachineBusyError,
     machine_session,
-    wait_between_machine_steps,
 )
 from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
 from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_qrcode_util import extract_sgwcmaid_qrcode
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..libraries.maimaidx_processing_time import (
-    format_processing_estimate,
     processing_time_estimator,
-    upload_fallback_seconds,
     upload_workflow_key,
 )
 from ..libraries.maimaidx_reaction import react_processing
@@ -73,8 +70,8 @@ account_region = on_command("mai地图", aliases={"游玩地图"})
 account_opt = on_command("mai查询opt", aliases={"查询opt"})
 account_queue = on_command("maiqueue", aliases={"mai队列"})
 
-# 涉及账号状态、外部上传或机台会话的命令按用户串行执行。运行时预处理器
-# 会引用原消息确认、等待 1 秒，并拒绝同一用户的并发操作。
+# 涉及账号状态、外部上传或机台会话的命令按用户串行执行。
+# 同一账号并发提交时静默拒绝后到的请求，不发送过程确认消息。
 for _serial_account_matcher in (
     account_bind,
     account_unbind,
@@ -1443,15 +1440,11 @@ async def _upload(
     results: list[str] = []
     try:
         break_db.ensure_service_affordable(int(key), billing_service, cost)
-        if not _qrcode_verified:
-            await wait_between_machine_steps()
         if fish:
             result = await sw_api.update_fish(qrcode, binding.fish_token)
             result = await _await_upload_success(result, lxns=False)
             results.append("水鱼：" + _result_text(result))
         if lxns:
-            if fish:
-                await wait_between_machine_steps()
             if oauth_token:
                 # 主路径：机台全量成绩 + OAuth 个人 API 直传。
                 # 不再回退 update_lx（会二次占用已消耗的二维码并长时间挂起）。
@@ -1542,7 +1535,7 @@ def _upload_mode(matcher: Matcher) -> tuple[bool, bool]:
 def _upload_preflight_error(
     event: MessageEvent, *, fish: bool, lxns: bool
 ) -> Optional[str]:
-    """在发送“已受理”前完成不需要网络请求的基础校验。"""
+    """在外部请求前完成不需要网络的基础校验。"""
     if bool(getattr(maiconfig, "maimaidx_user_agreement_required", True)):
         if not has_user_agreed(event):
             return agreement_prompt()
@@ -1588,6 +1581,14 @@ def _upload_retryable(message: str) -> bool:
 
 def _upload_retry_prompt(message: str, attempt: int) -> str:
     reason = message.split("\nRef_ID:", 1)[0].removeprefix("上传失败：").strip()
+    if "二维码缓存" in reason and any(
+        marker in reason for marker in ("过期", "失效", "无效", "刷新")
+    ):
+        return (
+            "二维码缓存已过期，请重新发送最新 SGWCMAID、"
+            "官方二维码链接或二维码图片。\n"
+            "发送“取消”可退出。"
+        )
     if not reason:
         reason = "上游服务未返回错误详情，请换新二维码后重试"
     retry_label = f"已尝试 {attempt}/3" if attempt else "尚未重试，最多可尝试 3 次"
@@ -1595,21 +1596,6 @@ def _upload_retry_prompt(message: str, attempt: int) -> str:
         f"上传未完成：{redact(reason)}\n"
         f"请重新获取并发送最新 SGWCMAID 或官方二维码链接（{retry_label}）。\n"
         "Bot 会尝试撤回凭据消息；发送“取消”可退出。"
-    )
-
-
-def _upload_started_message(*, fish: bool, lxns: bool) -> tuple[str, str]:
-    operation = upload_workflow_key(fish=fish, lxns=lxns)
-    seconds, samples = processing_time_estimator.estimate(
-        operation,
-        fallback_seconds=upload_fallback_seconds(fish=fish, lxns=lxns),
-    )
-    channel = "水鱼和落雪" if fish and lxns else "水鱼" if fish else "落雪"
-    return (
-        operation,
-        f"📤 已受理，正在上传到{channel}。\n"
-        + format_processing_estimate(seconds, samples)
-        + "\n处理完成后会另行发送结果，请勿重复提交。",
     )
 
 
@@ -1635,8 +1621,7 @@ async def _(
     if raw and not extract_sgwcmaid_qrcode(raw):
         result = "上传失败：二维码格式无效"
     else:
-        timing_key, started_message = _upload_started_message(fish=fish, lxns=lxns)
-        await matcher.send(recall_notice + started_message, reply_message=False)
+        timing_key = upload_workflow_key(fish=fish, lxns=lxns)
         started_at = time.perf_counter()
         result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=raw)
         if result.startswith("上传完成"):
@@ -1682,8 +1667,7 @@ async def _(
         except Exception:
             recall_notice = _RECALL_FAILED_NOTICE
     if qrcode:
-        timing_key, started_message = _upload_started_message(fish=fish, lxns=lxns)
-        await matcher.send(recall_notice + started_message, reply_message=False)
+        timing_key = upload_workflow_key(fish=fish, lxns=lxns)
         started_at = time.perf_counter()
         result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=qrcode)
         if result.startswith("上传完成"):
@@ -1721,13 +1705,6 @@ async def _():
     await account_ping.finish("AWMC API 连接正常\n" + _result_text(result))
 
 
-def _ticket_started_message(multiple: int) -> str:
-    return (
-        f"🎫 {multiple} 倍票已受理，正在校验账号并提交。\n"
-        "处理完成后会另行发送结果，请勿重复提交。"
-    )
-
-
 async def _execute_ticket(
     event: MessageEvent, multiple: int, *, qrcode_override: str = ""
 ) -> str:
@@ -1750,7 +1727,6 @@ async def _execute_ticket(
             raise TicketQrcodeError(
                 "二维码已过期、失效或与当前绑定账号不一致"
             ) from exc
-        await wait_between_machine_steps()
         before_charge = await sw_api.get_user_charge(binding.qrcode)
         before_ok, before_rows, before_free_rows = _normalize_charge_payload(
             before_charge
@@ -1775,7 +1751,6 @@ async def _execute_ticket(
                 f"[ticket] 提交前队列快照失败，将仅依赖库存确认："
                 f"{_exception_detail(exc)}"
             )
-        await wait_between_machine_steps()
         result = await sw_api.charge_ticket(binding.qrcode, multiple)
         _ensure_business_success(result)
         verified_stock = await _await_ticket_delivery(
@@ -1894,7 +1869,6 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         await account_ticket.finish(
             _ticket_failure_text(key, multiple, exc), reply_message=True
         )
-    await account_ticket.send(_ticket_started_message(multiple), reply_message=False)
     try:
         text = await _execute_ticket(event, multiple)
     except TicketQrcodeError as exc:

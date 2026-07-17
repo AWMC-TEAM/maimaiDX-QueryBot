@@ -276,13 +276,22 @@ class SwApiClient:
                 started_at=audit_started,
             )
             raise SwApiError(f"HTTP {res.status_code}: {text}")
+        data = res.json()
         admin_audit.add_step(
             "http.awmc",
             "success",
             {"method": method, "path": path, "status_code": res.status_code},
             started_at=audit_started,
         )
-        return res.json()
+        # AWMC 账号 API 成功后静默留出短暂间隔，避免同一账号
+        # 连续登录/传分导致会话异常；不向用户发送等待提示。
+        cooldown = max(
+            0.0,
+            float(getattr(maiconfig, "awmc_api_success_cooldown_seconds", 1.0) or 0.0),
+        )
+        if cooldown:
+            await asyncio.sleep(cooldown)
+        return data
 
     def _b50_upload_timeout(self) -> float:
         return max(

@@ -239,9 +239,10 @@ assert "'我的awmc'" in break_src
 assert "'awmc状态'" in break_src
 assert "def _upload_preflight_error(" in upload_src
 preflight_pos = upload_src.index("preflight_error = _upload_preflight_error(")
-accepted_pos = upload_src.index("timing_key, started_message = _upload_started_message(")
-assert preflight_pos < accepted_pos
+request_pos = upload_src.index("result = await _upload(", preflight_pos)
+assert preflight_pos < request_pos
 assert "await matcher.finish(preflight_error, reply_message=False)" in upload_src
+assert "📤 已受理" not in upload_src
 
 lxns_client_src = (ROOT / "libraries" / "maimaidx_lxns_client.py").read_text(
     encoding="utf-8"

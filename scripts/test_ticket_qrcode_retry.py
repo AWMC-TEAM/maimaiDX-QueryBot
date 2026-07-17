@@ -16,7 +16,6 @@ names = {
     "remember_pending_ticket_retry",
     "take_pending_ticket_retry",
     "clear_pending_ticket_retry",
-    "_ticket_started_message",
 }
 selected = [
     node
@@ -51,11 +50,10 @@ remember("10001", 2, expires_at=3050.0, now=3000.0)
 clear("10001")
 assert take("10001", now=3001.0) is None
 
-assert "已受理" in namespace["_ticket_started_message"](2)
-
 account_source = ACCOUNT_PATH.read_text(encoding="utf-8")
 assert "请在 180 秒内重新发送最新 SGWCMAID" in account_source
 assert "continue_ticket_with_qrcode" in account_source
+assert "倍票已受理" not in account_source
 
 playcount_source = PLAYCOUNT_PATH.read_text(encoding="utf-8")
 pending_pos = playcount_source.index("pending_ticket = take_pending_ticket_retry")

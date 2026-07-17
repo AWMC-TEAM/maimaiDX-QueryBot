@@ -17,13 +17,10 @@ from ..libraries.maimaidx_music import feature_manager
 from ..libraries.maimaidx_machine_session import (
     MachineBusyError,
     machine_session,
-    wait_between_machine_steps,
 )
 from ..libraries.maimaidx_reaction import react_processing
 from ..libraries.maimaidx_processing_time import (
-    auto_qrcode_fallback_seconds,
     auto_qrcode_workflow_key,
-    format_processing_estimate,
     processing_time_estimator,
 )
 from ..libraries.maimaidx_platform import billing_user_id, resolve_score_qqid
@@ -39,6 +36,10 @@ from ..libraries.maimaidx_qrcode_util import (
     extract_sgwcmaid_qrcode,
     extract_sgwcmaid_from_image_segments,
     qrcode_log_preview,
+)
+from ..libraries.maimaidx_user_operation import (
+    finish_account_operation,
+    try_begin_account_operation,
 )
 
 update_pc = on_command('更新pc数', aliases={'更新PC数', '同步pc数', '同步PC数', '绑定机台', '登录机台'})
@@ -274,8 +275,6 @@ async def _sync_sdgb_qrcode(
     await _verify_or_auto_bind_account(
         qqid, qrcode_data, save_qrcode=save_qrcode
     )
-    # preview 验真也会使用机台登录；立即拉成绩容易触发 returnCode=102。
-    await wait_between_machine_steps()
     success = await playcount_fetcher.login_by_sdgb(qrcode_data, qqid)
     if not success:
         raise RuntimeError('凭据保存失败')
@@ -490,10 +489,36 @@ async def _process_auto_qrcode(
         return
 
     qqid = int(billing_user_id(event))
+    if not try_begin_account_operation(qqid):
+        return
+    try:
+        await _process_auto_qrcode_for_account(
+            bot,
+            event,
+            qrcode_data,
+            source=source,
+            qqid=qqid,
+            recalled=recalled,
+            recall_warning=recall_warning,
+        )
+    finally:
+        finish_account_operation(qqid)
+
+
+async def _process_auto_qrcode_for_account(
+    bot: Bot,
+    event: MessageEvent,
+    qrcode_data: str,
+    *,
+    source: str,
+    qqid: int,
+    recalled: bool,
+    recall_warning: str,
+):
+    """Process an identified QR code while its account guard is held."""
     from ..libraries.maimaidx_account_db import account_db
     from .mai_account import (
         _has_lxns_oauth,
-        _ticket_started_message,
         auto_upload_channels,
         continue_ticket_with_qrcode,
         take_pending_ticket_retry,
@@ -511,16 +536,6 @@ async def _process_auto_qrcode(
     )
     pending_ticket = take_pending_ticket_retry(str(qqid))
     if pending_ticket is not None:
-        multiple, _expires_at = pending_ticket
-        await bot.send(
-            event,
-            message=prefix + MessageSegment.text(
-                '✅ 已识别新的舞萌二维码。\n'
-                + recall_status
-                + '\n'
-                + _ticket_started_message(multiple)
-            ),
-        )
         result = await continue_ticket_with_qrcode(
             event, qrcode_data, pending_ticket
         )
@@ -542,53 +557,9 @@ async def _process_auto_qrcode(
             ),
         )
         return
-    if qqid in _qrcode_auto_processing:
-        log.info(f'[QrcodeAuto] 用户 {qqid} 已有进行中的同步，跳过')
-        await bot.send(
-            event,
-            message=prefix + MessageSegment.text(
-                '✅ 已识别舞萌二维码。\n'
-                + recall_status
-                + '\n你已有进行中的同步，本次不再重复排队。'
-            ),
-        )
-        return
-
     previous = account_db.get(str(qqid))
-    fish, lxns = auto_upload_channels(
-        fish_token=previous.fish_token if previous else '',
-        lxns_token=previous.lxns_token if previous else '',
-        has_lxns_oauth=_has_lxns_oauth(event),
-    )
     pc_enabled = bool(playcount_fetcher.sdgb_available)
-    workflow_key = auto_qrcode_workflow_key(
-        pc=pc_enabled, fish=fish, lxns=lxns
-    )
-    estimate, samples = processing_time_estimator.estimate(
-        workflow_key,
-        fallback_seconds=auto_qrcode_fallback_seconds(
-            pc=pc_enabled, fish=fish, lxns=lxns
-        ),
-    )
-    recognition_lines = ['✅ 已识别舞萌二维码。']
-    recognition_lines.append(recall_status)
-    recognition_lines.append(format_processing_estimate(estimate, samples))
-    sync_action = '同步 PC' if pc_enabled else '验证并绑定账号'
-    if fish and lxns:
-        recognition_lines.append(f'将自动{sync_action}，并上传水鱼和落雪。')
-    elif fish:
-        recognition_lines.append(f'将自动{sync_action}，并上传水鱼。')
-    elif lxns:
-        recognition_lines.append(f'将自动{sync_action}，并上传落雪。')
-    else:
-        recognition_lines.append(f'将自动{sync_action}；尚未绑定上传渠道。')
-    await bot.send(
-        event, message=prefix + MessageSegment.text('\n'.join(recognition_lines))
-    )
-
     _qrcode_auto_processing.add(qqid)
-    # 已向用户发送识别/操作确认；留出短暂间隔，避免连续登录挤掉账号会话。
-    await asyncio.sleep(1.0)
     t0 = time.perf_counter()
     log.info(
         f'[QrcodeAuto] 开始同步 source={source} group={getattr(event, "group_id", "private")} qq={qqid} '
@@ -617,9 +588,6 @@ async def _process_auto_qrcode(
                 )
                 upload_result: Optional[str] = None
                 if fish or lxns:
-                    # PC/二维码校验完成后再开始查分器上传，避免同一 keychip
-                    # 的登录会话互相挤掉。
-                    await wait_between_machine_steps()
                     upload_result = await _upload(
                         event,
                         fish=fish,

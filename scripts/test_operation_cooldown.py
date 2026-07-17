@@ -41,7 +41,12 @@ selected = [
     if isinstance(node, ast.FunctionDef)
     and node.name in {"_serial_user_operation", "_release_user_operation"}
 ]
-namespace = {"Matcher": object, "T_State": dict, "_active_user_operations": set()}
+active_operations: set[str] = set()
+namespace = {
+    "Matcher": object,
+    "T_State": dict,
+    "finish_account_operation": active_operations.discard,
+}
 exec(
     compile(ast.Module(body=selected, type_ignores=[]), str(runtime_path), "exec"),
     namespace,
@@ -58,28 +63,30 @@ class NormalMatcher:
 
 assert namespace["_serial_user_operation"](SerialMatcher())
 assert not namespace["_serial_user_operation"](NormalMatcher())
-namespace["_active_user_operations"].add("10001")
+active_operations.add("10001")
 state = {"__maimaidx_serial_user_operation": "10001"}
 namespace["_release_user_operation"](state)
-assert "10001" not in namespace["_active_user_operations"]
+assert "10001" not in active_operations
 assert not state
 
-for relative, matcher in (
-    ("command/mai_break.py", "break_lottery"),
-    ("command/mai_playcount.py", "update_pc"),
-):
-    source = (ROOT / relative).read_text(encoding="utf-8")
-    assert f"setattr({matcher}, '_maimaidx_serial_user_operation', True)" in source
+playcount_source = (ROOT / "command" / "mai_playcount.py").read_text(encoding="utf-8")
+assert "setattr(update_pc, '_maimaidx_serial_user_operation', True)" in playcount_source
+assert "if not try_begin_account_operation(qqid):" in playcount_source
+assert "finish_account_operation(qqid)" in playcount_source
 
 account_source = (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert "setattr(_serial_account_matcher, '_maimaidx_serial_user_operation', True)" in account_source
-assert "MessageSegment.reply(event.message_id)" in runtime_source
-assert "await asyncio.sleep(1.0)" in runtime_source
+assert "操作已确认" not in runtime_source
+assert "你已有一个操作正在进行" not in runtime_source
+assert "已受理" not in account_source
+assert "二维码缓存已过期，请重新发送最新 SGWCMAID" in account_source
 
-machine_source = (
-    ROOT / "libraries" / "maimaidx_machine_session.py"
-).read_text(encoding="utf-8")
-assert "awmc_machine_operation_cooldown_seconds" in machine_source
-assert "_last_machine_release_at = time.monotonic()" in machine_source
+sw_api_source = (ROOT / "libraries" / "maimaidx_sw_api.py").read_text(encoding="utf-8")
+assert "awmc_api_success_cooldown_seconds" in sw_api_source
+assert "await asyncio.sleep(cooldown)" in sw_api_source
+response_pos = sw_api_source.index("data = res.json()")
+sleep_pos = sw_api_source.index("await asyncio.sleep(cooldown)", response_pos)
+return_pos = sw_api_source.index("return data", sleep_pos)
+assert response_pos < sleep_pos < return_pos
 
 print("operation cooldown tests: ok")

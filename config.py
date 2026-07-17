@@ -58,12 +58,10 @@ class Config(BaseModel):
     awmc_user_music_retry_count: int = 0
     # 本地 PC 成绩可用于落雪 OAuth 直传的新鲜度（秒）；默认与 SGID 缓存一致。
     awmc_lxns_pc_cache_seconds: float = 600.0
-    # PC / 水鱼 / 落雪依次使用同一机台会话时的间隔，避免登录互相挤掉。
-    awmc_machine_step_delay_seconds: float = 3.0
     # 等待全局机台锁的最长时间（秒）；0=无限等待。超时返回「机台繁忙」。
     awmc_machine_lock_timeout_seconds: float = 60.0
-    # 两次独立账号/机台操作之间的最短间隔；避免连续登录导致账号会话异常。
-    awmc_machine_operation_cooldown_seconds: float = 1.0
+    # AWMC 账号 API 成功返回后的静默冷却（秒）。
+    awmc_api_success_cooldown_seconds: float = 1.0
     # 发票允许倍率，使用英文逗号分隔，例如 2,3,5。
     awmc_ticket_allowed_multipliers: str = '2,3,5'
     # 发票提交仅代表进入服务端队列；轮询队列与票券库存，确认到账后才结算 BREAK。

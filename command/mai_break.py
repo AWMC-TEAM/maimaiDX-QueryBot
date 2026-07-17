@@ -61,9 +61,6 @@ LOTTERY_HELP = (
     '非空奖概率 65%，单抽期望返还 1.6 BREAK；最多 10 连抽，长期仍为净消耗。'
 )
 
-setattr(break_lottery, '_maimaidx_serial_user_operation', True)
-
-
 def get_at_qq(message: MessageEvent) -> Optional[int]:
     for item in message.message:
         if isinstance(item, MessageSegment) and item.type == 'at' and item.data['qq'] != 'all':
