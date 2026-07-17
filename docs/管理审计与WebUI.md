@@ -35,7 +35,7 @@
 | 业务 | 默认价格 | 免费规则 |
 |---|---:|---|
 | 查分器 API | 1 BREAK | 每日首次实际 API 请求免费 |
-| 分析 b50 | 3 BREAK | 无；高峰时段双倍 |
+| 分析 b50 | 输入每 8000 Token + 输出每 2000 Token 各计 1 BREAK | 合计向上取整，最低 2、最高 6，无峰时加价；usage 缺失时 3 |
 | 上传水鱼 | 2 BREAK | 所有上传方式共享每日首次成功免费 |
 | 上传落雪 | 2 BREAK | 所有上传方式共享每日首次成功免费 |
 | 同时上传 | 3 BREAK | 所有上传方式共享每日首次成功免费 |
@@ -55,6 +55,11 @@ checkin_base_min
 checkin_base_max
 streak_bonus
 streak_bonus_growth
+analysis_input_tokens_per_break
+analysis_output_tokens_per_break
+analysis_min_cost
+analysis_max_cost
+analysis_fallback_cost
 upload_fish_cost
 upload_lx_cost
 upload_all_cost

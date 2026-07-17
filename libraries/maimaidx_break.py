@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import math
 import random
 import sqlite3
 import time
@@ -32,7 +33,11 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'checkin_base_min': '1',
     'checkin_base_max': '2',
     'query_cost': '1',
-    'analysis_cost': '3',
+    'analysis_input_tokens_per_break': '8000',
+    'analysis_output_tokens_per_break': '2000',
+    'analysis_min_cost': '2',
+    'analysis_max_cost': '6',
+    'analysis_fallback_cost': '3',
     # 恢复旧版第 1～5 天曲线；之后按 streak_bonus_growth 继续增长，不封顶。
     'streak_bonus': '3,5,8,12,20',
     'streak_bonus_growth': '1',
@@ -1482,28 +1487,72 @@ def analysis_base_cost() -> int:
 
 
 def analysis_cost() -> int:
-    base = analysis_base_cost()
-    return base * 2 if is_analysis_peak_hour() else base
+    """兼容旧调用：返回 usage 缺失时的兜底价。"""
+    return _config_int('analysis_fallback_cost', analysis_base_cost())
 
 
-def format_analysis_cost_line(*, charged: Optional[int] = None, balance: Optional[int] = None) -> str:
-    """锐评扣费说明（含峰时 ×2 标注）。"""
-    cost = charged if charged is not None else analysis_cost()
-    base = analysis_base_cost()
-    peak = is_analysis_peak_hour() and cost > base
-    if balance is None:
-        if peak:
-            return f'分析消耗 {cost} BREAK（峰时 ×2，基础 {base}）'
-        return f'分析消耗 {cost} BREAK'
-    if peak:
-        return f'💳 分析消耗 {cost} BREAK（峰时 ×2，基础 {base}） · 余额 {balance} BREAK'
-    return f'💳 分析消耗 {cost} BREAK · 余额 {balance} BREAK'
+def analysis_token_cost(
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    usage_available: bool = True,
+) -> int:
+    """按模型实际 Token 用量计算锐评价格，并应用最低/最高保护。"""
+    minimum = max(0, _config_int('analysis_min_cost', 2))
+    maximum = max(minimum, _config_int('analysis_max_cost', 6))
+    if not usage_available:
+        fallback = _config_int('analysis_fallback_cost', 3)
+        return min(maximum, max(minimum, fallback))
+    input_rate = max(1, _config_int('analysis_input_tokens_per_break', 8000))
+    output_rate = max(1, _config_int('analysis_output_tokens_per_break', 2000))
+    weighted = max(0, int(input_tokens)) / input_rate
+    weighted += max(0, int(output_tokens)) / output_rate
+    return min(maximum, max(minimum, int(math.ceil(weighted))))
+
+
+def format_analysis_cost_line(
+    *,
+    charged: Optional[int] = None,
+    balance: Optional[int] = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    usage_available: bool = True,
+) -> str:
+    """向用户展示 Token 用量、实际收费和余额。"""
+    cost = charged if charged is not None else analysis_token_cost(
+        input_tokens, output_tokens, usage_available=usage_available
+    )
+    if usage_available:
+        detail = f'输入 {max(0, input_tokens):,} / 输出 {max(0, output_tokens):,} Token'
+    else:
+        detail = '模型未返回 Token 用量，按兜底价计费'
+    text = f'💳 锐评消耗 {cost} BREAK（{detail}）'
+    if balance is not None:
+        text += f' · 余额 {balance} BREAK'
+    input_rate = max(1, _config_int('analysis_input_tokens_per_break', 8000))
+    output_rate = max(1, _config_int('analysis_output_tokens_per_break', 2000))
+    minimum = max(0, _config_int('analysis_min_cost', 2))
+    maximum = max(minimum, _config_int('analysis_max_cost', 6))
+    text += (
+        f'\n计费规则：输入每 {input_rate:,} Token + 输出每 {output_rate:,} Token '
+        f'各计 1 BREAK，合计向上取整，最低 {minimum}、最高 {maximum}。'
+    )
+    return text
 
 
 def format_analysis_pricing_help() -> str:
-    base = analysis_base_cost()
+    input_rate = max(1, _config_int('analysis_input_tokens_per_break', 8000))
+    output_rate = max(1, _config_int('analysis_output_tokens_per_break', 2000))
+    minimum = max(0, _config_int('analysis_min_cost', 2))
+    maximum = max(minimum, _config_int('analysis_max_cost', 6))
+    fallback = min(
+        maximum,
+        max(minimum, _config_int('analysis_fallback_cost', 3)),
+    )
     return (
-        f'· 分析b50 / 锐评一下 — 每次成功消耗 {base} BREAK（峰时 09:00–12:00、14:00–18:00 双倍）\n'
+        f'· 分析b50 / 锐评一下 — 按实际 Token 计费：每 {input_rate:,} 输入 Token '
+        f'+ 每 {output_rate:,} 输出 Token 各计 1 BREAK，合计向上取整；'
+        f'最低 {minimum}、最高 {maximum} BREAK，不设峰时加价；usage 缺失时 {fallback} BREAK\n'
     )
 
 
@@ -1522,7 +1571,7 @@ def ensure_query_affordable(qqid: Optional[int]) -> None:
 def ensure_analysis_affordable(qqid: int) -> None:
     if is_superuser_exempt(qqid):
         return
-    cost = analysis_cost()
+    cost = max(0, _config_int('analysis_max_cost', 6))
     balance = break_db.get_balance(qqid)
     if balance < cost:
         raise BreakInsufficientError(cost, balance, qqid=qqid)
@@ -1573,15 +1622,24 @@ def settle_query_api_charge(qqid: Optional[int]) -> None:
     break_db.record_usage(qqid, 'query', break_delta=-cost)
 
 
-def settle_analysis_charge(qqid: int) -> None:
+def settle_analysis_charge(
+    qqid: int,
+    cost: int,
+    *,
+    token_usage: Optional[dict] = None,
+) -> int:
+    cost = max(0, int(cost))
+    usage = dict(token_usage or {})
     if is_superuser_exempt(qqid):
         break_db.record_usage(qqid, 'analysis', break_delta=0)
-        return
-    cost = analysis_cost()
-    if not break_db.try_consume(qqid, cost, 'b50_analysis', meta={'kind': 'llm'}):
-        log.warning(f'[BREAK] qq={qqid} analysis consume failed')
-        return
+        return 0
+    meta = {'kind': 'llm', 'pricing': 'token', **usage}
+    if not break_db.try_consume(qqid, cost, 'b50_analysis', meta=meta):
+        balance = break_db.get_balance(qqid)
+        log.warning(f'[BREAK] qq={qqid} analysis consume failed cost={cost}')
+        raise BreakInsufficientError(cost, balance, qqid=qqid)
     break_db.record_usage(qqid, 'analysis', break_delta=-cost)
+    return cost
 
 
 def get_account_profile(qqid: int) -> AccountProfile:

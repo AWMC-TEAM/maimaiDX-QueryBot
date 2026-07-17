@@ -3,12 +3,9 @@ from __future__ import annotations
 import json
 import re
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from openai import AsyncOpenAI
-
-if TYPE_CHECKING:
-    from ...config import Config
 
 _FORBIDDEN_OUTPUT_PATTERNS = [
     "综上所述", "整体来看", "值得称赞", "值得一提", "由此可见", "不难看出",
@@ -69,6 +66,42 @@ def _i(value, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _response_token_usage(response: Any) -> dict[str, Any]:
+    """兼容 OpenAI Chat Completions 及部分兼容网关的 usage 字段。"""
+    def field(value: Any, *names: str) -> Any:
+        for name in names:
+            item = value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+            if item is not None:
+                return item
+        return None
+
+    usage = field(response, "usage")
+    if usage is None:
+        return {
+            "available": False,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cached_input_tokens": 0,
+        }
+    input_tokens = _i(field(usage, "prompt_tokens", "input_tokens"))
+    output_tokens = _i(field(usage, "completion_tokens", "output_tokens"))
+    total_tokens = _i(field(usage, "total_tokens"))
+    if total_tokens <= 0:
+        total_tokens = input_tokens + output_tokens
+    prompt_details = field(
+        usage, "prompt_tokens_details", "input_tokens_details"
+    )
+    cached_input_tokens = _i(field(prompt_details, "cached_tokens"))
+    return {
+        "available": input_tokens > 0 or output_tokens > 0 or total_tokens > 0,
+        "input_tokens": max(0, input_tokens),
+        "output_tokens": max(0, output_tokens),
+        "total_tokens": max(0, total_tokens),
+        "cached_input_tokens": max(0, cached_input_tokens),
+    }
 
 
 def _song_key(song: dict) -> str:
@@ -692,7 +725,9 @@ def _fmt(context: dict) -> str:
     return "\n".join(lines)
 
 
-async def generate_analysis(context: dict, config: Any, style: str = "") -> str:
+async def generate_analysis(
+    context: dict, config: Any, style: str = ""
+) -> tuple[str, dict[str, Any]]:
     style_instruction = f"\n- 请用以下风格/语气/需求进行锐评：{style}" if style else ""
     system = _SYSTEM.format(style_instruction=style_instruction)
 
@@ -708,6 +743,7 @@ async def generate_analysis(context: dict, config: Any, style: str = "") -> str:
         temperature=0.8,
         max_tokens=8000,
     )
+    token_usage = _response_token_usage(resp)
     content = (resp.choices[0].message.content or "").strip()
     
     try:
@@ -721,7 +757,7 @@ async def generate_analysis(context: dict, config: Any, style: str = "") -> str:
                 "impression_roast": "",
                 "push_recommendations": [],
             }
-    except Exception as e:
+    except Exception:
         cleaned = {
             "title": "B50锐评",
             "overall_roast": content[:2000] if content else "分析生成失败",
@@ -738,4 +774,4 @@ async def generate_analysis(context: dict, config: Any, style: str = "") -> str:
         cleaned.get("push_recommendations") or [],
         fallback_push,
     )
-    return json.dumps(cleaned, ensure_ascii=False)
+    return json.dumps(cleaned, ensure_ascii=False), token_usage

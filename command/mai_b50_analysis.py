@@ -21,12 +21,11 @@ from ..libraries.b50_analysis import (
 )
 from ..libraries.b50_analysis.adapter import fetch_for_analysis
 from ..libraries.maimaidx_break import (
-    analysis_cost,
+    analysis_token_cost,
     break_billing,
     break_db,
     ensure_analysis_affordable,
     format_analysis_cost_line,
-    is_analysis_peak_hour,
     settle_analysis_charge,
     take_break_charge_footer,
 )
@@ -78,9 +77,11 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
 
     await react_processing(bot, event)
 
-    pending = '正在查询 B50，请稍候…'
-    if is_analysis_peak_hour():
-        pending += f'（峰时双倍计费，本次消耗 {analysis_cost()} BREAK）'
+    pending = (
+        '正在查询 B50，请稍候…\n'
+        '锐评按模型实际 Token 计费：输入每 8,000 Token、输出每 2,000 Token '
+        '各计 1 BREAK，合计向上取整；最低 2、最高 6 BREAK。'
+    )
     if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
         await matcher.send(pending, reply_message=True)
 
@@ -116,7 +117,7 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
     context['player']['qq'] = str(legacy_qq)
 
     try:
-        analysis_text = await generate_analysis(context, maiconfig, style)
+        analysis_text, token_usage = await generate_analysis(context, maiconfig, style)
     except Exception as e:
         await matcher.finish(f'分析生成失败：{e}', reply_message=True)
         return
@@ -146,18 +147,41 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         await matcher.finish(f'制图失败：{e}', reply_message=True)
         return
 
-    settle_analysis_charge(billing_qq)
+    input_tokens = int(token_usage.get('input_tokens') or 0)
+    output_tokens = int(token_usage.get('output_tokens') or 0)
+    usage_available = bool(token_usage.get('available'))
+    cost = analysis_token_cost(
+        input_tokens,
+        output_tokens,
+        usage_available=usage_available,
+    )
+    try:
+        charged = settle_analysis_charge(
+            billing_qq,
+            cost,
+            token_usage=token_usage,
+        )
+    except BreakInsufficientError as e:
+        await matcher.finish(str(e), reply_message=True)
+        return
 
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
-    cost = analysis_cost()
     balance = break_db.get_balance(billing_qq)
     query_footer = take_break_charge_footer()
     footer_parts = []
     if query_footer:
         footer_parts.extend(query_footer)
-    footer_parts.append(format_analysis_cost_line(charged=cost, balance=balance))
+    footer_parts.append(
+        format_analysis_cost_line(
+            charged=charged,
+            balance=balance,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            usage_available=usage_available,
+        )
+    )
     footer = '\n' + '\n'.join(footer_parts)
     await matcher.finish(
         MessageSegment.image(buf) + MessageSegment.text(footer),
