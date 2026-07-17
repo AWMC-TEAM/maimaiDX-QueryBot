@@ -74,7 +74,7 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
     pending = (
         '正在查询 B50，请稍候…\n'
         '锐评按模型实际 Token 计费：输入每 8,000 Token、输出每 2,000 Token '
-        '各计 1 BREAK，合计向上取整；最低 2、最高 6 BREAK。'
+        '各计 1 BREAK，合计向上取整；最低 2、最高 20 BREAK。'
     )
     if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
         await matcher.send(pending, reply_message=True)

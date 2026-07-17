@@ -151,7 +151,7 @@ https://bot.example.com/ops/maimai/api/...
 | `analysis_input_tokens_per_break` | 8000 | 锐评每 1 BREAK 对应的输入 Token |
 | `analysis_output_tokens_per_break` | 2000 | 锐评每 1 BREAK 对应的输出 Token |
 | `analysis_min_cost` | 2 | 单次锐评最低价格 |
-| `analysis_max_cost` | 6 | 单次锐评最高价格及调用前余额门槛 |
+| `analysis_max_cost` | 20 | 单次锐评最高价格及调用前余额门槛 |
 | `analysis_fallback_cost` | 3 | 模型未返回 Token usage 时的兜底价格 |
 | `guess_break_per_correct` | 1 | 每次猜对奖励 |
 | `upload_fish_cost` | 2 | 上传水鱼价格 |

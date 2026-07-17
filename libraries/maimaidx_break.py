@@ -36,7 +36,7 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'analysis_input_tokens_per_break': '8000',
     'analysis_output_tokens_per_break': '2000',
     'analysis_min_cost': '2',
-    'analysis_max_cost': '6',
+    'analysis_max_cost': '20',
     'analysis_fallback_cost': '3',
     # 恢复旧版第 1～5 天曲线；之后按 streak_bonus_growth 继续增长，不封顶。
     'streak_bonus': '3,5,8,12,20',
@@ -387,6 +387,7 @@ class BreakDatabase:
         self._conn.commit()
         self._migrate_legacy_economy_defaults()
         self._migrate_ticket_cost_default()
+        self._migrate_analysis_max_cost_default()
         self._restore_uncapped_streak_default()
 
     def _migrate_ticket_cost_default(self) -> None:
@@ -402,6 +403,20 @@ class BreakDatabase:
             )
             self._conn.commit()
             log.info('[BREAK] 已将发票价格迁移为倍率 ×3')
+
+    def _migrate_analysis_max_cost_default(self) -> None:
+        """将首版 Token 计费封顶从 6 BREAK 迁移为 20 BREAK。"""
+        row = self._conn.execute(
+            'SELECT value FROM break_config WHERE key = ?',
+            ('analysis_max_cost',),
+        ).fetchone()
+        if row and str(row['value']) == '6':
+            self._conn.execute(
+                'UPDATE break_config SET value = ? WHERE key = ?',
+                (DEFAULT_CONFIG['analysis_max_cost'], 'analysis_max_cost'),
+            )
+            self._conn.commit()
+            log.info('[BREAK] 已将锐评 Token 计费封顶迁移为 20 BREAK')
 
     def _migrate_legacy_economy_defaults(self) -> None:
         """仅替换仍等于旧默认值的配置，保留管理员自定义数据。"""
@@ -1499,7 +1514,7 @@ def analysis_token_cost(
 ) -> int:
     """按模型实际 Token 用量计算锐评价格，并应用最低/最高保护。"""
     minimum = max(0, _config_int('analysis_min_cost', 2))
-    maximum = max(minimum, _config_int('analysis_max_cost', 6))
+    maximum = max(minimum, _config_int('analysis_max_cost', 20))
     if not usage_available:
         fallback = _config_int('analysis_fallback_cost', 3)
         return min(maximum, max(minimum, fallback))
@@ -1532,7 +1547,7 @@ def format_analysis_cost_line(
     input_rate = max(1, _config_int('analysis_input_tokens_per_break', 8000))
     output_rate = max(1, _config_int('analysis_output_tokens_per_break', 2000))
     minimum = max(0, _config_int('analysis_min_cost', 2))
-    maximum = max(minimum, _config_int('analysis_max_cost', 6))
+    maximum = max(minimum, _config_int('analysis_max_cost', 20))
     text += (
         f'\n计费规则：输入每 {input_rate:,} Token + 输出每 {output_rate:,} Token '
         f'各计 1 BREAK，合计向上取整，最低 {minimum}、最高 {maximum}。'
@@ -1544,7 +1559,7 @@ def format_analysis_pricing_help() -> str:
     input_rate = max(1, _config_int('analysis_input_tokens_per_break', 8000))
     output_rate = max(1, _config_int('analysis_output_tokens_per_break', 2000))
     minimum = max(0, _config_int('analysis_min_cost', 2))
-    maximum = max(minimum, _config_int('analysis_max_cost', 6))
+    maximum = max(minimum, _config_int('analysis_max_cost', 20))
     fallback = min(
         maximum,
         max(minimum, _config_int('analysis_fallback_cost', 3)),
@@ -1571,7 +1586,7 @@ def ensure_query_affordable(qqid: Optional[int]) -> None:
 def ensure_analysis_affordable(qqid: int) -> None:
     if is_superuser_exempt(qqid):
         return
-    cost = max(0, _config_int('analysis_max_cost', 6))
+    cost = max(0, _config_int('analysis_max_cost', 20))
     balance = break_db.get_balance(qqid)
     if balance < cost:
         raise BreakInsufficientError(cost, balance, qqid=qqid)
