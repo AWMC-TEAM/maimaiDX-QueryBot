@@ -87,7 +87,7 @@ AWMC_MACHINE_LOCK_TIMEOUT_SECONDS=60
 AWMC_API_SUCCESS_COOLDOWN_SECONDS=1
 # 发票允许倍率，默认仅 2、3、5 倍。
 AWMC_TICKET_ALLOWED_MULTIPLIERS=2,3,5
-# 发票基础超时 120 秒；按前方每个请求约 80 秒动态延长，最多 10 分钟。
+# 发票基础超时 120 秒；首次按每个待处理请求约 80 秒，后续根据近期真实耗时动态估算，最多 10 分钟。
 # 队列成功后只查一次票券库存，确认到账后才扣 BREAK。
 AWMC_TICKET_POLL_INTERVAL_SECONDS=3
 AWMC_TICKET_POLL_TIMEOUT_SECONDS=120

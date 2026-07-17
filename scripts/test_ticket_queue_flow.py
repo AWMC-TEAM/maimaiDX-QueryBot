@@ -18,6 +18,7 @@ names = {
     "_matching_charge_task",
     "_ticket_submission_task_id",
     "_ticket_queue_ahead",
+    "_ticket_queue_units",
     "_ticket_wait_plan",
     "_format_wait_duration",
     "_ticket_wait_message",
@@ -65,10 +66,23 @@ config = SimpleNamespace(
     awmc_ticket_max_poll_timeout_seconds=600.0,
     awmc_ticket_seconds_per_request=80.0,
 )
+
+
+class FakeEstimator:
+    seconds = 80
+    samples = 0
+
+    def estimate(self, _operation, *, fallback_seconds):
+        return (self.seconds or int(fallback_seconds), self.samples)
+
+
+estimator = FakeEstimator()
 namespace = {
     "Any": Any,
     "Optional": Optional,
     "maiconfig": config,
+    "processing_time_estimator": estimator,
+    "_TICKET_QUEUE_UNIT_TIMING_KEY": "ticket_queue:seconds_per_request",
     "json": __import__("json"),
     "re": __import__("re"),
     "asyncio": SimpleNamespace(sleep=no_sleep),
@@ -88,11 +102,19 @@ assert namespace["_ticket_submission_task_id"](
 ) == "task-1"
 assert namespace["_ticket_queue_ahead"]({"queuePosition": 3}) == 2
 assert namespace["_ticket_queue_ahead"]({"msg": "前方还有 4 个请求"}) == 4
-assert namespace["_ticket_wait_plan"](0) == (80, 120.0)
-assert namespace["_ticket_wait_plan"](2) == (240, 280.0)
-assert namespace["_ticket_wait_plan"](10) == (880, 600.0)
-assert "前方预计 2 个请求" in namespace["_ticket_wait_message"](2, 240, 280)
-assert "确认票券到账后才扣 BREAK" in namespace["_ticket_wait_message"](2, 240, 280)
+assert namespace["_ticket_queue_units"](0) == 1
+assert namespace["_ticket_queue_units"](1) == 1
+assert namespace["_ticket_wait_plan"](0) == (80, 120.0, 0)
+assert namespace["_ticket_wait_plan"](1) == (80, 120.0, 0)
+assert namespace["_ticket_wait_plan"](2) == (160, 200.0, 0)
+assert namespace["_ticket_wait_plan"](10) == (800, 600.0, 0)
+estimator.seconds = 68
+estimator.samples = 7
+assert namespace["_ticket_wait_plan"](2) == (136, 176.0, 7)
+message = namespace["_ticket_wait_message"](2, 136, 176, 7)
+assert "队列预计有 2 个请求待处理" in message
+assert "根据最近 7 次真实处理时间估算" in message
+assert "确认票券到账后才扣 BREAK" in message
 
 
 class FakeSwApi:
@@ -165,5 +187,7 @@ assert await_source.count("sw_api.get_user_charge(qrcode)") == 1
 assert await_source.index("last_task_status == \"success\"") < await_source.index(
     "sw_api.get_user_charge(qrcode)"
 )
+assert "elapsed / _ticket_queue_units(queue_ahead)" in source
+assert "processing_time_estimator.record(" in source
 
 print("ticket queue flow tests: ok")

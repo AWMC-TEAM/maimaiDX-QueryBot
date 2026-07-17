@@ -96,6 +96,7 @@ for _serial_account_matcher in (
 
 _RECALL_FAILED_NOTICE = "⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。\n"
 _TICKET_QRCODE_RETRY_SECONDS = 180
+_TICKET_QUEUE_UNIT_TIMING_KEY = "ticket_queue:seconds_per_request"
 _pending_ticket_retries: dict[str, tuple[int, float]] = {}
 _DIVING_FISH_PROBER_URL = "https://www.diving-fish.com/maimaidx/prober/"
 _FISH_TOKEN_MIN_LENGTH = 127
@@ -384,11 +385,20 @@ def _ticket_queue_ahead(payload: dict) -> Optional[int]:
     return None
 
 
-def _ticket_wait_plan(queue_ahead: Optional[int]) -> tuple[int, float]:
+def _ticket_queue_units(queue_ahead: Optional[int]) -> int:
+    """API 的排队数已包含当前待处理量；0/缺失时至少算1笔。"""
+    return max(1, int(queue_ahead or 0))
+
+
+def _ticket_wait_plan(queue_ahead: Optional[int]) -> tuple[int, float, int]:
     """根据前方排队数计算预计时间和动态超时。"""
-    per_request = max(
+    fallback_per_request = max(
         1.0,
         float(getattr(maiconfig, "awmc_ticket_seconds_per_request", 80.0) or 80.0),
+    )
+    per_request, samples = processing_time_estimator.estimate(
+        _TICKET_QUEUE_UNIT_TIMING_KEY,
+        fallback_seconds=fallback_per_request,
     )
     base_timeout = min(
         600.0,
@@ -404,10 +414,10 @@ def _ticket_wait_plan(queue_ahead: Optional[int]) -> tuple[int, float]:
             float(getattr(maiconfig, "awmc_ticket_max_poll_timeout_seconds", 600.0) or 600.0),
         ),
     )
-    requests = max(1, (queue_ahead or 0) + 1)
+    requests = _ticket_queue_units(queue_ahead)
     estimated = max(1, int(round(requests * per_request)))
     timeout = min(max_timeout, max(base_timeout, estimated + 40.0))
-    return estimated, timeout
+    return estimated, timeout, samples
 
 
 def _format_wait_duration(seconds: int) -> str:
@@ -419,11 +429,18 @@ def _format_wait_duration(seconds: int) -> str:
     return f"{remain} 秒"
 
 
-def _ticket_wait_message(queue_ahead: Optional[int], estimated: int, timeout: float) -> str:
+def _ticket_wait_message(
+    queue_ahead: Optional[int], estimated: int, timeout: float, samples: int
+) -> str:
     queue_text = (
-        f"前方预计 {queue_ahead} 个请求"
+        f"队列预计有 {queue_ahead} 个请求待处理"
         if queue_ahead is not None
-        else "API 未返回明确的前方人数"
+        else "API 未返回明确的排队数"
+    )
+    estimate_source = (
+        f"根据最近 {samples} 次真实处理时间估算"
+        if samples
+        else "按单个请求约 80 秒估算"
     )
     timeout_note = (
         "\n当前队列较长，Bot 最多等待 10 分钟。"
@@ -432,7 +449,8 @@ def _ticket_wait_message(queue_ahead: Optional[int], estimated: int, timeout: fl
     )
     return (
         f"🎫 发票请求已进入队列，{queue_text}，"
-        f"预计约 {_format_wait_duration(estimated)} 完成。\n"
+        f"预计约 {_format_wait_duration(estimated)} 完成"
+        f"（{estimate_source}）。\n"
         "Bot 会等待队列处理，并在确认票券到账后才扣 BREAK。"
         + timeout_note
     )
@@ -1903,10 +1921,15 @@ async def _execute_ticket(
         _ensure_business_success(result)
         task_id = _ticket_submission_task_id(result)
         queue_ahead = _ticket_queue_ahead(result)
-    estimated, poll_timeout = _ticket_wait_plan(queue_ahead)
+    estimated, poll_timeout, timing_samples = _ticket_wait_plan(queue_ahead)
+    queue_started_at = time.perf_counter()
     if notify is not None:
         try:
-            await notify(_ticket_wait_message(queue_ahead, estimated, poll_timeout))
+            await notify(
+                _ticket_wait_message(
+                    queue_ahead, estimated, poll_timeout, timing_samples
+                )
+            )
         except Exception as exc:
             log.warning(f"[ticket] 发送排队预计消息失败，继续确认任务：{_exception_detail(exc)}")
     verified_stock = await _await_ticket_delivery(
@@ -1917,6 +1940,11 @@ async def _execute_ticket(
         previous_task_ts,
         task_id=task_id,
         timeout=poll_timeout,
+    )
+    elapsed = max(0.001, time.perf_counter() - queue_started_at)
+    processing_time_estimator.record(
+        _TICKET_QUEUE_UNIT_TIMING_KEY,
+        elapsed / _ticket_queue_units(queue_ahead),
     )
     charge = break_db.settle_service_success(
         int(key),
