@@ -16,3 +16,4 @@ from .mai_search import *
 from .mai_table import *
 from .mai_pmyx import *
 from .mai_qq_bind import *
+from .mai_phantom import *
