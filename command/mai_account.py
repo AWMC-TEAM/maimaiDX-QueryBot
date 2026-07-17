@@ -854,40 +854,14 @@ async def _render_account_status(
         try:
             async with machine_session():
                 charge = await sw_api.get_user_charge(binding.qrcode)
-            charge_ok, rows, free_rows = _normalize_charge_payload(charge)
+            charge_ok, _, _ = _normalize_charge_payload(charge)
             if not charge_ok:
                 return_code = _pick(charge, "returnCode", "ReturnCode")
                 suffix = f"（returnCode={return_code}）" if return_code is not None else ""
                 lines.append(f"🎫 票券情况：获取失败{suffix}")
                 return "\n".join(lines)
-            now = time.time()
-            valid = []
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                valid_date = row.get("validDate") or row.get("ValidDate")
-                try:
-                    normalized = str(valid_date).replace(" ", "T")[:19]
-                    valid_ts = time.mktime(
-                        time.strptime(normalized, "%Y-%m-%dT%H:%M:%S")
-                    )
-                except (TypeError, ValueError):
-                    valid_ts = now + 1
-                if valid_ts > now and int(row.get("stock") or row.get("Stock") or 0) > 0:
-                    valid.append(row)
-            total = sum(int(row.get("stock") or row.get("Stock") or 0) for row in valid)
-            free_total = sum(
-                int(row.get("stock") or row.get("Stock") or 0)
-                for row in free_rows
-                if isinstance(row, dict)
-            )
-            if valid or free_total:
-                label = f"🎫 有效票券：{total} 张（{len(valid)} 种）"
-                if free_total:
-                    label += f"；免费票券 {free_total} 张"
-                lines.append(label)
-            else:
-                lines.append("🎫 票券情况：暂无有效票券")
+            # 与「mai查票」共用详细解析，展开倍率、库存和有效期。
+            lines.extend(["", _format_ticket_status(charge)])
         except Exception as exc:
             log.warning(f"[AccountStatus] 获取票券失败：{type(exc).__name__}: {exc}")
             lines.append("🎫 票券情况：暂时无法获取")
