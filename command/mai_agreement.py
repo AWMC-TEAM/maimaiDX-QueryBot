@@ -71,6 +71,14 @@ agreement_accept = on_command("同意用户协议")
 agreement_phrase = on_message(rule=Rule(_is_accept_phrase), priority=3, block=True)
 agreement_revoke = on_command("撤回用户协议")
 
+for _debt_exempt_matcher in (
+    agreement_view,
+    agreement_accept,
+    agreement_phrase,
+    agreement_revoke,
+):
+    setattr(_debt_exempt_matcher, "_maimaidx_debt_exempt", True)
+
 
 async def _accept(event: Event) -> str:
     uid = str(billing_user_id(event))

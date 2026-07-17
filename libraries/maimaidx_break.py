@@ -1599,7 +1599,8 @@ def format_analysis_pricing_help() -> str:
     return (
         f'· 分析b50 / 锐评一下 — 按实际 Token 计费：每 {input_rate:,} 输入 Token '
         f'+ 每 {output_rate:,} 输出 Token 各计 1 BREAK，合计向上取整；'
-        f'最低 {minimum}、最高 {maximum} BREAK，不设峰时加价；usage 缺失时 {fallback} BREAK\n'
+        f'最低 {minimum}、最高 {maximum} BREAK，不设峰时加价；usage 缺失时 {fallback} BREAK。'
+        '先用后付，可扣至负数；负余额期间暂停其他功能\n'
     )
 
 
@@ -1611,15 +1612,6 @@ def ensure_query_affordable(qqid: Optional[int]) -> None:
     balance = break_db.get_balance(qqid)
     if break_db.is_daily_free_available(qqid):
         return
-    if balance < cost:
-        raise BreakInsufficientError(cost, balance, qqid=qqid)
-
-
-def ensure_analysis_affordable(qqid: int) -> None:
-    if is_superuser_exempt(qqid):
-        return
-    cost = max(0, _config_int('analysis_max_cost', 20))
-    balance = break_db.get_balance(qqid)
     if balance < cost:
         raise BreakInsufficientError(cost, balance, qqid=qqid)
 
@@ -1681,11 +1673,12 @@ def settle_analysis_charge(
         break_db.record_usage(qqid, 'analysis', break_delta=0)
         return 0
     meta = {'kind': 'llm', 'pricing': 'token', **usage}
-    if not break_db.try_consume(qqid, cost, 'b50_analysis', meta=meta):
-        balance = break_db.get_balance(qqid)
-        log.warning(f'[BREAK] qq={qqid} analysis consume failed cost={cost}')
-        raise BreakInsufficientError(cost, balance, qqid=qqid)
+    balance = break_db.add_balance(qqid, -cost, 'b50_analysis', meta=meta)
     break_db.record_usage(qqid, 'analysis', break_delta=-cost)
+    if balance < 0:
+        log.info(
+            f'[BREAK] qq={qqid} 锐评先用后付 cost={cost} balance={balance}'
+        )
     return cost
 
 

@@ -39,6 +39,7 @@ admin_web_cmd = on_command("管理面板", aliases={"WebUI"}, permission=PLUGIN_
 
 _message_recorder = on_message(priority=99, block=False)
 _ban_notified: dict[str, float] = {}
+_debt_notified: dict[str, float] = {}
 
 
 @get_driver().on_startup
@@ -67,6 +68,10 @@ def _serial_user_operation(matcher: Matcher) -> bool:
     return bool(
         getattr(type(matcher), "_maimaidx_serial_user_operation", False)
     )
+
+
+def _debt_exempt(matcher: Matcher) -> bool:
+    return bool(getattr(type(matcher), "_maimaidx_debt_exempt", False))
 
 
 def _release_user_operation(state: T_State) -> None:
@@ -157,6 +162,23 @@ async def _audit_and_ban_preprocessor(
             except Exception:
                 pass
         raise IgnoredException("maimaidx user banned")
+
+    payer = int(billing_user_id(event))
+    balance = break_db.get_balance(payer)
+    if balance < 0 and not is_plugin_admin(uid) and not _debt_exempt(matcher):
+        event_key = _event_request_key(bot, event)
+        now = time.time()
+        if now - _debt_notified.get(event_key, 0) > 10:
+            _debt_notified[event_key] = now
+            try:
+                await bot.send(
+                    event,
+                    f"当前 BREAK 余额为 {balance}，已暂停其他功能。\n"
+                    "请先通过 AWMC签到、今日舞萌或抢红包将余额补回非负数。",
+                )
+            except Exception:
+                pass
+        raise IgnoredException("negative BREAK balance")
 
     # 图片扫码监听会匹配所有图片；普通图片既不计真实请求，也不触发附加费。
     # 识别到舞萌二维码后的业务调用仍会由账号流水记录。

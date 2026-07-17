@@ -1605,16 +1605,11 @@ async def _upload(
                     event, oauth_token, pc_scores, source="PC缓存"
                 )
                 account_db.mark_uploaded(key)
-                from ..libraries.maimaidx_player_cache import invalidate_player_cache
-
-                try:
-                    invalidate_player_cache(int(key))
-                except ValueError:
-                    pass
                 charge = break_db.settle_service_success(
                     int(key), billing_service, cost,
                     meta={"operation": operation, "fish": False, "lxns": True, "source": "pc"},
                 )
+                await _refresh_b50_cache_after_upload(key)
                 ref = _log(
                     key, operation, "success",
                     f"charged={charge.charged},free={charge.free},source=pc,count={len(pc_scores)}",
@@ -1742,16 +1737,11 @@ async def _upload(
                 result = await _await_upload_success(result, lxns=True)
                 results.append("落雪（兼容 Token）：" + _result_text(result))
         account_db.mark_uploaded(key)
-        from ..libraries.maimaidx_player_cache import invalidate_player_cache
-
-        try:
-            invalidate_player_cache(int(key))
-        except ValueError:
-            pass
         charge = break_db.settle_service_success(
             int(key), billing_service, cost,
             meta={"operation": operation, "fish": fish, "lxns": lxns},
         )
+        await _refresh_b50_cache_after_upload(key)
         ref = _log(key, operation, "success", f"charged={charge.charged},free={charge.free}")
         return "上传完成\n" + "\n".join(results) + f"\n{_charge_text(charge)}\nRef_ID: {ref}"
     except Exception as exc:
@@ -1862,6 +1852,31 @@ async def _notify_upload_accepted(
         await matcher.send(message, reply_message=True)
     except Exception as exc:
         log.warning(f"[upload] 发送受理与预计时间失败，继续上传：{_exception_detail(exc)}")
+
+
+async def _refresh_b50_cache_after_upload(user_key: str) -> None:
+    """上传成功后静默强制拉取 B50 并写入新缓存，不产生 BREAK 费用。"""
+    try:
+        qqid = int(user_key)
+    except (TypeError, ValueError):
+        return
+    from ..libraries.maimaidx_datasource import get_user_b50
+    from ..libraries.maimaidx_player_cache import (
+        clear_fetch_meta,
+        invalidate_player_cache,
+    )
+
+    invalidate_player_cache(qqid)
+    try:
+        await get_user_b50(qqid=qqid, force_refresh=True)
+        log.info(f"[upload] 上传后已静默刷新 B50 缓存 user={user_key}")
+    except Exception as exc:
+        log.warning(
+            f"[upload] 上传已成功，但静默刷新 B50 缓存失败 user={user_key}: "
+            f"{_exception_detail(exc)}"
+        )
+    finally:
+        clear_fetch_meta()
 
 
 @upload_fish.handle()

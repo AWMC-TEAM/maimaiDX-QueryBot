@@ -47,6 +47,15 @@ break_red_packet_status = on_command(
     '红包状态', aliases={'红包记录', '查看红包'}
 )
 
+for _debt_exempt_matcher in (
+    awmc_checkin,
+    my_awmc,
+    awmc_help,
+    break_red_packet_claim,
+    break_red_packet_status,
+):
+    setattr(_debt_exempt_matcher, "_maimaidx_debt_exempt", True)
+
 _LOTTERY_PRIZE_LINES = ''.join(
     f'· {prize} BREAK：{weight}%\n'
     for prize, weight in zip(LOTTERY_PRIZES, LOTTERY_WEIGHTS)

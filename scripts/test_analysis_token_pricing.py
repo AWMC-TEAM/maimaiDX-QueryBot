@@ -103,25 +103,19 @@ assert dict_usage["input_tokens"] == 9000
 assert dict_usage["output_tokens"] == 1200
 
 
-class FakeBreakInsufficientError(RuntimeError):
-    pass
-
-
 class FakeBreakDb:
     def __init__(self):
-        self.consumed = None
+        self.balance = 1
+        self.adjustment = None
         self.usage = None
 
-    def try_consume(self, qqid, amount, reason, *, meta=None):
-        self.consumed = (qqid, amount, reason, meta)
-        return True
+    def add_balance(self, qqid, delta, reason, *, meta=None):
+        self.adjustment = (qqid, delta, reason, meta)
+        self.balance += delta
+        return self.balance
 
     def record_usage(self, qqid, kind, break_delta=0):
         self.usage = (qqid, kind, break_delta)
-
-    def get_balance(self, _qqid):
-        return 99
-
 
 fake_db = FakeBreakDb()
 settlement = load_functions(
@@ -131,8 +125,7 @@ settlement = load_functions(
         "Optional": Optional,
         "break_db": fake_db,
         "is_superuser_exempt": lambda _qqid: False,
-        "BreakInsufficientError": FakeBreakInsufficientError,
-        "log": SimpleNamespace(warning=lambda *_args, **_kwargs: None),
+        "log": SimpleNamespace(info=lambda *_args, **_kwargs: None),
     },
 )
 charged = settlement["settle_analysis_charge"](
@@ -141,8 +134,16 @@ charged = settlement["settle_analysis_charge"](
     token_usage={"input_tokens": 16000, "output_tokens": 4000},
 )
 assert charged == 4
-assert fake_db.consumed[1:3] == (4, "b50_analysis")
-assert fake_db.consumed[3]["pricing"] == "token"
+assert fake_db.adjustment[1:3] == (-4, "b50_analysis")
+assert fake_db.adjustment[3]["pricing"] == "token"
+assert fake_db.balance == -3
 assert fake_db.usage == (10001, "analysis", -4)
+
+analysis_command = (ROOT / "command" / "mai_b50_analysis.py").read_text(
+    encoding="utf-8"
+)
+assert "ensure_analysis_affordable" not in analysis_command
+assert "break_billing" not in analysis_command
+assert "采用先用后付" in analysis_command
 
 print("analysis token pricing tests: ok")

@@ -80,7 +80,19 @@ assert "操作已确认" not in runtime_source
 assert "你已有一个操作正在进行" not in runtime_source
 assert "操作已确认" not in account_source
 assert "📤 已受理，正在上传到" in account_source
+assert "async def _refresh_b50_cache_after_upload(" in account_source
+assert "get_user_b50(qqid=qqid, force_refresh=True)" in account_source
+assert account_source.count("await _refresh_b50_cache_after_upload(key)") == 2
 assert "二维码缓存已过期，请重新发送最新 SGWCMAID" in account_source
+
+assert "negative BREAK balance" in runtime_source
+assert "已暂停其他功能" in runtime_source
+for exempt_path in (
+    ROOT / "command" / "mai_break.py",
+    ROOT / "command" / "mai_base.py",
+    ROOT / "command" / "mai_agreement.py",
+):
+    assert "_maimaidx_debt_exempt" in exempt_path.read_text(encoding="utf-8")
 
 sw_api_source = (ROOT / "libraries" / "maimaidx_sw_api.py").read_text(encoding="utf-8")
 assert "awmc_api_success_cooldown_seconds" in sw_api_source

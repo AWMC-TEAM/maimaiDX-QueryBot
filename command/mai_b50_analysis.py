@@ -22,9 +22,7 @@ from ..libraries.b50_analysis import (
 from ..libraries.b50_analysis.adapter import fetch_for_analysis
 from ..libraries.maimaidx_break import (
     analysis_token_cost,
-    break_billing,
     break_db,
-    ensure_analysis_affordable,
     format_analysis_cost_line,
     settle_analysis_charge,
     take_break_charge_footer,
@@ -75,6 +73,7 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         '正在查询 B50，请稍候…\n'
         '锐评按模型实际 Token 计费：输入每 4,000 Token、输出每 1,000 Token '
         '各计 1 BREAK，合计向上取整；最低 2、最高 20 BREAK。'
+        '采用先用后付，完成后才按实际用量扣费。'
     )
     if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
         await matcher.send(pending, reply_message=True)
@@ -90,8 +89,9 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
 
     try:
         legacy_qq = resolve_query_qqid(billing_qq)
-        async with break_billing(billing_qq):
-            b50_data = await fetch_for_analysis(legacy_qq, assets_path=maiconfig.b50_assets_path)
+        b50_data = await fetch_for_analysis(
+            legacy_qq, assets_path=maiconfig.b50_assets_path
+        )
     except BreakInsufficientError as e:
         await matcher.finish(str(e), reply_message=True)
         return
@@ -109,14 +109,6 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
     peer_stats = get_peer_stats()
     context = build_context(b50_data, peer_stats)
     context['player']['qq'] = str(legacy_qq)
-
-    # 查询 B50 可能单独产生查分器费用；应在该费用结算后、调用 LLM 前，
-    # 再按锐评最高价校验余额，避免模型已生成却无法完成 Token 结算。
-    try:
-        ensure_analysis_affordable(billing_qq)
-    except BreakInsufficientError as e:
-        await matcher.finish(str(e), reply_message=True)
-        return
 
     try:
         analysis_text, token_usage = await generate_analysis(context, maiconfig, style)
@@ -157,15 +149,11 @@ async def _handle(matcher: Matcher, bot: Bot, event: MessageEvent, args: Message
         output_tokens,
         usage_available=usage_available,
     )
-    try:
-        charged = settle_analysis_charge(
-            billing_qq,
-            cost,
-            token_usage=token_usage,
-        )
-    except BreakInsufficientError as e:
-        await matcher.finish(str(e), reply_message=True)
-        return
+    charged = settle_analysis_charge(
+        billing_qq,
+        cost,
+        token_usage=token_usage,
+    )
 
     buf = io.BytesIO()
     img.save(buf, format='PNG')
