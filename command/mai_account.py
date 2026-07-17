@@ -385,6 +385,48 @@ def _ticket_queue_ahead(payload: dict) -> Optional[int]:
     return None
 
 
+def _ticket_task_result_code(task: dict) -> Optional[int]:
+    """解析队列 msg 中嵌套的 ``result={...returnCode...}``。"""
+    containers = [task]
+    for key in ("result", "data"):
+        value = task.get(key)
+        if isinstance(value, dict):
+            containers.append(value)
+    message = task.get("msg") or task.get("message")
+    if isinstance(message, dict):
+        containers.append(message)
+    elif isinstance(message, str):
+        match = re.search(r"result\s*=\s*(\{.*\})\s*$", message, re.DOTALL)
+        if match:
+            try:
+                decoded = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, dict):
+                containers.append(decoded)
+    for row in containers:
+        value = _pick(row, "returnCode", "ReturnCode")
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _charge_payload_user_id(payload: dict) -> str:
+    """提取 /user/charge 返回的 UID，用于防止跨账号误判到账。"""
+    if not isinstance(payload, dict):
+        return ""
+    nested = payload.get("userCharge")
+    data = nested if isinstance(nested, dict) else payload
+    value = _pick(data, "userId", "UserID", "userID")
+    if value is None:
+        value = _pick(payload, "userId", "UserID", "userID")
+    return str(value) if value not in (None, "") else ""
+
+
 def _ticket_queue_units(queue_ahead: Optional[int]) -> int:
     """API 的排队数已包含当前待处理量；0/缺失时至少算1笔。"""
     return max(1, int(queue_ahead or 0))
@@ -457,17 +499,26 @@ def _ticket_wait_message(
 
 
 def _ticket_task_state(task: dict) -> str:
-    if task.get("done") is True or task.get("success") is True:
-        return "success"
     if task.get("success") is False or task.get("error"):
         return "failed"
     status = str(_pick(task, "status", "Status", "state", "State", default="") or "").lower()
-    if status in {"done", "success", "succeeded", "completed", "finished", "成功", "已完成", "完成"}:
-        return "success"
     if status in {"failed", "failure", "error", "cancelled", "canceled", "失败", "已取消"}:
         return "failed"
     if status in {"pending", "queued", "waiting", "processing", "running", "排队中", "处理中"}:
         return "active"
+    terminal = (
+        task.get("done") is True
+        or task.get("success") is True
+        or status in {
+            "done", "success", "succeeded", "completed", "finished",
+            "成功", "已完成", "完成",
+        }
+    )
+    if terminal:
+        result_code = _ticket_task_result_code(task)
+        if result_code is not None and result_code != 1:
+            return "failed"
+        return "success"
     return status or "unknown"
 
 
@@ -490,6 +541,7 @@ async def _await_ticket_delivery(
     saw_current_task = False
     last_task_status = ""
     last_query_error = ""
+    completed_result_code: Optional[int] = None
     log.info(
         f"[ticket] 开始确认到账 uid={mai_uid} charge={charge_id} "
         f"baseline={baseline_stock} timeout={timeout:.0f}s interval={interval:.0f}s"
@@ -511,8 +563,15 @@ async def _await_ticket_delivery(
                 saw_current_task = True
                 last_task_status = _ticket_task_state(task)
                 if last_task_status == "failed":
-                    raise RuntimeError(str(task.get("msg") or "发票充值队列任务失败"))
+                    result_code = _ticket_task_result_code(task)
+                    detail = (
+                        f"上游 returnCode={result_code}，票券未发放"
+                        if result_code is not None
+                        else str(task.get("msg") or "队列任务失败")
+                    )
+                    raise RuntimeError(f"发票队列任务执行失败（{detail}）；本次不扣 BREAK")
                 if last_task_status == "success":
+                    completed_result_code = _ticket_task_result_code(task)
                     break
         except RuntimeError:
             raise
@@ -528,13 +587,33 @@ async def _await_ticket_delivery(
             f"{queue_hint}{active_hint}{error_hint}；本次不扣 BREAK"
         )
 
-    # 队列明确成功后才查询一次库存，禁止在轮询期间反复登录 /user/charge。
+    # 队列明确成功后，留出短暂落库时间，再只查询一次库存。
+    settlement_delay = max(
+        0.0,
+        float(getattr(maiconfig, "awmc_ticket_settlement_delay_seconds", 2.0) or 0.0),
+    )
+    if settlement_delay:
+        await asyncio.sleep(settlement_delay)
     async with machine_session():
         current = await sw_api.get_user_charge(qrcode)
+    current_uid = _charge_payload_user_id(current)
+    if current_uid and current_uid != str(mai_uid):
+        raise RuntimeError(
+            f"到账查询返回了其他账号（UID {current_uid}）；本次不扣 BREAK"
+        )
     charge_ok, rows, free_rows = _normalize_charge_payload(current)
     stock = _ticket_stock(rows + free_rows, charge_id) if charge_ok else baseline_stock
     if stock <= baseline_stock:
-        raise RuntimeError("发票队列已成功，但未确认票券库存增加；本次不扣 BREAK")
+        result_note = (
+            f"returnCode={completed_result_code}"
+            if completed_result_code is not None
+            else "未返回 returnCode"
+        )
+        raise RuntimeError(
+            f"发票队列任务已完成（{result_note}），但到账复核未增加："
+            f"UID {mai_uid}，{charge_id} 倍票库存 {baseline_stock}→{stock}；"
+            "可能是上游落库延迟，本次不扣 BREAK"
+        )
     log.info(
         f"[ticket] 队列成功后已确认到账 uid={mai_uid} charge={charge_id} "
         f"stock={stock} baseline={baseline_stock}"

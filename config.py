@@ -69,6 +69,8 @@ class Config(BaseModel):
     awmc_ticket_poll_timeout_seconds: float = 120.0
     awmc_ticket_max_poll_timeout_seconds: float = 600.0
     awmc_ticket_seconds_per_request: float = 80.0
+    # 队列 done 后等待票券数据落库，随后只查一次 /user/charge。
+    awmc_ticket_settlement_delay_seconds: float = 2.0
     # 合并后的账号功能总开关；关闭时不注册外部调用，但本地查分不受影响。
     awmc_account_enabled: bool = True
     # 账号二维码本地缓存时间。0 表示永久保留，单位秒。

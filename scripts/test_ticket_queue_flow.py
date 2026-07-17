@@ -18,6 +18,8 @@ names = {
     "_matching_charge_task",
     "_ticket_submission_task_id",
     "_ticket_queue_ahead",
+    "_ticket_task_result_code",
+    "_charge_payload_user_id",
     "_ticket_queue_units",
     "_ticket_wait_plan",
     "_format_wait_duration",
@@ -102,6 +104,24 @@ assert namespace["_ticket_submission_task_id"](
 ) == "task-1"
 assert namespace["_ticket_queue_ahead"]({"queuePosition": 3}) == 2
 assert namespace["_ticket_queue_ahead"]({"msg": "前方还有 4 个请求"}) == 4
+assert namespace["_ticket_queue_ahead"](
+    {"code": 0, "msg": "排队成功，当前队列任务数≈1"}
+) == 1
+queue_success = {
+    "status": "done",
+    "msg": '充值成功, result={"returnCode": 1, "apiName": "UpsertUserChargelogApi"}',
+}
+queue_failure = {
+    "status": "done",
+    "msg": '充值成功, result={"returnCode": 0, "apiName": "UpsertUserChargelogApi"}',
+}
+assert namespace["_ticket_task_result_code"](queue_success) == 1
+assert namespace["_ticket_task_result_code"](queue_failure) == 0
+assert namespace["_ticket_task_state"](queue_success) == "success"
+assert namespace["_ticket_task_state"](queue_failure) == "failed"
+assert namespace["_charge_payload_user_id"](
+    {"userId": 13225939, "userChargeList": []}
+) == "13225939"
 assert namespace["_ticket_queue_units"](0) == 1
 assert namespace["_ticket_queue_units"](1) == 1
 assert namespace["_ticket_wait_plan"](0) == (80, 120.0, 0)
@@ -177,6 +197,52 @@ stock = asyncio.run(
 )
 assert stock == 2
 assert fake_api.calls == ["queue", "queue", "charge"]
+
+
+class FailedQueueApi:
+    def __init__(self):
+        self.calls = []
+
+    async def get_charge_queue(self):
+        self.calls.append("queue")
+        return {
+            "code": 0,
+            "tasks": [
+                {
+                    "taskId": "task-failed",
+                    "chargeId": 2,
+                    "userId": "123",
+                    "status": "done",
+                    "ts": "newer",
+                    "msg": '充值成功, result={"returnCode": 0}',
+                }
+            ],
+        }
+
+    async def get_user_charge(self, _qrcode):
+        self.calls.append("charge")
+        raise AssertionError("returnCode=0 时不应查询票券库存")
+
+
+failed_api = FailedQueueApi()
+namespace["sw_api"] = failed_api
+try:
+    asyncio.run(
+        namespace["_await_ticket_delivery"](
+            "SGWCMAID...",
+            2,
+            "123",
+            0,
+            "old",
+            task_id="task-failed",
+            timeout=120,
+        )
+    )
+except RuntimeError as exc:
+    assert "returnCode=0" in str(exc)
+else:
+    raise AssertionError("队列 returnCode=0 应被判定为失败")
+assert failed_api.calls == ["queue"]
 
 source = ACCOUNT_PATH.read_text(encoding="utf-8")
 await_source = source[
