@@ -52,6 +52,10 @@ class FakeTime:
         self.value += 0.1
         return self.value
 
+    def perf_counter(self):
+        self.value += 0.1
+        return self.value
+
 
 async def no_sleep(_seconds):
     return None
@@ -73,9 +77,13 @@ config = SimpleNamespace(
 class FakeEstimator:
     seconds = 80
     samples = 0
+    records = []
 
     def estimate(self, _operation, *, fallback_seconds):
         return (self.seconds or int(fallback_seconds), self.samples)
+
+    def record(self, operation, duration):
+        self.records.append((operation, duration))
 
 
 estimator = FakeEstimator()
@@ -200,10 +208,13 @@ stock = asyncio.run(
         "old",
         task_id="task-1",
         timeout=120,
+        timing_started_at=0.0,
+        timing_units=1,
     )
 )
 assert stock == 2
 assert fake_api.calls == ["queue", "queue", "charge"]
+assert len(estimator.records) == 1
 
 
 class FailedQueueApi:
@@ -243,6 +254,8 @@ try:
             "old",
             task_id="task-failed",
             timeout=120,
+            timing_started_at=0.0,
+            timing_units=1,
         )
     )
 except RuntimeError as exc:
@@ -250,6 +263,7 @@ except RuntimeError as exc:
 else:
     raise AssertionError("队列异常 returnCode 应被判定为失败")
 assert failed_api.calls == ["queue"]
+assert len(estimator.records) == 2
 
 source = ACCOUNT_PATH.read_text(encoding="utf-8")
 await_source = source[
@@ -260,7 +274,7 @@ assert await_source.count("sw_api.get_user_charge(qrcode)") == 1
 assert await_source.index("last_task_status == \"success\"") < await_source.index(
     "sw_api.get_user_charge(qrcode)"
 )
-assert "elapsed / _ticket_queue_units(queue_ahead)" in source
 assert "processing_time_estimator.record(" in source
+assert "timing_started_at=queue_started_at" in source
 
 print("ticket queue flow tests: ok")

@@ -533,6 +533,8 @@ async def _await_ticket_delivery(
     *,
     task_id: str = "",
     timeout: float = 120.0,
+    timing_started_at: Optional[float] = None,
+    timing_units: int = 1,
 ) -> int:
     """先轮询队列；队列成功后只查一次真实票券库存。"""
     interval = max(
@@ -544,6 +546,19 @@ async def _await_ticket_delivery(
     last_task_status = ""
     last_query_error = ""
     completed_result_code: Optional[int] = None
+    timing_recorded = False
+
+    def record_terminal_timing() -> None:
+        nonlocal timing_recorded
+        if timing_recorded or timing_started_at is None:
+            return
+        elapsed = max(0.001, time.perf_counter() - timing_started_at)
+        processing_time_estimator.record(
+            _TICKET_QUEUE_UNIT_TIMING_KEY,
+            elapsed / max(1, int(timing_units)),
+        )
+        timing_recorded = True
+
     log.info(
         f"[ticket] 开始确认到账 uid={mai_uid} charge={charge_id} "
         f"baseline={baseline_stock} timeout={timeout:.0f}s interval={interval:.0f}s"
@@ -565,6 +580,7 @@ async def _await_ticket_delivery(
                 saw_current_task = True
                 last_task_status = _ticket_task_state(task)
                 if last_task_status == "failed":
+                    record_terminal_timing()
                     result_code = _ticket_task_result_code(task)
                     detail = (
                         f"上游 returnCode={result_code}，票券未发放"
@@ -573,6 +589,7 @@ async def _await_ticket_delivery(
                     )
                     raise RuntimeError(f"发票队列任务执行失败（{detail}）；本次不扣 BREAK")
                 if last_task_status == "success":
+                    record_terminal_timing()
                     completed_result_code = _ticket_task_result_code(task)
                     break
         except RuntimeError:
@@ -1995,11 +2012,8 @@ async def _execute_ticket(
         previous_task_ts,
         task_id=task_id,
         timeout=poll_timeout,
-    )
-    elapsed = max(0.001, time.perf_counter() - queue_started_at)
-    processing_time_estimator.record(
-        _TICKET_QUEUE_UNIT_TIMING_KEY,
-        elapsed / _ticket_queue_units(queue_ahead),
+        timing_started_at=queue_started_at,
+        timing_units=_ticket_queue_units(queue_ahead),
     )
     charge = break_db.settle_service_success(
         int(key),
