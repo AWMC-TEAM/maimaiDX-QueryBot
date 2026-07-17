@@ -517,8 +517,8 @@ def _ticket_task_state(task: dict) -> str:
     if terminal:
         result_code = _ticket_task_result_code(task)
         # UpsertUserChargelogApi 的返回码语义与 /user/charge 不同：
-        # 队列内层 returnCode=0 成功，其他值（包括 1）失败。
-        if result_code is not None and result_code != 0:
+        # 队列内层 returnCode=1 成功，其他已知返回码均为失败。
+        if result_code is not None and result_code != 1:
             return "failed"
         return "success"
     return status or "unknown"

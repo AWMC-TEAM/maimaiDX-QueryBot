@@ -130,9 +130,15 @@ difficulty_ab50 = on_regex(r'^\s*(?!ab50\s*$)(?!理想\s*ab50\s*$)(?!拟合\s*.+
 ideal_b50 = on_command('理想b50', aliases={'理想B50'})
 ideal_ab50 = on_command('理想ab50', aliases={'理想a50', '理想allb50'})
 # 数据存储
-enable_data_storage = on_command('开启存储数据', aliases={'开启数据存储'})
-disable_data_storage = on_command('关闭存储数据', aliases={'关闭数据存储'})
-store_data_now = on_command('立即存储数据', aliases={'存储数据'})
+enable_data_storage = on_command(
+    '开启存储数据', aliases={'开启数据存储', '开启储存数据', '开启数据储存'}
+)
+disable_data_storage = on_command(
+    '关闭存储数据', aliases={'关闭数据存储', '关闭储存数据', '关闭数据储存'}
+)
+store_data_now = on_command(
+    '立即存储数据', aliases={'存储数据', '立即储存数据', '储存数据'}
+)
 storage_history = on_command('存储历史', aliases={'查询存储历史', '存储记录'})
 storage_snapshot = on_command('查看存档', aliases={'查看存储快照', '存档详情'})
 weekly_report = on_command('周报', aliases={'成绩周报', 'maimai周报'})
@@ -1025,8 +1031,10 @@ async def _enable_data_storage(event: MessageEvent):
     qqid = resolve_score_qqid(event)
     success = data_storage.enable_user(qqid)
     if success:
-        if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
-            await enable_data_storage.send('正在首次同步全量成绩到本地，请稍候…', reply_message=True)
+        await enable_data_storage.send(
+            '已开启数据存储，正在首次同步全量成绩，请稍候…',
+            reply_message=True,
+        )
         store_ok = await fetch_and_store_user_scores(qqid, source="enable")
         sync_tip = (
             '\n首次同步已完成，「牌子统计」等将优先使用本地快照。'

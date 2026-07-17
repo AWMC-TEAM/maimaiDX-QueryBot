@@ -121,11 +121,11 @@ assert namespace["_ticket_queue_ahead"]({"msg": "前方还有 4 个请求"}) == 
 assert namespace["_ticket_queue_ahead"](
     {"code": 0, "msg": "排队成功，当前队列任务数≈1"}
 ) == 1
-queue_failure = {
+queue_success = {
     "status": "done",
     "msg": '充值成功, result={"returnCode": 1, "apiName": "UpsertUserChargelogApi"}',
 }
-queue_success = {
+queue_failure = {
     "status": "done",
     "msg": '充值成功, result={"returnCode": 0, "apiName": "UpsertUserChargelogApi"}',
 }
@@ -133,8 +133,8 @@ queue_other_failure = {
     "status": "done",
     "msg": '充值失败, result={"returnCode": -1, "apiName": "UpsertUserChargelogApi"}',
 }
-assert namespace["_ticket_task_result_code"](queue_failure) == 1
-assert namespace["_ticket_task_result_code"](queue_success) == 0
+assert namespace["_ticket_task_result_code"](queue_success) == 1
+assert namespace["_ticket_task_result_code"](queue_failure) == 0
 assert namespace["_ticket_task_result_code"](queue_other_failure) == -1
 assert namespace["_ticket_task_state"](queue_success) == "success"
 assert namespace["_ticket_task_state"](queue_failure) == "failed"
@@ -182,7 +182,7 @@ class FakeSwApi:
                         "userId": "123",
                         "status": "completed",
                         "ts": "new",
-                        "msg": '充值成功, result={"returnCode": 0}',
+                        "msg": '充值成功, result={"returnCode": 1}',
                     }
                 ],
             },
@@ -238,7 +238,7 @@ class FailedQueueApi:
                     "userId": "123",
                     "status": "done",
                     "ts": "newer",
-                    "msg": '充值失败, result={"returnCode": 1}',
+                    "msg": '充值失败, result={"returnCode": 0}',
                 }
             ],
         }
@@ -265,7 +265,7 @@ try:
         )
     )
 except RuntimeError as exc:
-    assert "returnCode=1" in str(exc)
+    assert "returnCode=0" in str(exc)
 else:
     raise AssertionError("队列异常 returnCode 应被判定为失败")
 assert failed_api.calls == ["queue"]
