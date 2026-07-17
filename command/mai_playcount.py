@@ -536,8 +536,11 @@ async def _process_auto_qrcode_for_account(
     )
     pending_ticket = take_pending_ticket_retry(str(qqid))
     if pending_ticket is not None:
+        async def notify(message: str) -> None:
+            await bot.send(event, message=prefix + MessageSegment.text(message))
+
         result = await continue_ticket_with_qrcode(
-            event, qrcode_data, pending_ticket
+            event, qrcode_data, pending_ticket, notify=notify
         )
         await bot.send(event, message=prefix + MessageSegment.text(result))
         return

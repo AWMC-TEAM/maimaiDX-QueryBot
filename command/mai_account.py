@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
 import httpx
@@ -284,16 +286,22 @@ def clear_pending_ticket_retry(user_key: str) -> None:
 
 
 def _matching_charge_task(
-    payload: dict, charge_id: int, mai_uid: str
+    payload: dict, charge_id: int, mai_uid: str, task_id: str = ""
 ) -> Optional[dict]:
     """从服务端发票队列中找当前账号、当前倍率最新的一笔任务。"""
     tasks = payload.get("tasks") if isinstance(payload, dict) else None
     if not isinstance(tasks, list):
         return None
     matches = []
+    id_matches = []
     for task in tasks:
         if not isinstance(task, dict):
             continue
+        current_task_id = str(
+            _pick(task, "taskId", "TaskId", "task_id", "id", default="") or ""
+        )
+        if task_id and current_task_id == str(task_id):
+            id_matches.append(task)
         try:
             same_charge = int(_pick(task, "chargeId", "ChargeId")) == int(charge_id)
         except (TypeError, ValueError):
@@ -301,7 +309,148 @@ def _matching_charge_task(
         task_uid = str(_pick(task, "userId", "UserID", default="") or "")
         if same_charge and task_uid == str(mai_uid):
             matches.append(task)
-    return max(matches, key=lambda task: str(task.get("ts") or ""), default=None)
+    candidates = id_matches or matches
+    return max(candidates, key=lambda task: str(task.get("ts") or ""), default=None)
+
+
+def _ticket_submission_task_id(payload: dict) -> str:
+    """从发票 200 响应中提取队列任务 ID。"""
+    if not isinstance(payload, dict):
+        return ""
+    containers = [payload]
+    for key in ("data", "result", "task", "msg"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            containers.append(value)
+        elif isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(decoded, dict):
+                containers.append(decoded)
+    for row in containers:
+        value = _pick(row, "taskId", "TaskId", "task_id", "id", default="")
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _ticket_queue_ahead(payload: dict) -> Optional[int]:
+    """从发票 200 响应中提取前方排队数，兼容常见字段与文本。"""
+    if not isinstance(payload, dict):
+        return None
+    containers = [payload]
+    for key in ("data", "result", "task", "msg"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            containers.append(value)
+        elif isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(decoded, dict):
+                containers.append(decoded)
+    direct_keys = (
+        "ahead", "aheadCount", "ahead_count", "waitingAhead", "waiting_ahead",
+        "queueAhead", "queue_ahead", "waitCount", "wait_count", "waiting",
+        "queueSize", "queue_size", "queueLength", "queue_length",
+    )
+    for row in containers:
+        for key in direct_keys:
+            if key not in row:
+                continue
+            try:
+                return max(0, int(row[key]))
+            except (TypeError, ValueError):
+                continue
+        for key in ("position", "queuePosition", "queue_position"):
+            if key not in row:
+                continue
+            try:
+                return max(0, int(row[key]) - 1)
+            except (TypeError, ValueError):
+                continue
+    texts = [str(payload.get(key) or "") for key in ("msg", "message")]
+    for text in texts:
+        for pattern in (
+            r"(?:前方|ahead)\D{0,8}(\d+)",
+            r"(?:排队|队列|等待人数)(?:人数|数量|长度|中有|已有|剩余)?\D{0,8}(\d+)",
+        ):
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return max(0, int(match.group(1)))
+    return None
+
+
+def _ticket_wait_plan(queue_ahead: Optional[int]) -> tuple[int, float]:
+    """根据前方排队数计算预计时间和动态超时。"""
+    per_request = max(
+        1.0,
+        float(getattr(maiconfig, "awmc_ticket_seconds_per_request", 80.0) or 80.0),
+    )
+    base_timeout = min(
+        600.0,
+        max(
+            1.0,
+            float(getattr(maiconfig, "awmc_ticket_poll_timeout_seconds", 120.0) or 120.0),
+        ),
+    )
+    max_timeout = min(
+        600.0,
+        max(
+            base_timeout,
+            float(getattr(maiconfig, "awmc_ticket_max_poll_timeout_seconds", 600.0) or 600.0),
+        ),
+    )
+    requests = max(1, (queue_ahead or 0) + 1)
+    estimated = max(1, int(round(requests * per_request)))
+    timeout = min(max_timeout, max(base_timeout, estimated + 40.0))
+    return estimated, timeout
+
+
+def _format_wait_duration(seconds: int) -> str:
+    minutes, remain = divmod(max(1, int(seconds)), 60)
+    if minutes and remain:
+        return f"{minutes} 分 {remain} 秒"
+    if minutes:
+        return f"{minutes} 分钟"
+    return f"{remain} 秒"
+
+
+def _ticket_wait_message(queue_ahead: Optional[int], estimated: int, timeout: float) -> str:
+    queue_text = (
+        f"前方预计 {queue_ahead} 个请求"
+        if queue_ahead is not None
+        else "API 未返回明确的前方人数"
+    )
+    timeout_note = (
+        "\n当前队列较长，Bot 最多等待 10 分钟。"
+        if timeout >= 600
+        else ""
+    )
+    return (
+        f"🎫 发票请求已进入队列，{queue_text}，"
+        f"预计约 {_format_wait_duration(estimated)} 完成。\n"
+        "Bot 会等待队列处理，并在确认票券到账后才扣 BREAK。"
+        + timeout_note
+    )
+
+
+def _ticket_task_state(task: dict) -> str:
+    if task.get("done") is True or task.get("success") is True:
+        return "success"
+    if task.get("success") is False or task.get("error"):
+        return "failed"
+    status = str(_pick(task, "status", "Status", "state", "State", default="") or "").lower()
+    if status in {"done", "success", "succeeded", "completed", "finished", "成功", "已完成", "完成"}:
+        return "success"
+    if status in {"failed", "failure", "error", "cancelled", "canceled", "失败", "已取消"}:
+        return "failed"
+    if status in {"pending", "queued", "waiting", "processing", "running", "排队中", "处理中"}:
+        return "active"
+    return status or "unknown"
 
 
 async def _await_ticket_delivery(
@@ -310,17 +459,17 @@ async def _await_ticket_delivery(
     mai_uid: str,
     baseline_stock: int,
     previous_task_ts: Optional[str] = "",
+    *,
+    task_id: str = "",
+    timeout: float = 120.0,
 ) -> int:
-    """轮询队列及真实票券库存；只有库存增加才算发放成功。"""
+    """先轮询队列；队列成功后只查一次真实票券库存。"""
     interval = max(
         1.0, float(getattr(maiconfig, "awmc_ticket_poll_interval_seconds", 3.0))
     )
-    timeout = max(
-        interval,
-        float(getattr(maiconfig, "awmc_ticket_poll_timeout_seconds", 600.0)),
-    )
+    timeout = max(interval, min(600.0, float(timeout)))
     deadline = time.monotonic() + timeout
-    saw_active_task = False
+    saw_current_task = False
     last_task_status = ""
     last_query_error = ""
     log.info(
@@ -329,55 +478,50 @@ async def _await_ticket_delivery(
     )
     while time.monotonic() < deadline:
         await asyncio.sleep(interval)
-        # 库存增加是唯一的最终成功条件；即使队列记录已消失或查询暂时失败，
-        # 只要账号实际到账就可安全结算。
-        try:
-            current = await sw_api.get_user_charge(qrcode)
-            charge_ok, rows, free_rows = _normalize_charge_payload(current)
-            if charge_ok:
-                stock = _ticket_stock(rows + free_rows, charge_id)
-                if stock > baseline_stock:
-                    log.info(
-                        f"[ticket] 已确认到账 uid={mai_uid} charge={charge_id} "
-                        f"stock={stock} baseline={baseline_stock}"
-                    )
-                    return stock
-        except Exception as exc:
-            last_query_error = _exception_detail(exc)
-            log.warning(f"[ticket] 查询票券库存失败，将继续轮询：{last_query_error}")
-
         try:
             queue = await sw_api.get_charge_queue()
             _ensure_business_success(queue)
-            task = _matching_charge_task(queue, charge_id, mai_uid)
+            task = _matching_charge_task(queue, charge_id, mai_uid, task_id)
             if (
                 task is not None
-                and previous_task_ts is not None
+                and bool(previous_task_ts)
                 and str(task.get("ts") or "") == previous_task_ts
             ):
                 # 提交前已经存在的同账号同倍率历史任务，不属于本次请求。
                 task = None
             if task is not None:
-                last_task_status = str(task.get("status") or "").lower()
-                if last_task_status in ("pending", "processing"):
-                    saw_active_task = True
-                elif last_task_status == "failed" and (
-                    previous_task_ts is not None or saw_active_task
-                ):
+                saw_current_task = True
+                last_task_status = _ticket_task_state(task)
+                if last_task_status == "failed":
                     raise RuntimeError(str(task.get("msg") or "发票充值队列任务失败"))
+                if last_task_status == "success":
+                    break
         except RuntimeError:
             raise
         except Exception as exc:
             last_query_error = _exception_detail(exc)
-            log.warning(f"[ticket] 查询发票队列失败，继续复核库存：{last_query_error}")
+            log.warning(f"[ticket] 查询发票队列失败，继续等待：{last_query_error}")
+    else:
+        queue_hint = f"，队列末次状态 {last_task_status}" if last_task_status else ""
+        active_hint = "，已识别本次队列任务" if saw_current_task else ""
+        error_hint = f"，末次查询错误：{last_query_error}" if last_query_error else ""
+        raise RuntimeError(
+            f"发票队列超时（{timeout:.0f} 秒），未收到任务成功状态"
+            f"{queue_hint}{active_hint}{error_hint}；本次不扣 BREAK"
+        )
 
-    queue_hint = f"，队列末次状态 {last_task_status}" if last_task_status else ""
-    active_hint = "，曾检测到任务处理中" if saw_active_task else ""
-    error_hint = f"，末次查询错误：{last_query_error}" if last_query_error else ""
-    raise RuntimeError(
-        f"发票轮询超时（{timeout:.0f} 秒），未确认票券库存增加"
-        f"{queue_hint}{active_hint}{error_hint}；本次不扣 BREAK"
+    # 队列明确成功后才查询一次库存，禁止在轮询期间反复登录 /user/charge。
+    async with machine_session():
+        current = await sw_api.get_user_charge(qrcode)
+    charge_ok, rows, free_rows = _normalize_charge_payload(current)
+    stock = _ticket_stock(rows + free_rows, charge_id) if charge_ok else baseline_stock
+    if stock <= baseline_stock:
+        raise RuntimeError("发票队列已成功，但未确认票券库存增加；本次不扣 BREAK")
+    log.info(
+        f"[ticket] 队列成功后已确认到账 uid={mai_uid} charge={charge_id} "
+        f"stock={stock} baseline={baseline_stock}"
     )
+    return stock
 
 
 def _ticket_valid_timestamp(row: dict) -> Optional[float]:
@@ -1706,7 +1850,11 @@ async def _():
 
 
 async def _execute_ticket(
-    event: MessageEvent, multiple: int, *, qrcode_override: str = ""
+    event: MessageEvent,
+    multiple: int,
+    *,
+    qrcode_override: str = "",
+    notify: Optional[Callable[[str], Awaitable[Any]]] = None,
 ) -> str:
     """执行并结算发票；直发新二维码时会先更新绑定凭据。"""
     key = _user_key(event)
@@ -1753,13 +1901,23 @@ async def _execute_ticket(
             )
         result = await sw_api.charge_ticket(binding.qrcode, multiple)
         _ensure_business_success(result)
-        verified_stock = await _await_ticket_delivery(
-            binding.qrcode,
-            multiple,
-            binding.mai_uid,
-            baseline_stock,
-            previous_task_ts,
-        )
+        task_id = _ticket_submission_task_id(result)
+        queue_ahead = _ticket_queue_ahead(result)
+    estimated, poll_timeout = _ticket_wait_plan(queue_ahead)
+    if notify is not None:
+        try:
+            await notify(_ticket_wait_message(queue_ahead, estimated, poll_timeout))
+        except Exception as exc:
+            log.warning(f"[ticket] 发送排队预计消息失败，继续确认任务：{_exception_detail(exc)}")
+    verified_stock = await _await_ticket_delivery(
+        binding.qrcode,
+        multiple,
+        binding.mai_uid,
+        baseline_stock,
+        previous_task_ts,
+        task_id=task_id,
+        timeout=poll_timeout,
+    )
     charge = break_db.settle_service_success(
         int(key),
         "ticket",
@@ -1825,12 +1983,16 @@ async def continue_ticket_with_qrcode(
     event: MessageEvent,
     qrcode: str,
     pending: tuple[int, float],
+    *,
+    notify: Optional[Callable[[str], Awaitable[Any]]] = None,
 ) -> str:
     """用 180 秒窗口内直发的新二维码继续原发票，而不是触发自动上传。"""
     multiple, expires_at = pending
     key = _user_key(event)
     try:
-        return await _execute_ticket(event, multiple, qrcode_override=qrcode)
+        return await _execute_ticket(
+            event, multiple, qrcode_override=qrcode, notify=notify
+        )
     except TicketQrcodeError as exc:
         current = time.time()
         if expires_at > current:
@@ -1869,8 +2031,11 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         await account_ticket.finish(
             _ticket_failure_text(key, multiple, exc), reply_message=True
         )
+    async def notify(message: str) -> None:
+        await account_ticket.send(message, reply_message=True)
+
     try:
-        text = await _execute_ticket(event, multiple)
+        text = await _execute_ticket(event, multiple, notify=notify)
     except TicketQrcodeError as exc:
         remember_pending_ticket_retry(key, multiple)
         text = (

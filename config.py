@@ -66,7 +66,9 @@ class Config(BaseModel):
     awmc_ticket_allowed_multipliers: str = '2,3,5'
     # 发票提交仅代表进入服务端队列；轮询队列与票券库存，确认到账后才结算 BREAK。
     awmc_ticket_poll_interval_seconds: float = 3.0
-    awmc_ticket_poll_timeout_seconds: float = 600.0
+    awmc_ticket_poll_timeout_seconds: float = 120.0
+    awmc_ticket_max_poll_timeout_seconds: float = 600.0
+    awmc_ticket_seconds_per_request: float = 80.0
     # 合并后的账号功能总开关；关闭时不注册外部调用，但本地查分不受影响。
     awmc_account_enabled: bool = True
     # 账号二维码本地缓存时间。0 表示永久保留，单位秒。
