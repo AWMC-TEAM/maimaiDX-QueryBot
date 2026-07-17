@@ -39,7 +39,9 @@ from ..libraries.maimaidx_playcount_db import pc_db
 from ..libraries.maimaidx_qrcode_util import extract_sgwcmaid_qrcode
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..libraries.maimaidx_processing_time import (
+    format_processing_estimate,
     processing_time_estimator,
+    upload_fallback_seconds,
     upload_workflow_key,
 )
 from ..libraries.maimaidx_reaction import react_processing
@@ -1837,6 +1839,31 @@ def _upload_retry_prompt(message: str, attempt: int) -> str:
     )
 
 
+async def _notify_upload_accepted(
+    matcher: Matcher,
+    event: MessageEvent,
+    *,
+    fish: bool,
+    lxns: bool,
+) -> None:
+    """上传发起后立即回复动态预计时间，不受紧凑消息开关影响。"""
+    timing_key = upload_workflow_key(fish=fish, lxns=lxns)
+    seconds, samples = processing_time_estimator.estimate(
+        timing_key,
+        fallback_seconds=upload_fallback_seconds(fish=fish, lxns=lxns),
+    )
+    targets = "水鱼 + 落雪" if fish and lxns else ("水鱼" if fish else "落雪")
+    message = (
+        f"📤 已受理，正在上传到{targets}。\n"
+        f"{format_processing_estimate(seconds, samples)}\n"
+        "处理完成后会另行发送最终结果。"
+    )
+    try:
+        await matcher.send(message, reply_message=True)
+    except Exception as exc:
+        log.warning(f"[upload] 发送受理与预计时间失败，继续上传：{_exception_detail(exc)}")
+
+
 @upload_fish.handle()
 @upload_lx.handle()
 @upload_all.handle()
@@ -1848,25 +1875,25 @@ async def _(
     if preflight_error:
         await matcher.finish(preflight_error, reply_message=False)
     raw = _arg_text(args)
+    if raw and not extract_sgwcmaid_qrcode(raw):
+        await matcher.finish("上传失败：二维码格式无效", reply_message=True)
     # 先贴表情再撤回凭据，让用户立刻看到「已开始处理」。
     await react_processing(bot, event)
+    await _notify_upload_accepted(matcher, event, fish=fish, lxns=lxns)
     recall_notice = ""
     if extract_sgwcmaid_qrcode(raw):
         try:
             await bot.delete_msg(message_id=event.message_id)
         except Exception:
             recall_notice = _RECALL_FAILED_NOTICE
-    if raw and not extract_sgwcmaid_qrcode(raw):
-        result = "上传失败：二维码格式无效"
-    else:
-        timing_key = upload_workflow_key(fish=fish, lxns=lxns)
-        started_at = time.perf_counter()
-        result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=raw)
-        if result.startswith("上传完成"):
-            processing_time_estimator.record(
-                timing_key, time.perf_counter() - started_at
-            )
-        recall_notice = ""
+    timing_key = upload_workflow_key(fish=fish, lxns=lxns)
+    started_at = time.perf_counter()
+    result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=raw)
+    if result.startswith("上传完成"):
+        processing_time_estimator.record(
+            timing_key, time.perf_counter() - started_at
+        )
+    recall_notice = ""
     if not _upload_retryable(result):
         await matcher.finish(recall_notice + result, reply_message=False)
     attempt = 1 if raw else 0
@@ -1905,6 +1932,7 @@ async def _(
         except Exception:
             recall_notice = _RECALL_FAILED_NOTICE
     if qrcode:
+        await _notify_upload_accepted(matcher, event, fish=fish, lxns=lxns)
         timing_key = upload_workflow_key(fish=fish, lxns=lxns)
         started_at = time.perf_counter()
         result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=qrcode)

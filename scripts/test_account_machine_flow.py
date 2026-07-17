@@ -245,7 +245,9 @@ preflight_pos = upload_src.index("preflight_error = _upload_preflight_error(")
 request_pos = upload_src.index("result = await _upload(", preflight_pos)
 assert preflight_pos < request_pos
 assert "await matcher.finish(preflight_error, reply_message=False)" in upload_src
-assert "📤 已受理" not in upload_src
+assert "async def _notify_upload_accepted(" in upload_src
+assert "📤 已受理，正在上传到" in upload_src
+assert "format_processing_estimate(seconds, samples)" in upload_src
 
 lxns_client_src = (ROOT / "libraries" / "maimaidx_lxns_client.py").read_text(
     encoding="utf-8"

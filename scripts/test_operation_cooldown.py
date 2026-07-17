@@ -78,7 +78,8 @@ account_source = (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8
 assert "setattr(_serial_account_matcher, '_maimaidx_serial_user_operation', True)" in account_source
 assert "操作已确认" not in runtime_source
 assert "你已有一个操作正在进行" not in runtime_source
-assert "已受理" not in account_source
+assert "操作已确认" not in account_source
+assert "📤 已受理，正在上传到" in account_source
 assert "二维码缓存已过期，请重新发送最新 SGWCMAID" in account_source
 
 sw_api_source = (ROOT / "libraries" / "maimaidx_sw_api.py").read_text(encoding="utf-8")
