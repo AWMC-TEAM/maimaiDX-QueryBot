@@ -33,11 +33,11 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'checkin_base_min': '1',
     'checkin_base_max': '2',
     'query_cost': '1',
-    'analysis_input_tokens_per_break': '8000',
-    'analysis_output_tokens_per_break': '2000',
+    'analysis_input_tokens_per_break': '4000',
+    'analysis_output_tokens_per_break': '1000',
     'analysis_min_cost': '2',
     'analysis_max_cost': '20',
-    'analysis_fallback_cost': '3',
+    'analysis_fallback_cost': '4',
     # 恢复旧版第 1～5 天曲线；之后按 streak_bonus_growth 继续增长，不封顶。
     'streak_bonus': '3,5,8,12,20',
     'streak_bonus_growth': '1',
@@ -390,6 +390,7 @@ class BreakDatabase:
         self._migrate_legacy_economy_defaults()
         self._migrate_ticket_cost_default()
         self._migrate_analysis_max_cost_default()
+        self._migrate_analysis_token_rates_default()
         self._restore_uncapped_streak_default()
 
     def _migrate_ticket_cost_default(self) -> None:
@@ -419,6 +420,31 @@ class BreakDatabase:
             )
             self._conn.commit()
             log.info('[BREAK] 已将锐评 Token 计费封顶迁移为 20 BREAK')
+
+    def _migrate_analysis_token_rates_default(self) -> None:
+        """将旧版锐评默认费率迁移为新标准，保留管理员自定义值。"""
+        previous_defaults = {
+            'analysis_input_tokens_per_break': '8000',
+            'analysis_output_tokens_per_break': '2000',
+            'analysis_fallback_cost': '3',
+        }
+        changed = False
+        for key, old_value in previous_defaults.items():
+            row = self._conn.execute(
+                'SELECT value FROM break_config WHERE key = ?', (key,)
+            ).fetchone()
+            if row and str(row['value']) == old_value:
+                self._conn.execute(
+                    'UPDATE break_config SET value = ? WHERE key = ?',
+                    (DEFAULT_CONFIG[key], key),
+                )
+                changed = True
+        if changed:
+            self._conn.commit()
+            log.info(
+                '[BREAK] 已将锐评默认费率迁移为输入 4000 / 输出 1000 Token '
+                '各计 1 BREAK，usage 缺失时收取 4 BREAK'
+            )
 
     def _migrate_legacy_economy_defaults(self) -> None:
         """仅替换仍等于旧默认值的配置，保留管理员自定义数据。"""
@@ -1522,10 +1548,10 @@ def analysis_token_cost(
     minimum = max(0, _config_int('analysis_min_cost', 2))
     maximum = max(minimum, _config_int('analysis_max_cost', 20))
     if not usage_available:
-        fallback = _config_int('analysis_fallback_cost', 3)
+        fallback = _config_int('analysis_fallback_cost', 4)
         return min(maximum, max(minimum, fallback))
-    input_rate = max(1, _config_int('analysis_input_tokens_per_break', 8000))
-    output_rate = max(1, _config_int('analysis_output_tokens_per_break', 2000))
+    input_rate = max(1, _config_int('analysis_input_tokens_per_break', 4000))
+    output_rate = max(1, _config_int('analysis_output_tokens_per_break', 1000))
     weighted = max(0, int(input_tokens)) / input_rate
     weighted += max(0, int(output_tokens)) / output_rate
     return min(maximum, max(minimum, int(math.ceil(weighted))))
@@ -1550,8 +1576,8 @@ def format_analysis_cost_line(
     text = f'💳 锐评消耗 {cost} BREAK（{detail}）'
     if balance is not None:
         text += f' · 余额 {balance} BREAK'
-    input_rate = max(1, _config_int('analysis_input_tokens_per_break', 8000))
-    output_rate = max(1, _config_int('analysis_output_tokens_per_break', 2000))
+    input_rate = max(1, _config_int('analysis_input_tokens_per_break', 4000))
+    output_rate = max(1, _config_int('analysis_output_tokens_per_break', 1000))
     minimum = max(0, _config_int('analysis_min_cost', 2))
     maximum = max(minimum, _config_int('analysis_max_cost', 20))
     text += (
@@ -1562,13 +1588,13 @@ def format_analysis_cost_line(
 
 
 def format_analysis_pricing_help() -> str:
-    input_rate = max(1, _config_int('analysis_input_tokens_per_break', 8000))
-    output_rate = max(1, _config_int('analysis_output_tokens_per_break', 2000))
+    input_rate = max(1, _config_int('analysis_input_tokens_per_break', 4000))
+    output_rate = max(1, _config_int('analysis_output_tokens_per_break', 1000))
     minimum = max(0, _config_int('analysis_min_cost', 2))
     maximum = max(minimum, _config_int('analysis_max_cost', 20))
     fallback = min(
         maximum,
-        max(minimum, _config_int('analysis_fallback_cost', 3)),
+        max(minimum, _config_int('analysis_fallback_cost', 4)),
     )
     return (
         f'· 分析b50 / 锐评一下 — 按实际 Token 计费：每 {input_rate:,} 输入 Token '

@@ -8,6 +8,8 @@ from typing import Any, Optional
 
 
 ROOT = Path(__file__).resolve().parent.parent
+break_source = (ROOT / "libraries" / "maimaidx_break.py").read_text(encoding="utf-8")
+assert "self._migrate_analysis_token_rates_default()" in break_source
 
 
 def load_functions(path: Path, names: set[str], namespace: dict) -> dict:
@@ -23,11 +25,11 @@ def load_functions(path: Path, names: set[str], namespace: dict) -> dict:
 
 
 pricing_config = {
-    "analysis_input_tokens_per_break": 8000,
-    "analysis_output_tokens_per_break": 2000,
+    "analysis_input_tokens_per_break": 4000,
+    "analysis_output_tokens_per_break": 1000,
     "analysis_min_cost": 2,
     "analysis_max_cost": 20,
-    "analysis_fallback_cost": 3,
+    "analysis_fallback_cost": 4,
 }
 
 
@@ -42,11 +44,12 @@ pricing = load_functions(
 )
 cost = pricing["analysis_token_cost"]
 assert cost(0, 0) == 2
-assert cost(8000, 2000) == 2
-assert cost(8001, 2000) == 3
-assert cost(16000, 4000) == 4
+assert cost(4000, 1000) == 2
+assert cost(4001, 1000) == 3
+assert cost(8000, 2000) == 4
+assert cost(16000, 4000) == 8
 assert cost(999999, 999999) == 20
-assert cost(0, 0, usage_available=False) == 3
+assert cost(0, 0, usage_available=False) == 4
 
 line = pricing["format_analysis_cost_line"](
     charged=4,
@@ -56,6 +59,7 @@ line = pricing["format_analysis_cost_line"](
 )
 assert "锐评消耗 4 BREAK" in line
 assert "输入 16,000 / 输出 4,000 Token" in line
+assert "输入每 4,000 Token + 输出每 1,000 Token" in line
 assert "最低 2、最高 20" in line
 
 usage_helpers = load_functions(
