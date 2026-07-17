@@ -74,6 +74,8 @@ account_opt = on_command("mai查询opt", aliases={"查询opt"})
 account_queue = on_command("maiqueue", aliases={"mai队列"})
 
 _RECALL_FAILED_NOTICE = "⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。\n"
+_TICKET_QRCODE_RETRY_SECONDS = 180
+_pending_ticket_retries: dict[str, tuple[int, float]] = {}
 _DIVING_FISH_PROBER_URL = "https://www.diving-fish.com/maimaidx/prober/"
 _FISH_TOKEN_MIN_LENGTH = 127
 _FISH_TOKEN_MAX_LENGTH = 132
@@ -220,6 +222,46 @@ class UnusedTicketPenaltyError(RuntimeError):
     def __init__(self, stocks: dict[int, int]):
         self.stocks = stocks
         super().__init__("账号仍有未使用的倍率票")
+
+
+class TicketQrcodeError(RuntimeError):
+    """发票使用的二维码不可用；调用方可登记一次限时重试。"""
+
+
+def remember_pending_ticket_retry(
+    user_key: str,
+    multiple: int,
+    *,
+    expires_at: Optional[float] = None,
+    now: Optional[float] = None,
+) -> float:
+    """登记待二维码恢复的发票请求，默认 180 秒后失效。"""
+    current = time.time() if now is None else float(now)
+    deadline = (
+        current + _TICKET_QRCODE_RETRY_SECONDS
+        if expires_at is None
+        else float(expires_at)
+    )
+    if deadline > current:
+        _pending_ticket_retries[str(user_key)] = (int(multiple), deadline)
+    return deadline
+
+
+def take_pending_ticket_retry(
+    user_key: str, *, now: Optional[float] = None
+) -> Optional[tuple[int, float]]:
+    """原子取出仍有效的待发票请求，避免同一二维码被重复处理。"""
+    pending = _pending_ticket_retries.pop(str(user_key), None)
+    if pending is None:
+        return None
+    current = time.time() if now is None else float(now)
+    if pending[1] <= current:
+        return None
+    return pending
+
+
+def clear_pending_ticket_retry(user_key: str) -> None:
+    _pending_ticket_retries.pop(str(user_key), None)
 
 
 def _matching_charge_task(
@@ -1657,6 +1699,156 @@ async def _():
     await account_ping.finish("AWMC API 连接正常\n" + _result_text(result))
 
 
+def _ticket_started_message(multiple: int) -> str:
+    return (
+        f"🎫 {multiple} 倍票已受理，正在校验账号并提交。\n"
+        "处理完成后会另行发送结果，请勿重复提交。"
+    )
+
+
+async def _execute_ticket(
+    event: MessageEvent, multiple: int, *, qrcode_override: str = ""
+) -> str:
+    """执行并结算发票；直发新二维码时会先更新绑定凭据。"""
+    key = _user_key(event)
+    binding = account_db.get(key)
+    if binding is None or not (qrcode_override or binding.qrcode):
+        raise RuntimeError("尚未绑定舞萌账号，请先使用：mai绑定 SGWCMAID...")
+    cost = _service_cost("ticket", multiple=multiple)
+    break_db.ensure_service_affordable(int(key), "ticket", cost)
+    credential = qrcode_override or binding.qrcode
+    async with machine_session():
+        try:
+            binding, _ = await _read_verified_preview(
+                binding, credential, save_qrcode=bool(qrcode_override)
+            )
+        except Exception as exc:
+            if not qrcode_override or credential == binding.qrcode:
+                account_db.mark_qrcode_result(key, False)
+            raise TicketQrcodeError(
+                "二维码已过期、失效或与当前绑定账号不一致"
+            ) from exc
+        await wait_between_machine_steps()
+        before_charge = await sw_api.get_user_charge(binding.qrcode)
+        before_ok, before_rows, before_free_rows = _normalize_charge_payload(
+            before_charge
+        )
+        if not before_ok:
+            raise RuntimeError("发票前无法读取票券库存，已取消提交以避免错误扣费")
+        unused_stocks = _unused_ticket_stocks(before_rows + before_free_rows)
+        if unused_stocks:
+            raise UnusedTicketPenaltyError(unused_stocks)
+        baseline_stock = _ticket_stock(before_rows + before_free_rows, multiple)
+        previous_task_ts: Optional[str] = ""
+        try:
+            before_queue = await sw_api.get_charge_queue()
+            previous_task = _matching_charge_task(
+                before_queue, multiple, binding.mai_uid
+            )
+            if previous_task is not None:
+                previous_task_ts = str(previous_task.get("ts") or "")
+        except Exception as exc:
+            previous_task_ts = None
+            log.warning(
+                f"[ticket] 提交前队列快照失败，将仅依赖库存确认："
+                f"{_exception_detail(exc)}"
+            )
+        await wait_between_machine_steps()
+        result = await sw_api.charge_ticket(binding.qrcode, multiple)
+        _ensure_business_success(result)
+        verified_stock = await _await_ticket_delivery(
+            binding.qrcode,
+            multiple,
+            binding.mai_uid,
+            baseline_stock,
+            previous_task_ts,
+        )
+    charge = break_db.settle_service_success(
+        int(key),
+        "ticket",
+        cost,
+        meta={
+            "multiple": multiple,
+            "baseline_stock": baseline_stock,
+            "verified_stock": verified_stock,
+        },
+    )
+    ref = _log(
+        key,
+        "ticket",
+        "success",
+        f"multiple={multiple},stock={verified_stock},"
+        f"charged={charge.charged},free={charge.free}",
+    )
+    clear_pending_ticket_retry(key)
+    return (
+        f"{multiple} 倍票已发放并确认到账（当前库存 {verified_stock} 张）。\n"
+        f"{_charge_text(charge)}\nRef_ID: {ref}"
+    )
+
+
+def _ticket_failure_text(key: str, multiple: int, exc: Exception) -> str:
+    """格式化发票失败；保留原有未使用票券处罚语义。"""
+    if isinstance(exc, UnusedTicketPenaltyError):
+        penalty = max(
+            1, int(break_db.get_config("ticket_unused_penalty", "20") or 20)
+        )
+        meta = {"unused_stocks": exc.stocks, "requested_multiple": multiple}
+        if not break_db.try_consume(
+            int(key), penalty, "ticket_unused_penalty", meta=meta
+        ):
+            balance = break_db.get_balance(int(key))
+            ref = _log(
+                key,
+                "ticket_unused_penalty",
+                "error",
+                f"penalty={penalty},balance={balance},stocks={exc.stocks}",
+            )
+            return (
+                "检测到账号还有未使用的倍率票，本次发票已拦截。\n"
+                f"处罚需要 {penalty} BREAK，但当前仅有 {balance}。\nRef_ID: {ref}"
+            )
+        balance = break_db.get_balance(int(key))
+        ref = _log(
+            key,
+            "ticket_unused_penalty",
+            "success",
+            f"penalty={penalty},balance={balance},stocks={exc.stocks}",
+        )
+        return (
+            f"你智商可好？发一堆票和意为？已吃掉{penalty}个绝赞。\n"
+            f"当前余额：{balance} BREAK\nRef_ID: {ref}"
+        )
+    detail = _exception_detail(exc)
+    ref = _log(key, "ticket", "error", detail)
+    return f"发票失败：{detail}\nRef_ID: {ref}"
+
+
+async def continue_ticket_with_qrcode(
+    event: MessageEvent,
+    qrcode: str,
+    pending: tuple[int, float],
+) -> str:
+    """用 180 秒窗口内直发的新二维码继续原发票，而不是触发自动上传。"""
+    multiple, expires_at = pending
+    key = _user_key(event)
+    try:
+        return await _execute_ticket(event, multiple, qrcode_override=qrcode)
+    except TicketQrcodeError as exc:
+        current = time.time()
+        if expires_at > current:
+            remember_pending_ticket_retry(
+                key, multiple, expires_at=expires_at, now=current
+            )
+            remaining = max(1, int(expires_at - current + 0.999))
+            suffix = f"请在剩余 {remaining} 秒内重新发送最新二维码。"
+        else:
+            suffix = "180 秒续发窗口已结束，请重新发送发票命令。"
+        return _ticket_failure_text(key, multiple, exc) + "\n" + suffix
+    except Exception as exc:
+        return _ticket_failure_text(key, multiple, exc)
+
+
 @account_ticket.handle()
 async def _(event: MessageEvent, args: Message = CommandArg()):
     await _require_agreement(account_ticket, event)
@@ -1672,113 +1864,27 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     if multiple not in allowed:
         allowed_text = " / ".join(map(str, allowed))
         await account_ticket.finish(f"票券倍率仅支持：{allowed_text}。")
+    clear_pending_ticket_retry(key)
     try:
         cost = _service_cost("ticket", multiple=multiple)
         break_db.ensure_service_affordable(int(key), "ticket", cost)
-        async with machine_session():
-            try:
-                binding, _ = await _read_verified_preview(
-                    binding, binding.qrcode, save_qrcode=False
-                )
-            except Exception as exc:
-                account_db.mark_qrcode_result(key, False)
-                raise RuntimeError(
-                    "二维码已过期、失效或与当前绑定账号不一致，"
-                    "请重新发送最新 SGWCMAID 或二维码图片后再发票"
-                ) from exc
-            await wait_between_machine_steps()
-            before_charge = await sw_api.get_user_charge(binding.qrcode)
-            before_ok, before_rows, before_free_rows = _normalize_charge_payload(
-                before_charge
-            )
-            if not before_ok:
-                raise RuntimeError("发票前无法读取票券库存，已取消提交以避免错误扣费")
-            unused_stocks = _unused_ticket_stocks(before_rows + before_free_rows)
-            if unused_stocks:
-                raise UnusedTicketPenaltyError(unused_stocks)
-            baseline_stock = _ticket_stock(before_rows + before_free_rows, multiple)
-            previous_task_ts: Optional[str] = ""
-            try:
-                before_queue = await sw_api.get_charge_queue()
-                previous_task = _matching_charge_task(
-                    before_queue, multiple, binding.mai_uid
-                )
-                if previous_task is not None:
-                    previous_task_ts = str(previous_task.get("ts") or "")
-            except Exception as exc:
-                previous_task_ts = None
-                log.warning(
-                    f"[ticket] 提交前队列快照失败，将仅依赖库存确认："
-                    f"{_exception_detail(exc)}"
-                )
-            await wait_between_machine_steps()
-            result = await sw_api.charge_ticket(binding.qrcode, multiple)
-            _ensure_business_success(result)
-            verified_stock = await _await_ticket_delivery(
-                binding.qrcode,
-                multiple,
-                binding.mai_uid,
-                baseline_stock,
-                previous_task_ts,
-            )
-        charge = break_db.settle_service_success(
-            int(key),
-            "ticket",
-            cost,
-            meta={
-                "multiple": multiple,
-                "baseline_stock": baseline_stock,
-                "verified_stock": verified_stock,
-            },
-        )
-        ref = _log(
-            key, "ticket", "success",
-            f"multiple={multiple},stock={verified_stock},"
-            f"charged={charge.charged},free={charge.free}",
-        )
-    except UnusedTicketPenaltyError as exc:
-        penalty = max(
-            1, int(break_db.get_config("ticket_unused_penalty", "20") or 20)
-        )
-        meta = {"unused_stocks": exc.stocks, "requested_multiple": multiple}
-        if not break_db.try_consume(
-            int(key), penalty, "ticket_unused_penalty", meta=meta
-        ):
-            balance = break_db.get_balance(int(key))
-            ref = _log(
-                key,
-                "ticket_unused_penalty",
-                "error",
-                f"penalty={penalty},balance={balance},stocks={exc.stocks}",
-            )
-            await account_ticket.finish(
-                f"检测到账号还有未使用的倍率票，本次发票已拦截。\n"
-                f"处罚需要 {penalty} BREAK，但当前仅有 {balance}。\nRef_ID: {ref}",
-                reply_message=True,
-            )
-        balance = break_db.get_balance(int(key))
-        ref = _log(
-            key,
-            "ticket_unused_penalty",
-            "success",
-            f"penalty={penalty},balance={balance},stocks={exc.stocks}",
-        )
+    except Exception as exc:
         await account_ticket.finish(
-            f"你智商可好？发一堆票和意为？已吃掉{penalty}个绝赞。\n"
-            f"当前余额：{balance} BREAK\nRef_ID: {ref}",
-            reply_message=True,
+            _ticket_failure_text(key, multiple, exc), reply_message=True
+        )
+    await account_ticket.send(_ticket_started_message(multiple), reply_message=False)
+    try:
+        text = await _execute_ticket(event, multiple)
+    except TicketQrcodeError as exc:
+        remember_pending_ticket_retry(key, multiple)
+        text = (
+            _ticket_failure_text(key, multiple, exc)
+            + "\n请在 180 秒内重新发送最新 SGWCMAID、官方链接或二维码图片；"
+            "Bot 将直接继续本次发票，不会绑定或上传 B50。"
         )
     except Exception as exc:
-        detail = _exception_detail(exc)
-        ref = _log(key, "ticket", "error", detail)
-        await account_ticket.finish(
-            f"发票失败：{detail}\nRef_ID: {ref}", reply_message=True
-        )
-    await account_ticket.finish(
-        f"{multiple} 倍票已发放并确认到账（当前库存 {verified_stock} 张）。\n"
-        f"{_charge_text(charge)}\nRef_ID: {ref}",
-        reply_message=True,
-    )
+        text = _ticket_failure_text(key, multiple, exc)
+    await account_ticket.finish(text, reply_message=True)
 
 
 @account_ticket_status.handle()

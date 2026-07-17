@@ -1,0 +1,67 @@
+"""发票二维码 180 秒续发状态回归测试（无需启动 NoneBot）。"""
+
+import ast
+import time
+from pathlib import Path
+from typing import Optional
+
+
+ROOT = Path(__file__).resolve().parent.parent
+ACCOUNT_PATH = ROOT / "command" / "mai_account.py"
+PLAYCOUNT_PATH = ROOT / "command" / "mai_playcount.py"
+
+
+tree = ast.parse(ACCOUNT_PATH.read_text(encoding="utf-8"))
+names = {
+    "remember_pending_ticket_retry",
+    "take_pending_ticket_retry",
+    "clear_pending_ticket_retry",
+    "_ticket_started_message",
+}
+selected = [
+    node
+    for node in tree.body
+    if isinstance(node, ast.FunctionDef) and node.name in names
+]
+assert {node.name for node in selected} == names
+namespace = {
+    "Optional": Optional,
+    "time": time,
+    "_TICKET_QRCODE_RETRY_SECONDS": 180,
+    "_pending_ticket_retries": {},
+}
+exec(
+    compile(ast.Module(body=selected, type_ignores=[]), str(ACCOUNT_PATH), "exec"),
+    namespace,
+)
+
+remember = namespace["remember_pending_ticket_retry"]
+take = namespace["take_pending_ticket_retry"]
+clear = namespace["clear_pending_ticket_retry"]
+
+deadline = remember("10001", 3, now=1000.0)
+assert deadline == 1180.0
+assert take("10001", now=1179.9) == (3, 1180.0)
+assert take("10001", now=1179.9) is None
+
+remember("10001", 5, now=2000.0)
+assert take("10001", now=2180.0) is None
+
+remember("10001", 2, expires_at=3050.0, now=3000.0)
+clear("10001")
+assert take("10001", now=3001.0) is None
+
+assert "已受理" in namespace["_ticket_started_message"](2)
+
+account_source = ACCOUNT_PATH.read_text(encoding="utf-8")
+assert "请在 180 秒内重新发送最新 SGWCMAID" in account_source
+assert "continue_ticket_with_qrcode" in account_source
+
+playcount_source = PLAYCOUNT_PATH.read_text(encoding="utf-8")
+pending_pos = playcount_source.index("pending_ticket = take_pending_ticket_retry")
+dedupe_pos = playcount_source.index("if _qrcode_dedupe_hit", pending_pos)
+auto_upload_pos = playcount_source.index("previous = account_db.get", pending_pos)
+assert pending_pos < dedupe_pos < auto_upload_pos
+assert "continue_ticket_with_qrcode" in playcount_source[pending_pos:dedupe_pos]
+
+print("ticket qrcode retry tests: ok")

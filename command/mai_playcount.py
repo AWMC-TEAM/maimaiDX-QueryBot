@@ -490,7 +490,13 @@ async def _process_auto_qrcode(
 
     qqid = int(billing_user_id(event))
     from ..libraries.maimaidx_account_db import account_db
-    from .mai_account import _has_lxns_oauth, auto_upload_channels
+    from .mai_account import (
+        _has_lxns_oauth,
+        _ticket_started_message,
+        auto_upload_channels,
+        continue_ticket_with_qrcode,
+        take_pending_ticket_retry,
+    )
 
     prefix = (
         MessageSegment.at(event.user_id) + MessageSegment.text('\n')
@@ -502,6 +508,23 @@ async def _process_auto_qrcode(
         if recalled
         else '⚠️ Bot 无法撤回原凭据消息，请立即手动撤回。'
     )
+    pending_ticket = take_pending_ticket_retry(str(qqid))
+    if pending_ticket is not None:
+        multiple, _expires_at = pending_ticket
+        await bot.send(
+            event,
+            message=prefix + MessageSegment.text(
+                '✅ 已识别新的舞萌二维码。\n'
+                + recall_status
+                + '\n'
+                + _ticket_started_message(multiple)
+            ),
+        )
+        result = await continue_ticket_with_qrcode(
+            event, qrcode_data, pending_ticket
+        )
+        await bot.send(event, message=prefix + MessageSegment.text(result))
+        return
     if qqid in _waiting_qrcode:
         _waiting_qrcode.pop(qqid, None)
     if _qrcode_dedupe_hit(qqid, qrcode_data):
