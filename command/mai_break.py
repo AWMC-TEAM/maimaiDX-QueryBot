@@ -8,6 +8,8 @@ from nonebot.permission import SUPERUSER
 
 from ..libraries.maimaidx_break import (
     DEFAULT_CONFIG,
+    LOTTERY_PRIZES,
+    LOTTERY_WEIGHTS,
     break_db,
     format_account_profile,
     format_account_profile_sections,
@@ -45,18 +47,21 @@ break_red_packet_status = on_command(
     '红包状态', aliases={'红包记录', '查看红包'}
 )
 
+_LOTTERY_PRIZE_LINES = ''.join(
+    f'· {prize} BREAK：{weight}%\n'
+    for prize, weight in zip(LOTTERY_PRIZES, LOTTERY_WEIGHTS)
+)
 LOTTERY_HELP = (
     '【BREAK 抽奖】\n'
     '这是 Bot 内部的群互动消耗玩法，BREAK 不具有现金价值。\n'
     '默认每次消耗 2 BREAK，奖池为：\n'
-    '· 0 BREAK：55%\n'
-    '· 1 BREAK：25%\n'
-    '· 2 BREAK：15%\n'
-    '· 5 BREAK：5%\n'
-    '用法：BREAK抽奖 [次数]\n'
+    + _LOTTERY_PRIZE_LINES
+    + '用法：BREAK抽奖 [次数]\n'
     '例：“BREAK抽奖”抽 1 次，“BREAK抽奖 5”连抽 5 次。\n'
-    '单次最多 10 连抽；长期期望为净消耗，用于控制 BREAK 通胀。'
+    '非空奖概率 65%，单抽期望返还 1.6 BREAK；最多 10 连抽，长期仍为净消耗。'
 )
+
+setattr(break_lottery, '_maimaidx_serial_user_operation', True)
 
 
 def get_at_qq(message: MessageEvent) -> Optional[int]:

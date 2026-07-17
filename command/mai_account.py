@@ -73,6 +73,28 @@ account_region = on_command("mai地图", aliases={"游玩地图"})
 account_opt = on_command("mai查询opt", aliases={"查询opt"})
 account_queue = on_command("maiqueue", aliases={"mai队列"})
 
+# 涉及账号状态、外部上传或机台会话的命令按用户串行执行。运行时预处理器
+# 会引用原消息确认、等待 1 秒，并拒绝同一用户的并发操作。
+for _serial_account_matcher in (
+    account_bind,
+    account_unbind,
+    account_status,
+    fish_bind,
+    fish_unbind,
+    lx_upload_bind,
+    lx_upload_unbind,
+    upload_fish,
+    upload_lx,
+    upload_all,
+    account_ping,
+    account_ticket,
+    account_ticket_status,
+    account_region,
+    account_opt,
+    account_queue,
+):
+    setattr(_serial_account_matcher, '_maimaidx_serial_user_operation', True)
+
 _RECALL_FAILED_NOTICE = "⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。\n"
 _TICKET_QRCODE_RETRY_SECONDS = 180
 _pending_ticket_retries: dict[str, tuple[int, float]] = {}

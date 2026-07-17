@@ -71,6 +71,8 @@ CAPPED_STREAK_DEFAULT = '0,0,1,1,1,2,2'
 
 BONUS_GROUP_IDS = {int(BOT_QQ_GROUP), 993795066}
 DOUBLE_CHECKIN_GROUP_IDS = {669800745}
+LOTTERY_PRIZES = (0, 1, 2, 5, 10)
+LOTTERY_WEIGHTS = (35, 30, 20, 12, 3)
 
 _CREATE_SQL = """\
 CREATE TABLE IF NOT EXISTS break_users (
@@ -989,7 +991,11 @@ class BreakDatabase:
             balance = self.get_balance(qqid)
             if balance < cost:
                 raise BreakInsufficientError(cost, balance, qqid=qqid)
-            prizes = random.choices([0, 1, 2, 5], weights=[55, 25, 15, 5], k=count)
+            prizes = random.choices(
+                LOTTERY_PRIZES,
+                weights=LOTTERY_WEIGHTS,
+                k=count,
+            )
             prize = sum(prizes)
             net = prize - cost
             now = time.time()

@@ -48,6 +48,7 @@ pc_detail = on_command('pc数', aliases={'PC数'})
 pc50 = on_command('pc50', aliases={'PC50', '嫖娼50'})
 pca50 = on_command('pca50', aliases={'PCA50', '嫖娼a50'})
 pc_rank50 = on_command('游玩排行50', aliases={'游玩PC50', 'PC游玩50', 'pc游玩50'})
+setattr(update_pc, '_maimaidx_serial_user_operation', True)
 
 # user_id -> group_id；关机时可据此通知对应群
 _waiting_qrcode: dict[int, int] = {}
@@ -586,6 +587,8 @@ async def _process_auto_qrcode(
     )
 
     _qrcode_auto_processing.add(qqid)
+    # 已向用户发送识别/操作确认；留出短暂间隔，避免连续登录挤掉账号会话。
+    await asyncio.sleep(1.0)
     t0 = time.perf_counter()
     log.info(
         f'[QrcodeAuto] 开始同步 source={source} group={getattr(event, "group_id", "private")} qq={qqid} '

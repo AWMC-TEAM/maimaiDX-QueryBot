@@ -62,6 +62,8 @@ class Config(BaseModel):
     awmc_machine_step_delay_seconds: float = 3.0
     # 等待全局机台锁的最长时间（秒）；0=无限等待。超时返回「机台繁忙」。
     awmc_machine_lock_timeout_seconds: float = 60.0
+    # 两次独立账号/机台操作之间的最短间隔；避免连续登录导致账号会话异常。
+    awmc_machine_operation_cooldown_seconds: float = 1.0
     # 发票允许倍率，使用英文逗号分隔，例如 2,3,5。
     awmc_ticket_allowed_multipliers: str = '2,3,5'
     # 发票提交仅代表进入服务端队列；轮询队列与票券库存，确认到账后才结算 BREAK。

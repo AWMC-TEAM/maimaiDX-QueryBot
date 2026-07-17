@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Optional
 
@@ -35,6 +36,7 @@ admin_web_cmd = on_command("管理面板", aliases={"WebUI"}, permission=PLUGIN_
 
 _message_recorder = on_message(priority=99, block=False)
 _ban_notified: dict[str, float] = {}
+_active_user_operations: set[str] = set()
 
 
 @get_driver().on_startup
@@ -57,6 +59,18 @@ def _busy_surcharge_exempt(matcher: Matcher) -> bool:
         return True
     module = str(getattr(matcher, "module", "") or "")
     return module.endswith(".mai_guess")
+
+
+def _serial_user_operation(matcher: Matcher) -> bool:
+    return bool(
+        getattr(type(matcher), "_maimaidx_serial_user_operation", False)
+    )
+
+
+def _release_user_operation(state: T_State) -> None:
+    key = state.pop("__maimaidx_serial_user_operation", None)
+    if key is not None:
+        _active_user_operations.discard(str(key))
 
 
 def _command_name(matcher: Matcher, event: Event, state: T_State) -> str:
@@ -147,6 +161,18 @@ async def _audit_and_ban_preprocessor(
     if bool(getattr(type(matcher), "_maimaidx_deferred_audit", False)):
         return
 
+    if _serial_user_operation(matcher):
+        operation_key = str(billing_user_id(event))
+        if operation_key in _active_user_operations:
+            await bot.send(
+                event,
+                "你已有一个操作正在进行，请等待完成后再试。\n"
+                "同一账号同时只能执行一个操作。",
+            )
+            raise IgnoredException("serial user operation already active")
+        _active_user_operations.add(operation_key)
+        state["__maimaidx_serial_user_operation"] = operation_key
+
     busy_surcharge_exempt = _busy_surcharge_exempt(matcher)
     if (
         bool(getattr(maiconfig, "maimaidx_busy_surcharge_enabled", True))
@@ -182,10 +208,26 @@ async def _audit_and_ban_preprocessor(
                         f"{surcharge} BREAK。\n"
                         + format_break_insufficient_message(payer, surcharge, balance),
                     )
+                    _release_user_operation(state)
                     raise IgnoredException("maimaidx busy surcharge insufficient")
                 state["__maimaidx_busy_charge"] = {
                     **meta, "charged": surcharge, "balance": break_db.get_balance(payer)
                 }
+
+    if state.get("__maimaidx_serial_user_operation") is not None:
+        confirmation = "操作已确认，1 秒后开始处理；请勿重复提交。"
+        try:
+            if isinstance(event, MessageEvent):
+                await bot.send(
+                    event,
+                    MessageSegment.reply(event.message_id)
+                    + MessageSegment.text("\n" + confirmation),
+                )
+            else:
+                await bot.send(event, confirmation)
+        except Exception as exc:
+            log.warning(f"发送操作确认失败：{type(exc).__name__}: {exc}")
+        await asyncio.sleep(1.0)
 
     ref_id = admin_audit.start_trace(
         command=_command_name(matcher, event, state),
@@ -210,6 +252,7 @@ async def _audit_postprocessor(
     event: Event,
     state: T_State,
 ):
+    _release_user_operation(state)
     ref_id = state.get("__maimaidx_ref_id")
     if not ref_id:
         return
