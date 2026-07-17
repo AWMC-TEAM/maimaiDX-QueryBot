@@ -63,7 +63,11 @@ def is_now_playing_guess_music(event) -> bool:
 
 
 guess_music_start   = on_command('猜歌', rule=GROUP_MESSAGE)
-guess_music_pic     = on_command('猜曲绘', rule=GROUP_MESSAGE)
+guess_music_pic     = on_command(
+    '猜曲绘',
+    aliases={'猜封面', '猜歌封面', '猜曲图', '猜歌图', '猜曲绘图'},
+    rule=GROUP_MESSAGE,
+)
 guess_music_audio   = on_command('猜曲子', rule=GROUP_MESSAGE)
 update_guess_audio  = on_regex(r'^更新猜曲音频(?:\s+(-full))?\s*$', permission=PLUGIN_ADMIN_ONLY)
 guess_boost_grant   = on_command('发加倍卡', permission=GUESS_GROUP_MANAGER, rule=GROUP_MESSAGE)

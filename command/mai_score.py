@@ -120,7 +120,7 @@ difficulty_b50 = on_regex(
     r'(?!刷新\s*b50\s*$)(?!更新\s*b50\s*$)(?!合作\s*b50\s*$)'
     r'(?!fcb50\s*$)(?!fcallb50\s*$)(?!apb50\s*$)(?!apallb50\s*$)'
     r'(?!寸\s*b50\s*$)(?!锁血\s*b50\s*$)(?!越级\s*b50\s*$)'
-    r'(?!dx2025b50\s*$)(?!b50风险\s*$)(?!b50\s*风险\s*$)'
+    r'(?!dx2025b50\s*$)(?!b50\s*(?:风险(?:预警)?|预警)\s*$)'
     r'(.+?)\s*b50\s*$',
     flags=re.IGNORECASE,
     priority=15,
@@ -151,7 +151,12 @@ plate_count_stats = on_command('牌子统计', aliases={'统计牌子'})
 compare_report = on_command('对比存档', aliases={'存档对比', '报告对比'})
 tag_analysis = on_command('底力分析', aliases={'底力分析'})
 weakness_prescription = on_command('弱项处方', aliases={'弱项处方单', '底力处方', '练习推荐'})
-b50_risk_warning = on_command('b50风险', aliases={'B50风险', 'b50风险预警', '风险预警'})
+b50_risk_warning = on_regex(
+    r'^\s*(?:b50\s*(?:风险(?:预警)?|预警)|风险预警)\s*$',
+    flags=re.IGNORECASE,
+    priority=1,
+    block=True,
+)
 head_to_head = on_command('对战战绩', aliases={'headtohead', 'h2h', '对决战绩'})
 rating_sandbox = on_command('目标rating', aliases={'rating沙盘', '目标分', '推分沙盘'})
 minfo   = on_command('minfo', aliases={'minfo', 'Minfo', 'MINFO', 'info', 'Info', 'INFO'})
