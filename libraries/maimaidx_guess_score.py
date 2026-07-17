@@ -67,7 +67,7 @@ class GuessScoreHistoryStore(BaseModel):
 
 class GuessScoreManager:
 
-    PIC_POINTS = {3: 3, 2: 2, 1: 1}
+    PIC_POINTS = {4: 4, 3: 3, 2: 2, 1: 1}
     PIC_CLEAR_POINTS = 1
     SONG_MAX_POINTS = 7
     AUDIO_MIN_POINTS = 5

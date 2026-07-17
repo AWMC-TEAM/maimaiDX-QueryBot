@@ -63,9 +63,8 @@ def is_now_playing_guess_music(event) -> bool:
 
 
 guess_music_start   = on_command('猜歌', rule=GROUP_MESSAGE)
-guess_music_pic     = on_command(
-    '猜曲绘',
-    aliases={'猜封面', '猜歌封面', '猜曲图', '猜歌图', '猜曲绘图'},
+guess_music_pic     = on_regex(
+    r'^(?:猜曲绘|猜封面|猜歌封面|猜曲图|猜歌图|猜曲绘图)\s*([1-4])?\s*$',
     rule=GROUP_MESSAGE,
 )
 guess_music_audio   = on_command('猜曲子', rule=GROUP_MESSAGE)
@@ -161,6 +160,8 @@ _GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘或猜曲子'
 _GUESS_SEND_FAIL_MSG = '游戏数据获取失败，本游戏已结束。'
 GUESS_SEND_TIMEOUT_TEXT = 15
 GUESS_SEND_TIMEOUT_MEDIA = 60
+GUESS_AUDIO_PREPARE_FIRST_UPDATE = 30
+GUESS_AUDIO_PREPARE_UPDATE_INTERVAL = 60
 
 
 def _guess_loop_should_stop(gid: GroupId) -> bool:
@@ -249,6 +250,47 @@ async def _safe_matcher_send(
         await _force_end_guess_round(gid)
         await _guess_notify(matcher, event, _GUESS_SEND_FAIL_MSG)
         raise GuessSendAborted() from e
+
+
+async def _prepare_guess_audio_with_progress(
+    matcher: Matcher,
+    event: MessageEvent,
+    gid: GroupId,
+) -> Optional[GuessAudioData]:
+    """准备音频时持续告知用户进度，避免耗时分轨被误认为卡死。"""
+    await _guess_notify(
+        matcher,
+        event,
+        '正在随机选曲并准备音频…\n'
+        '命中缓存通常 5 秒内开始；首次生成新曲预计 1～3 分钟，'
+        '期间会定时报告进度，请稍候。',
+        reply=True,
+    )
+    task = asyncio.create_task(guess.prepare_audio_round())
+    started = asyncio.get_running_loop().time()
+    wait_seconds = GUESS_AUDIO_PREPARE_FIRST_UPDATE
+    try:
+        while True:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(task), timeout=wait_seconds,
+                )
+            except asyncio.TimeoutError:
+                elapsed = int(asyncio.get_running_loop().time() - started)
+                if elapsed < 180:
+                    eta = '新曲通常会在总计 1～3 分钟内完成。'
+                else:
+                    eta = '已超过常见耗时，可能正在跳过无资源曲目并尝试下一首。'
+                await _guess_notify(
+                    matcher,
+                    event,
+                    f'猜曲音频仍在准备中（已等待 {elapsed} 秒）。\n'
+                    f'正在下载或进行 AI 分轨，{eta}',
+                )
+                wait_seconds = GUESS_AUDIO_PREPARE_UPDATE_INTERVAL
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
 
 
 async def _send_guess_answer_bundle(
@@ -573,20 +615,23 @@ async def _(event: MessageEvent):
 
 
 @guess_music_pic.handle()
-async def _(event: MessageEvent):
+async def _(event: MessageEvent, matched=RegexMatched()):
     gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_pic.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
     if guess.is_busy(gid):
         await guess_music_pic.finish(_GUESS_BUSY_HINT, reply_message=True)
-    guess.startpic(gid)
+    diff_raw = matched.group(1)
+    difficulty = int(diff_raw) if diff_raw else None
+    guess.startpic(gid, difficulty)
     data = guess.Group[gid]
     try:
         intro = dedent(f'''\
             开始猜曲绘！可以直接发送答案！
             每隔10秒会给出进一步提示。发送 重置猜歌 可结束游戏。
             当前难度：{data.difficulty}，当前干扰类型：{'、'.join(data.interference_labels)}
-            积分：难度越高基础分越高（1～3分）；首次扩增前猜中可叠加首阶段×2、首答×2，理论最高4倍。
+            积分：难度越高基础分越高（1～4分）；首次扩增前猜中可叠加首阶段×2、首答×2，理论最高4倍。
+            指定难度可发送：猜曲绘1～猜曲绘4。
         ''')
         first_pic = MessageSegment.image(guess.render_pic_crop(data))
         compact = bool(getattr(maiconfig, 'maimaidx_compact_messages', True))
@@ -675,12 +720,10 @@ async def _(event: MessageEvent):
     compact = bool(getattr(maiconfig, 'maimaidx_compact_messages', True))
     try:
         try:
-            if not compact:
-                await _safe_matcher_send(
-                    guess_music_audio, event, '正在准备猜曲音频，请稍候…', gid,
-                )
             log.info(f'[GuessAudio] 猜曲子开局 gid={gid}')
-            data = await guess.prepare_audio_round()
+            data = await _prepare_guess_audio_with_progress(
+                guess_music_audio, event, gid,
+            )
             if data is None:
                 log.warning(f'[GuessAudio] 猜曲子无可用音频 gid={gid}')
                 await guess_music_audio.finish(
@@ -779,10 +822,10 @@ async def _(event: PrivateMessageEvent, match=RegexMatched()):
     force = match.group(1) is not None
     log.info(f'[GuessAudio] 收到「更新猜曲音频」qq={event.user_id} force={force}')
     hint = '强制重建' if force else '增量烘焙'
-    if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
-        await update_guess_audio.send(
-            f'开始{hint}猜曲音频（热门池），耗时取决于曲目数量与是否安装 demucs，请稍候…'
-        )
+    await update_guess_audio.send(
+        f'开始{hint}猜曲音频（热门池）。单首通常需要 1～3 分钟，'
+        '完整热门池可能耗时数小时；已有缓存会自动跳过，完成后会发送汇总。'
+    )
     try:
         report = await build_hot_audio_cache(force=force)
     except asyncio.CancelledError:

@@ -31,4 +31,18 @@ assert "block=True" in risk_registration
 for alias in ("猜封面", "猜歌封面", "猜曲图", "猜歌图", "猜曲绘图"):
     assert alias in guess_source
 
+pic_pattern = re.compile(
+    r"^(?:猜曲绘|猜封面|猜歌封面|猜曲图|猜歌图|猜曲绘图)\s*([1-4])?\s*$"
+)
+for command in (
+    "猜曲绘",
+    "猜曲绘4",
+    "猜曲绘 3",
+    "猜封面2",
+    "猜歌图 1",
+):
+    assert pic_pattern.fullmatch(command), command
+assert pic_pattern.fullmatch("猜曲绘5") is None
+assert pic_pattern.fullmatch("猜曲绘0") is None
+
 print("risk and guess alias tests: ok")

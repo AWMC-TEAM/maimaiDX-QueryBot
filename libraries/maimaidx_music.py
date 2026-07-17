@@ -3,7 +3,7 @@ import json
 import random
 from collections import defaultdict
 from copy import deepcopy
-from typing import Dict, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 from loguru import logger as log
@@ -457,9 +457,9 @@ class Guess:
         self.Group[gid] = self.guessData()
         self._log_guess_start('猜歌', gid)
 
-    def startpic(self, gid: Union[int, str]):
-        """开始猜曲绘"""
-        self.Group[gid] = self.guesspicdata()
+    def startpic(self, gid: Union[int, str], difficulty: Optional[int] = None):
+        """开始猜曲绘；difficulty 为 1～4，省略则随机。"""
+        self.Group[gid] = self.guesspicdata(difficulty)
         self._log_guess_start('猜曲绘', gid)
         
     def calculate_frequency_weights(self, image: Image.Image) -> np.ndarray:
@@ -515,20 +515,38 @@ class Guess:
         ('emboss', '浮雕'),
         ('solarize', '曝光'),
         ('posterize', '色阶'),
+        ('edge', '边缘'),
+        ('contour', '轮廓'),
+        ('channel_shift', '色差'),
+        ('glitch', '故障'),
+        ('scanlines', '扫描线'),
+        ('vignette', '暗角'),
+        ('sepia', '复古'),
+        ('tiles', '分块'),
+        ('wave', '波浪'),
+        ('oil', '油画'),
+        ('rainbow', '彩虹'),
+        ('cold', '冷色'),
+        ('warm', '暖色'),
+        ('sharpen', '锐化'),
+        ('equalize', '均衡'),
+        ('halftone', '网点'),
     ]
 
-    PIC_SOLO_INTERFERENCE = {'pixelate', 'emboss'}
+    PIC_SOLO_INTERFERENCE = {'pixelate', 'emboss', 'edge', 'contour', 'tiles', 'halftone'}
 
     PIC_INTERFERENCE_COUNT = {
         1: (1, 2),
         2: (2, 3),
         3: (2, 4),
+        4: (3, 5),
     }
 
     PIC_DIFFICULTY = {
         1: {'initial': 0.12, 'max': 0.50, 'expansions': 3},
         2: {'initial': 0.09, 'max': 0.42, 'expansions': 4},
         3: {'initial': 0.07, 'max': 0.35, 'expansions': 4},
+        4: {'initial': 0.05, 'max': 0.28, 'expansions': 5},
     }
 
     def _pick_pic_interferences(self, difficulty: int) -> Tuple[List[str], List[str]]:
@@ -600,6 +618,106 @@ class Guess:
             return ImageOps.solarize(im, threshold=128)
         if kind == 'posterize':
             return ImageOps.posterize(im, bits=3)
+        if kind == 'edge':
+            return im.filter(ImageFilter.FIND_EDGES)
+        if kind == 'contour':
+            return im.filter(ImageFilter.CONTOUR)
+        if kind == 'channel_shift':
+            r, g, b = im.split()
+            shift = max(2, min(im.size) // 30)
+            r = r.transform(im.size, Image.AFFINE, (1, 0, shift, 0, 1, 0))
+            b = b.transform(im.size, Image.AFFINE, (1, 0, -shift, 0, 1, 0))
+            return Image.merge('RGB', (r, g, b))
+        if kind == 'glitch':
+            arr = np.array(im)
+            h, w = arr.shape[:2]
+            band = max(4, h // 12)
+            for y in range(0, h, band):
+                offset = random.randint(-w // 6, w // 6)
+                arr[y:y + band] = np.roll(arr[y:y + band], offset, axis=1)
+            return Image.fromarray(arr)
+        if kind == 'scanlines':
+            arr = np.array(im, dtype=np.int16)
+            arr[::3] = (arr[::3] * 0.45).astype(np.int16)
+            return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+        if kind == 'vignette':
+            arr = np.array(im, dtype=np.float32)
+            h, w = arr.shape[:2]
+            yy, xx = np.ogrid[:h, :w]
+            cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
+            dist = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2)
+            max_dist = np.sqrt(cy ** 2 + cx ** 2) or 1.0
+            mask = np.clip(1.0 - (dist / max_dist) ** 1.6 * 1.15, 0.12, 1.0)
+            arr *= mask[..., None]
+            return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+        if kind == 'sepia':
+            arr = np.array(im, dtype=np.float32)
+            r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
+            tr = np.clip(0.393 * r + 0.769 * g + 0.189 * b, 0, 255)
+            tg = np.clip(0.349 * r + 0.686 * g + 0.168 * b, 0, 255)
+            tb = np.clip(0.272 * r + 0.534 * g + 0.131 * b, 0, 255)
+            return Image.fromarray(np.stack([tr, tg, tb], axis=-1).astype(np.uint8))
+        if kind == 'tiles':
+            w, h = im.size
+            cols = rows = 4
+            tw, th = w // cols, h // rows
+            if tw < 2 or th < 2:
+                return im
+            tiles = []
+            for row in range(rows):
+                for col in range(cols):
+                    box = (col * tw, row * th, (col + 1) * tw, (row + 1) * th)
+                    tiles.append(im.crop(box))
+            random.shuffle(tiles)
+            out = Image.new('RGB', (cols * tw, rows * th))
+            for idx, tile in enumerate(tiles):
+                out.paste(tile, ((idx % cols) * tw, (idx // cols) * th))
+            if out.size != im.size:
+                canvas = Image.new('RGB', im.size)
+                canvas.paste(out, (0, 0))
+                return canvas
+            return out
+        if kind == 'wave':
+            arr = np.array(im)
+            h, w = arr.shape[:2]
+            yy, xx = np.mgrid[:h, :w]
+            amp = max(3, min(w, h) // 18)
+            src_x = np.clip(xx + (amp * np.sin(2 * np.pi * yy / max(12, h // 6))).astype(int), 0, w - 1)
+            src_y = np.clip(yy + (amp * np.sin(2 * np.pi * xx / max(12, w // 6))).astype(int), 0, h - 1)
+            return Image.fromarray(arr[src_y, src_x])
+        if kind == 'oil':
+            return im.filter(ImageFilter.ModeFilter(size=7))
+        if kind == 'rainbow':
+            hsv = im.convert('HSV')
+            h, s, v = hsv.split()
+            w, _ = im.size
+            lut = [int((i / max(w - 1, 1)) * 255) for i in range(w)]
+            h_arr = np.array(h)
+            for x in range(w):
+                h_arr[:, x] = lut[x]
+            s = s.point(lambda x: max(x, 160))
+            return Image.merge('HSV', (Image.fromarray(h_arr), s, v)).convert('RGB')
+        if kind == 'cold':
+            arr = np.array(im, dtype=np.int16)
+            arr[..., 0] = arr[..., 0] * 0.65
+            arr[..., 2] = np.clip(arr[..., 2] * 1.35 + 20, 0, 255)
+            return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+        if kind == 'warm':
+            arr = np.array(im, dtype=np.int16)
+            arr[..., 0] = np.clip(arr[..., 0] * 1.35 + 15, 0, 255)
+            arr[..., 2] = arr[..., 2] * 0.7
+            return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+        if kind == 'sharpen':
+            out = im
+            for _ in range(3):
+                out = out.filter(ImageFilter.SHARPEN)
+            return out
+        if kind == 'equalize':
+            return ImageOps.equalize(im)
+        if kind == 'halftone':
+            gray = im.convert('L')
+            dithered = gray.convert('1')
+            return dithered.convert('RGB')
         return im
 
     def _apply_pic_interference(self, im: Image.Image, kinds: List[str]) -> Image.Image:
@@ -760,31 +878,39 @@ class Guess:
         )
 
     async def prepare_audio_round(self) -> Optional[GuessAudioData]:
-        """随机选曲并确保音频缓存可用。"""
-        ready_pool = self._guess_audio_pool()
-        if ready_pool:
-            return self.guessaudiodata(random.choice(ready_pool))
+        """随机选曲并确保音频缓存可用。
 
+        每局从完整曲池重新随机抽取，让缓存池能够在实际游玩中逐步扩充；如果
+        抽中的新曲全部生成失败，再回退到已有缓存。否则只要缓存池中存在一首歌，
+        后续每局都会只从这个固定池中抽取，缓存也永远没有机会增长。
+        """
+        ready_pool = self._guess_audio_pool()
         candidates = self._guess_music_pool()[:]
         random.shuffle(candidates)
         for music in candidates[:12]:
             ok, _msg = await ensure_audio_ready(music.id, title=music.title)
             if ok:
                 return self.guessaudiodata(music)
+        if ready_pool:
+            log.warning('[GuessAudio] 新曲音频生成失败，回退到已有缓存')
+            return self.guessaudiodata(random.choice(ready_pool))
         return None
 
     def startaudio(self, gid: Union[int, str], data: GuessAudioData) -> None:
         self.Group[gid] = data
         self._log_guess_start('猜曲子', gid)
 
-    def guesspicdata(self) -> GuessPicData:
-        """猜曲绘数据"""
+    def guesspicdata(self, difficulty: Optional[int] = None) -> GuessPicData:
+        """猜曲绘数据；difficulty 为 1～4，省略则随机。"""
         music = self._pick_guess_music()
         im = Image.open(music_picture(music.id))
         w, h = im.size
         weights = self.calculate_frequency_weights(im)
 
-        difficulty = random.randint(1, 3)
+        if difficulty is None:
+            difficulty = random.randint(1, 4)
+        elif difficulty not in self.PIC_DIFFICULTY:
+            raise ValueError(f'无效猜曲绘难度：{difficulty}')
         cfg = self.PIC_DIFFICULTY[difficulty]
         initial_scale = cfg['initial']
         max_scale = cfg['max']
