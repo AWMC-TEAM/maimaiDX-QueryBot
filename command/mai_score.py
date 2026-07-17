@@ -154,7 +154,7 @@ weakness_prescription = on_command('弱项处方', aliases={'弱项处方单', '
 b50_risk_warning = on_regex(
     r'^\s*(?:b50\s*(?:风险(?:预警)?|预警)|风险预警)\s*$',
     flags=re.IGNORECASE,
-    priority=1,
+    priority=0,
     block=True,
 )
 head_to_head = on_command('对战战绩', aliases={'headtohead', 'h2h', '对决战绩'})

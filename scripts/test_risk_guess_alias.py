@@ -22,7 +22,12 @@ for command in (
 ):
     assert risk_pattern.fullmatch(command), command
 
-assert "priority=1" in score_source[score_source.index("b50_risk_warning ="):]
+risk_registration = score_source[
+    score_source.index("b50_risk_warning ="):
+    score_source.index("head_to_head =")
+]
+assert "priority=0" in risk_registration
+assert "block=True" in risk_registration
 for alias in ("猜封面", "猜歌封面", "猜曲图", "猜歌图", "猜曲绘图"):
     assert alias in guess_source
 
