@@ -51,6 +51,14 @@ def _plugin_matcher(matcher: Matcher) -> bool:
     return "maimaidx" in module.lower() or "maimaidx" in plugin_name.lower()
 
 
+def _busy_surcharge_exempt(matcher: Matcher) -> bool:
+    """猜歌模块是免费奖励玩法，整模块不参与高负载 BREAK 附加费。"""
+    if bool(getattr(type(matcher), "_maimaidx_busy_surcharge_exempt", False)):
+        return True
+    module = str(getattr(matcher, "module", "") or "")
+    return module.endswith(".mai_guess")
+
+
 def _command_name(matcher: Matcher, event: Event, state: T_State) -> str:
     prefix = state.get("_prefix") or {}
     command = prefix.get("command") if isinstance(prefix, dict) else None
@@ -139,7 +147,11 @@ async def _audit_and_ban_preprocessor(
     if bool(getattr(type(matcher), "_maimaidx_deferred_audit", False)):
         return
 
-    if bool(getattr(maiconfig, "maimaidx_busy_surcharge_enabled", True)):
+    busy_surcharge_exempt = _busy_surcharge_exempt(matcher)
+    if (
+        bool(getattr(maiconfig, "maimaidx_busy_surcharge_enabled", True))
+        and not busy_surcharge_exempt
+    ):
         window = max(
             1.0, float(getattr(maiconfig, "maimaidx_busy_window_seconds", 60.0))
         )

@@ -1,5 +1,6 @@
 """高负载滚动窗口计数回归测试（无需启动 NoneBot）。"""
 
+import ast
 import importlib.util
 from pathlib import Path
 
@@ -26,5 +27,39 @@ runtime_source = (root / "command" / "mai_admin_runtime.py").read_text(
 qq_bind_source = (root / "command" / "mai_qq_bind.py").read_text(encoding="utf-8")
 assert '_maimaidx_passive_recorder' in runtime_source
 assert "setattr(_qq_member_recorder, '_maimaidx_passive_recorder', True)" in qq_bind_source
+assert '_maimaidx_busy_surcharge_exempt' in runtime_source
+assert 'module.endswith(".mai_guess")' in runtime_source
+assert 'busy_surcharge_exempt = _busy_surcharge_exempt(matcher)' in runtime_source
+
+runtime_tree = ast.parse(runtime_source)
+exempt_node = next(
+    node
+    for node in runtime_tree.body
+    if isinstance(node, ast.FunctionDef) and node.name == '_busy_surcharge_exempt'
+)
+runtime_namespace = {'Matcher': object}
+exec(
+    compile(ast.Module(body=[exempt_node], type_ignores=[]), "mai_admin_runtime.py", "exec"),
+    runtime_namespace,
+)
+is_exempt = runtime_namespace['_busy_surcharge_exempt']
+
+
+class GuessMatcher:
+    module = 'nonebot_plugin_maimaidx.command.mai_guess'
+
+
+class ScoreMatcher:
+    module = 'nonebot_plugin_maimaidx.command.mai_score'
+
+
+class FlagMatcher:
+    module = 'custom.module'
+    _maimaidx_busy_surcharge_exempt = True
+
+
+assert is_exempt(GuessMatcher())
+assert is_exempt(FlagMatcher())
+assert not is_exempt(ScoreMatcher())
 
 print("busy surcharge meter tests: ok")
