@@ -617,9 +617,7 @@ async def _await_ticket_delivery(
         current = await sw_api.get_user_charge(qrcode)
     current_uid = _charge_payload_user_id(current)
     if current_uid and current_uid != str(mai_uid):
-        raise RuntimeError(
-            f"到账查询返回了其他账号（UID {current_uid}）；本次不扣 BREAK"
-        )
+        raise RuntimeError("到账复核返回了其他账号的数据；本次不扣 BREAK")
     charge_ok, rows, free_rows = _normalize_charge_payload(current)
     stock = _ticket_stock(rows + free_rows, charge_id) if charge_ok else baseline_stock
     if stock <= baseline_stock:
@@ -630,7 +628,7 @@ async def _await_ticket_delivery(
         )
         raise RuntimeError(
             f"发票队列任务已完成（{result_note}），但到账复核未增加："
-            f"UID {mai_uid}，{charge_id} 倍票库存 {baseline_stock}→{stock}；"
+            f"{charge_id} 倍票库存 {baseline_stock}→{stock}；"
             "可能是上游落库延迟，本次不扣 BREAK"
         )
     log.info(
@@ -921,6 +919,12 @@ def _exception_detail(exc: BaseException) -> str:
         return f"上游服务返回 HTTP {exc.response.status_code}"
 
     detail = redact(str(exc)).strip()
+    # UID 是街机账号的内部标识，不得通过任何异常文案透出给用户。
+    detail = re.sub(
+        r"(?i)\bUID\b\s*[\"']?\s*[:：=]?\s*\d+",
+        "账号标识[已隐藏]",
+        detail,
+    )
     if detail:
         return detail
 

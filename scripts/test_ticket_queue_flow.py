@@ -26,6 +26,7 @@ names = {
     "_ticket_wait_message",
     "_ticket_task_state",
     "_await_ticket_delivery",
+    "_exception_detail",
 }
 selected = [
     node
@@ -95,12 +96,17 @@ namespace = {
     "_TICKET_QUEUE_UNIT_TIMING_KEY": "ticket_queue:seconds_per_request",
     "json": __import__("json"),
     "re": __import__("re"),
-    "asyncio": SimpleNamespace(sleep=no_sleep),
+    "asyncio": SimpleNamespace(sleep=no_sleep, TimeoutError=asyncio.TimeoutError),
     "time": FakeTime(),
     "log": FakeLog(),
     "machine_session": machine_session,
     "_ensure_business_success": lambda payload: None,
-    "_exception_detail": lambda exc: str(exc),
+    "redact": lambda value: str(value),
+    "httpx": SimpleNamespace(
+        TimeoutException=type("HttpxTimeout", (Exception,), {}),
+        ConnectError=type("HttpxConnectError", (Exception,), {}),
+        HTTPStatusError=type("HttpxStatusError", (Exception,), {}),
+    ),
 }
 exec(
     compile(ast.Module(body=selected, type_ignores=[]), str(ACCOUNT_PATH), "exec"),
@@ -276,5 +282,13 @@ assert await_source.index("last_task_status == \"success\"") < await_source.inde
 )
 assert "processing_time_estimator.record(" in source
 assert "timing_started_at=queue_started_at" in source
+assert "UID {current_uid}" not in await_source
+assert "UID {mai_uid}" not in await_source
+public_detail = namespace["_exception_detail"](
+    RuntimeError("：UID 11470224 与当前绑定账号不一致")
+)
+assert "11470224" not in public_detail
+assert "UID" not in public_detail
+assert "账号标识[已隐藏]" in public_detail
 
 print("ticket queue flow tests: ok")

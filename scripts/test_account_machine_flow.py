@@ -2,6 +2,7 @@
 
 import ast
 import asyncio
+import re
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,6 +51,7 @@ account = load_functions(
         "asyncio": asyncio,
         "time": time,
         "httpx": __import__("httpx"),
+        "re": re,
         "redact": lambda value: value,
     },
 )
