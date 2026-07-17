@@ -111,13 +111,19 @@ queue_success = {
     "status": "done",
     "msg": '充值成功, result={"returnCode": 1, "apiName": "UpsertUserChargelogApi"}',
 }
-queue_failure = {
+queue_zero_success = {
     "status": "done",
     "msg": '充值成功, result={"returnCode": 0, "apiName": "UpsertUserChargelogApi"}',
 }
+queue_failure = {
+    "status": "done",
+    "msg": '充值失败, result={"returnCode": -1, "apiName": "UpsertUserChargelogApi"}',
+}
 assert namespace["_ticket_task_result_code"](queue_success) == 1
-assert namespace["_ticket_task_result_code"](queue_failure) == 0
+assert namespace["_ticket_task_result_code"](queue_zero_success) == 0
+assert namespace["_ticket_task_result_code"](queue_failure) == -1
 assert namespace["_ticket_task_state"](queue_success) == "success"
+assert namespace["_ticket_task_state"](queue_zero_success) == "success"
 assert namespace["_ticket_task_state"](queue_failure) == "failed"
 assert namespace["_charge_payload_user_id"](
     {"userId": 13225939, "userChargeList": []}
@@ -162,6 +168,7 @@ class FakeSwApi:
                         "userId": "123",
                         "status": "completed",
                         "ts": "new",
+                        "msg": '充值成功, result={"returnCode": 0}',
                     }
                 ],
             },
@@ -214,14 +221,14 @@ class FailedQueueApi:
                     "userId": "123",
                     "status": "done",
                     "ts": "newer",
-                    "msg": '充值成功, result={"returnCode": 0}',
+                    "msg": '充值失败, result={"returnCode": -1}',
                 }
             ],
         }
 
     async def get_user_charge(self, _qrcode):
         self.calls.append("charge")
-        raise AssertionError("returnCode=0 时不应查询票券库存")
+        raise AssertionError("异常 returnCode 时不应查询票券库存")
 
 
 failed_api = FailedQueueApi()
@@ -239,9 +246,9 @@ try:
         )
     )
 except RuntimeError as exc:
-    assert "returnCode=0" in str(exc)
+    assert "returnCode=-1" in str(exc)
 else:
-    raise AssertionError("队列 returnCode=0 应被判定为失败")
+    raise AssertionError("队列异常 returnCode 应被判定为失败")
 assert failed_api.calls == ["queue"]
 
 source = ACCOUNT_PATH.read_text(encoding="utf-8")

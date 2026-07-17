@@ -516,7 +516,9 @@ def _ticket_task_state(task: dict) -> str:
     )
     if terminal:
         result_code = _ticket_task_result_code(task)
-        if result_code is not None and result_code != 1:
+        # UpsertUserChargelogApi 的 0/1 都是有效完成返回；
+        # 队列 status=done 时不能把 returnCode=0 误判为失败。
+        if result_code is not None and result_code not in {0, 1}:
             return "failed"
         return "success"
     return status or "unknown"
