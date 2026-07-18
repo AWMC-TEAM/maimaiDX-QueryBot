@@ -138,14 +138,11 @@ class SwApiClient:
             )
 
     def _machine_body(self, qrcode: str, **extra: Any) -> dict:
+        # sw-api 只要求 keychip + qrcode，不再传 regionId / placeId。
         body: dict = {
             "qrcode": qrcode,
             "keychip": maiconfig.sdgbt_client_id,
         }
-        if maiconfig.sdgbt_region_id is not None:
-            body["regionId"] = maiconfig.sdgbt_region_id
-        if maiconfig.sdgbt_place_id is not None:
-            body["placeId"] = maiconfig.sdgbt_place_id
         body.update(extra)
         return body
 
@@ -405,8 +402,7 @@ class SwApiClient:
         data = await self._request(
             "POST",
             "/awmc/api/v1/user/charge",
-            # 与 maibot 新版 swQrBody 保持一致；只读查询不传 region/place。
-            json_body={"qrcode": qrcode, "keychip": maiconfig.sdgbt_client_id},
+            json_body=self._machine_body(qrcode),
             timeout=30,
         )
         return self._parse_envelope(data)
@@ -434,7 +430,7 @@ class SwApiClient:
         data = await self._request(
             "POST",
             "/awmc/api/v1/user/data",
-            json_body={"qrcode": qrcode, "keychip": maiconfig.sdgbt_client_id},
+            json_body=self._machine_body(qrcode),
             timeout=15,
             retry_count=0,
         )
@@ -446,7 +442,7 @@ class SwApiClient:
         data = await self._request(
             "POST",
             "/awmc/api/v1/user/region",
-            json_body={"qrcode": qrcode, "keychip": maiconfig.sdgbt_client_id},
+            json_body=self._machine_body(qrcode),
         )
         return self._parse_envelope(data)
 

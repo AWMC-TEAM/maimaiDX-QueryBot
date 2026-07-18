@@ -34,10 +34,6 @@ class Config(BaseModel):
     sdgbtechapi: Optional[str] = None
     # 机台 keychip（sw-api 必填），可通过环境变量 SDGBT_CLIENT_ID 设置
     sdgbt_client_id: Optional[str] = None
-    sdgbt_region_id: int = 1
-    sdgbt_place_id: int = 1403
-    sdgbt_region_name: Optional[str] = '北京'
-    sdgbt_place_name: Optional[str] = '默认机台'
     # ---------- AWMC 账号 / 上传服务（由原 maibot 合并） ----------
     # team：自建 sw-api；public：AWMC 公共网关。
     awmc_api_mode: str = 'team'

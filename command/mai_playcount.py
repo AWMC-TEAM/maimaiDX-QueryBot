@@ -155,8 +155,6 @@ async def handle_update_pc(bot: Bot, event: GroupMessageEvent):
                 '请在 .env 中配置 sw-api：\n'
                 '  SDGBTECHAPI=http://127.0.0.1:5001\n'
                 '  SDGBT_CLIENT_ID=your_keychip\n'
-                '  SDGBT_REGION_ID=1\n'
-                '  SDGBT_PLACE_ID=1403\n'
                 '配置后重启 Bot 即可使用。'
             )
         )

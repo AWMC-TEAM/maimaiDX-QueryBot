@@ -15,9 +15,7 @@ class SdgbProberClient:
             raise RuntimeError(
                 "sw-api 未配置。请在 .env 中设置:\n"
                 "  SDGBTECHAPI=http://127.0.0.1:5001\n"
-                "  SDGBT_CLIENT_ID=your_keychip\n"
-                "  SDGBT_REGION_ID=1\n"
-                "  SDGBT_PLACE_ID=1403"
+                "  SDGBT_CLIENT_ID=your_keychip"
             )
 
     async def upload_b50(self, qr_text: str, fish_token: str) -> dict:
