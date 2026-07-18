@@ -82,17 +82,6 @@ qrcode_auto_listener = on_regex(
 image_qrcode_auto_listener = on_message(priority=2, block=False)
 setattr(image_qrcode_auto_listener, '_maimaidx_deferred_audit', True)
 
-# maiu/maiul 由其他机器人负责上传查分器；本 bot 监听到后清除玩家缓存，
-# 保证上传完成后 b50 拉取的是查分器最新数据（而不是 15 分钟内的旧缓存）。
-maiu_cache_listener = on_regex(
-    r'^\s*maiul?\s*$',
-    flags=re.IGNORECASE,
-    priority=98,
-    block=False,
-)
-_MAIU_UPLOAD_GRACE_SECONDS = 120
-
-
 async def get_at_qq(message: MessageEvent) -> Optional[int]:
     for item in message.message:
         if isinstance(item, MessageSegment) and item.type == 'at' and item.data['qq'] != 'all':
@@ -703,29 +692,6 @@ async def _process_auto_qrcode_for_account(
         await bot.send(event, message=prefix + MessageSegment.text(msg))
     finally:
         _qrcode_auto_processing.discard(qqid)
-
-
-@maiu_cache_listener.handle()
-async def _maiu_invalidate_cache(event: MessageEvent):
-    """用户发送 maiu/maiul（由其他机器人上传查分器）时清除本 bot 的玩家缓存。
-
-    上传耗时不定：先立即清一次；再在宽限期后清一次，
-    防止用户在上传完成前查询 b50 又把旧数据缓存 15 分钟。
-    """
-    from ..libraries.maimaidx_player_cache import invalidate_player_cache
-    try:
-        qqid = resolve_score_qqid(event)
-    except QBindRequiredError:
-        return
-    invalidate_player_cache(qqid)
-    log.info(f'[MaiuCache] 检测到 maiu/maiul，已清除 qq={qqid} 玩家缓存')
-
-    async def _delayed_invalidate():
-        await asyncio.sleep(_MAIU_UPLOAD_GRACE_SECONDS)
-        invalidate_player_cache(qqid)
-        log.info(f'[MaiuCache] 上传宽限期结束，再次清除 qq={qqid} 玩家缓存')
-
-    asyncio.create_task(_delayed_invalidate())
 
 
 @my_pc.handle()

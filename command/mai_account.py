@@ -1609,7 +1609,7 @@ async def _upload(
                     int(key), billing_service, cost,
                     meta={"operation": operation, "fish": False, "lxns": True, "source": "pc"},
                 )
-                await _refresh_b50_cache_after_upload(key)
+                await _refresh_b50_cache_after_upload(key, fish=False, lxns=True)
                 ref = _log(
                     key, operation, "success",
                     f"charged={charge.charged},free={charge.free},source=pc,count={len(pc_scores)}",
@@ -1741,7 +1741,7 @@ async def _upload(
             int(key), billing_service, cost,
             meta={"operation": operation, "fish": fish, "lxns": lxns},
         )
-        await _refresh_b50_cache_after_upload(key)
+        await _refresh_b50_cache_after_upload(key, fish=fish, lxns=lxns)
         ref = _log(key, operation, "success", f"charged={charge.charged},free={charge.free}")
         return "上传完成\n" + "\n".join(results) + f"\n{_charge_text(charge)}\nRef_ID: {ref}"
     except Exception as exc:
@@ -1854,29 +1854,59 @@ async def _notify_upload_accepted(
         log.warning(f"[upload] 发送受理与预计时间失败，继续上传：{_exception_detail(exc)}")
 
 
-async def _refresh_b50_cache_after_upload(user_key: str) -> None:
-    """上传成功后静默强制拉取 B50 并写入新缓存，不产生 BREAK 费用。"""
+async def _refresh_b50_cache_after_upload(
+    user_key: str, *, fish: bool, lxns: bool
+) -> None:
+    """上传成功后静默刷新对应数据源的 B50 与全量成绩缓存，不产生费用。"""
     try:
         qqid = int(user_key)
     except (TypeError, ValueError):
         return
-    from ..libraries.maimaidx_datasource import get_user_b50
+    from ..libraries.maimaidx_datasource import get_user_b50, get_user_records
     from ..libraries.maimaidx_player_cache import (
         clear_fetch_meta,
         invalidate_player_cache,
     )
 
+    sources = []
+    if fish:
+        sources.append("divingfish")
+    if lxns:
+        sources.append("lxns")
+
     invalidate_player_cache(qqid)
-    try:
-        await get_user_b50(qqid=qqid, force_refresh=True)
-        log.info(f"[upload] 上传后已静默刷新 B50 缓存 user={user_key}")
-    except Exception as exc:
-        log.warning(
-            f"[upload] 上传已成功，但静默刷新 B50 缓存失败 user={user_key}: "
-            f"{_exception_detail(exc)}"
-        )
-    finally:
-        clear_fetch_meta()
+    for source in sources:
+        # 变种 B50 读取全量 records，普通 B50 读取 charts；两者必须同时更新。
+        # 即使全量成绩暂时拉取失败，也继续刷新 charts，使新的 SQLite 缓存行
+        # 阻止后续查询回退到统一存储里的旧快照。
+        try:
+            await get_user_records(
+                qqid=qqid, force_source=source, force_refresh=True
+            )
+            log.info(
+                f"[upload] 上传后已静默刷新全量成绩缓存 "
+                f"user={user_key},source={source}"
+            )
+        except Exception as exc:
+            log.warning(
+                f"[upload] 上传已成功，但静默刷新全量成绩缓存失败 "
+                f"user={user_key},source={source}: {_exception_detail(exc)}"
+            )
+        try:
+            await get_user_b50(
+                qqid=qqid, force_source=source, force_refresh=True
+            )
+            log.info(
+                f"[upload] 上传后已静默刷新 B50 缓存 "
+                f"user={user_key},source={source}"
+            )
+        except Exception as exc:
+            log.warning(
+                f"[upload] 上传已成功，但静默刷新 B50 缓存失败 "
+                f"user={user_key},source={source}: {_exception_detail(exc)}"
+            )
+        finally:
+            clear_fetch_meta()
 
 
 @upload_fish.handle()

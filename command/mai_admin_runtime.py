@@ -40,6 +40,7 @@ admin_web_cmd = on_command("管理面板", aliases={"WebUI"}, permission=PLUGIN_
 _message_recorder = on_message(priority=99, block=False)
 _ban_notified: dict[str, float] = {}
 _debt_notified: dict[str, float] = {}
+_DEBT_NOTICE_COOLDOWN_SECONDS = 300
 
 
 @get_driver().on_startup
@@ -137,6 +138,10 @@ async def _audit_and_ban_preprocessor(
         getattr(type(matcher), "_maimaidx_passive_recorder", False)
     ):
         return
+    # 图片扫码监听会匹配所有图片；只有真正识别为二维码后才进入账号流程。
+    # 普通图片不能被当成功能调用，更不能触发欠费提示。
+    if bool(getattr(type(matcher), "_maimaidx_deferred_audit", False)):
+        return
     uid = str(event.get_user_id())
     ban_keys = [uid]
     try:
@@ -166,10 +171,10 @@ async def _audit_and_ban_preprocessor(
     payer = int(billing_user_id(event))
     balance = break_db.get_balance(payer)
     if balance < 0 and not is_plugin_admin(uid) and not _debt_exempt(matcher):
-        event_key = _event_request_key(bot, event)
         now = time.time()
-        if now - _debt_notified.get(event_key, 0) > 10:
-            _debt_notified[event_key] = now
+        debt_key = str(payer)
+        if now - _debt_notified.get(debt_key, 0) > _DEBT_NOTICE_COOLDOWN_SECONDS:
+            _debt_notified[debt_key] = now
             try:
                 await bot.send(
                     event,
@@ -179,11 +184,6 @@ async def _audit_and_ban_preprocessor(
             except Exception:
                 pass
         raise IgnoredException("negative BREAK balance")
-
-    # 图片扫码监听会匹配所有图片；普通图片既不计真实请求，也不触发附加费。
-    # 识别到舞萌二维码后的业务调用仍会由账号流水记录。
-    if bool(getattr(type(matcher), "_maimaidx_deferred_audit", False)):
-        return
 
     if _serial_user_operation(matcher):
         operation_key = str(billing_user_id(event))
