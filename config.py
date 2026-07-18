@@ -35,10 +35,11 @@ class Config(BaseModel):
     # 机台 keychip（sw-api 必填），可通过环境变量 SDGBT_CLIENT_ID 设置
     sdgbt_client_id: Optional[str] = None
     # ---------- AWMC 账号 / 上传服务（由原 maibot 合并） ----------
-    # team：自建 sw-api；public：AWMC 公共网关。
+    # team：自建 sw-api（需 keychip）；public：AWMC 公共网关（Bearer gw_ 令牌）。
     awmc_api_mode: str = 'team'
-    # 留空时沿用 SDGBTECHAPI，便于旧部署无感升级。
+    # team 留空时沿用 SDGBTECHAPI；public 留空默认 https://api.wmc.pub。
     awmc_api_base_url: Optional[str] = None
+    # public 模式必填：控制台生成的 gw_ 长期令牌或登录 JWT。
     awmc_public_gateway_token: Optional[str] = None
     awmc_api_timeout_seconds: float = 120.0
     awmc_api_retry_count: int = 3
@@ -46,7 +47,7 @@ class Config(BaseModel):
     awmc_upload_poll_interval_seconds: float = 2.0
     # 水鱼 / 落雪 B50 上传（update-fish / update-lx）单次 HTTP 超时。
     awmc_b50_upload_timeout_seconds: float = 120.0
-    # 公共网关异步上传轮询上限；允许较慢的查分器完整处理。
+    # 若上传响应仍带 task_id（旧网关），轮询上限；新版均为同步。
     awmc_upload_poll_timeout_seconds: float = 120.0
     # 落雪 OAuth 拉机台全量成绩保持 15s 硬超时，超时立即失败。
     # 有新鲜 PC 缓存时优先用本地成绩，不再打这条接口。

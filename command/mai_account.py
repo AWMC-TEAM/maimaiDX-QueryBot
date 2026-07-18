@@ -869,7 +869,7 @@ async def _render_account_status(
             + time.strftime("%Y-%m-%d %H:%M", time.localtime(binding.last_upload_at))
         )
 
-    if binding.qrcode and sw_api.api_mode == "team":
+    if binding.qrcode and sw_api.available:
         try:
             async with machine_session():
                 charge = await sw_api.get_user_charge(binding.qrcode)
@@ -1107,7 +1107,7 @@ def _ensure_business_success(result: dict) -> None:
 
 
 async def _await_upload_success(result: dict, *, lxns: bool) -> dict:
-    """公共网关为异步任务；只有任务真正完成后才允许 BREAK 结算。"""
+    """上传成功后才允许 BREAK 结算。新版 public/team 均为同步；若仍返回 task_id 则轮询。"""
     _ensure_business_success(result)
     task_id = str(result.get("task_id") or "").strip()
     if not task_id or result.get("sync") is True:
@@ -1286,7 +1286,7 @@ async def _(
     try:
         from ..libraries.maimaidx_playcount_fetcher import playcount_fetcher
 
-        if playcount_fetcher.sdgb_available and sw_api.api_mode == "team":
+        if playcount_fetcher.sdgb_available:
             await playcount_fetcher.login_by_sdgb(qrcode, int(key))
             pc_status = "success"
     except Exception as exc:

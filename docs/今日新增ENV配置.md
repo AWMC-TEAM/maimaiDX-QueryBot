@@ -2,6 +2,7 @@
 
 ```env
 # AWMC 账号与上传
+# team=自建 sw-api；public=公共网关 https://api.wmc.pub（需 gw_ 令牌）
 AWMC_API_MODE=team
 AWMC_API_BASE_URL=http://127.0.0.1:5001
 AWMC_PUBLIC_GATEWAY_TOKEN=

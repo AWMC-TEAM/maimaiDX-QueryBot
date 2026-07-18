@@ -152,9 +152,9 @@ async def handle_update_pc(bot: Bot, event: GroupMessageEvent):
             MessageSegment.reply(event.message_id)
             + MessageSegment.text(
                 '\nPC数功能未配置。\n'
-                '请在 .env 中配置 sw-api：\n'
-                '  SDGBTECHAPI=http://127.0.0.1:5001\n'
-                '  SDGBT_CLIENT_ID=your_keychip\n'
+                '请在 .env 中配置 AWMC API：\n'
+                '  team：AWMC_API_MODE=team + AWMC_API_BASE_URL + SDGBT_CLIENT_ID\n'
+                '  public：AWMC_API_MODE=public + AWMC_PUBLIC_GATEWAY_TOKEN\n'
                 '配置后重启 Bot 即可使用。'
             )
         )

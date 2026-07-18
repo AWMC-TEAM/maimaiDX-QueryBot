@@ -72,14 +72,51 @@ MAIMAIDXTOKEN=your_token_here
 MAIMAIDXTOKEN=token_a,token_b,token_c
 ```
 
-### sw-api（PC 数 / 上传 / 倍率票）
+### AWMC API（PC 数 / 上传 / 倍率票）
+
+支持通过 `AWMC_API_MODE` 在 **自建 sw-api** 与 **AWMC 公共网关** 间切换。
+
+#### team（自建）
 
 ```env
-# 统一 AWMC API 配置（team=自建 sw-api，public=公共网关）
 AWMC_API_MODE=team
 AWMC_API_BASE_URL=http://127.0.0.1:5001
-AWMC_PUBLIC_GATEWAY_TOKEN=
 SDGBT_CLIENT_ID=your_keychip
+```
+
+路径前缀：`/awmc/api/v1/...`，请求体需带 `qrcode` + `keychip`。
+
+#### public（公共网关）
+
+平台：https://api.wmc.pub · 文档：https://wiki.awmc.team/dev/awmc-api
+
+用 AWMC 通行证登录控制台，在个人中心生成 `gw_` 令牌；额度通过卡密兑换充入。
+
+```env
+AWMC_API_MODE=public
+# 可留空，默认 https://api.wmc.pub
+AWMC_API_BASE_URL=https://api.wmc.pub
+AWMC_PUBLIC_GATEWAY_TOKEN=gw_xxx
+# public 模式无需 SDGBT_CLIENT_ID（keychip 由网关注入）
+```
+
+路径前缀：`/v1/...`，请求头：`Authorization: Bearer <令牌>`，JSON Body 只传业务参数（如 `qrcode`）。成功且业务 `code === 0` 时按接口扣 Token（余额不足返回 403）。
+
+| 接口 | 消耗 |
+|------|------|
+| `GET /v1/health` | 0 |
+| `POST /v1/user/data` | 1 |
+| `POST /v1/user/region` | 1 |
+| `POST /v1/user/music` | 2 |
+| `POST /v1/user/charge` | 1 |
+| `GET /v1/charge/queue` | 0 |
+| `POST /v1/charge` | 10 |
+| `POST /v1/update-lx` | 5 |
+| `POST /v1/update-fish` | 5 |
+
+#### 共用调优项
+
+```env
 # 机台会话全局串行，AWMC API 成功后静默冷却 1 秒。
 AWMC_MACHINE_LOCK_TIMEOUT_SECONDS=60
 AWMC_API_SUCCESS_COOLDOWN_SECONDS=1
@@ -100,8 +137,6 @@ MAIMAIDX_BUSY_SURCHARGE_BREAK=1
 ```
 
 旧变量 `SDGBTECHAPI` 仍兼容。完整模板见仓库根目录 `.env.example`。
-
-PC 数拉取接口：`POST /awmc/api/v1/user/music`（JSON body，含 `qrcode` + `keychip`）。
 
 ### 落雪查分器（可选）
 

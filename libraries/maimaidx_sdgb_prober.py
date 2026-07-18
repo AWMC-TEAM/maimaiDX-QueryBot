@@ -13,9 +13,13 @@ class SdgbProberClient:
     def _check_available(self):
         if not self.available:
             raise RuntimeError(
-                "sw-api 未配置。请在 .env 中设置:\n"
-                "  SDGBTECHAPI=http://127.0.0.1:5001\n"
-                "  SDGBT_CLIENT_ID=your_keychip"
+                "AWMC API 未配置。team 模式：\n"
+                "  AWMC_API_MODE=team\n"
+                "  AWMC_API_BASE_URL=http://127.0.0.1:5001\n"
+                "  SDGBT_CLIENT_ID=your_keychip\n"
+                "或 public 模式：\n"
+                "  AWMC_API_MODE=public\n"
+                "  AWMC_PUBLIC_GATEWAY_TOKEN=gw_xxx"
             )
 
     async def upload_b50(self, qr_text: str, fish_token: str) -> dict:

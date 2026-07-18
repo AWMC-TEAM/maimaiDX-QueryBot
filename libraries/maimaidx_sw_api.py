@@ -106,43 +106,72 @@ class SwApiError(RuntimeError):
     pass
 
 
+# AWMC 公共网关默认根地址；可用 AWMC_API_BASE_URL 覆盖。
+AWMC_PUBLIC_GATEWAY_DEFAULT = "https://api.wmc.pub"
+
+
 class SwApiClient:
-    """sw-api (AWMC) HTTP 客户端。"""
+    """AWMC HTTP 客户端：team=自建 sw-api，public=公共网关 api.wmc.pub。"""
 
     def __init__(self):
-        self.base_url = (
+        self.api_mode = str(
+            getattr(maiconfig, "awmc_api_mode", "team") or "team"
+        ).lower()
+        configured = (
             getattr(maiconfig, "awmc_api_base_url", None)
             or maiconfig.sdgbtechapi
             or ""
         ).rstrip("/")
-        self.api_mode = str(
-            getattr(maiconfig, "awmc_api_mode", "team") or "team"
-        ).lower()
+        if self.api_mode == "public":
+            self.base_url = configured or AWMC_PUBLIC_GATEWAY_DEFAULT
+        else:
+            self.base_url = configured
+        log.info(f"[SwApi] mode={self.api_mode} base_url={self.base_url or '(未配置)'}")
+
+    @property
+    def is_public(self) -> bool:
+        return self.api_mode == "public"
 
     @property
     def available(self) -> bool:
         if not bool(getattr(maiconfig, "awmc_account_enabled", True)):
             return False
-        if self.api_mode == "public":
+        if self.is_public:
             return bool(self.base_url) and bool(
                 getattr(maiconfig, "awmc_public_gateway_token", None)
             )
         return bool(self.base_url) and bool(maiconfig.sdgbt_client_id)
 
     def _check_available(self):
-        if not self.available:
+        if self.available:
+            return
+        if self.is_public:
             raise SwApiError(
-                "sw-api 未配置。请在 .env 中设置:\n"
-                "  SDGBTECHAPI=http://127.0.0.1:5001\n"
-                "  SDGBT_CLIENT_ID=your_keychip"
+                "AWMC 公共网关未配置。请在 .env 中设置:\n"
+                "  AWMC_API_MODE=public\n"
+                "  AWMC_PUBLIC_GATEWAY_TOKEN=gw_xxx\n"
+                "可选：AWMC_API_BASE_URL=https://api.wmc.pub"
             )
+        raise SwApiError(
+            "sw-api 未配置。请在 .env 中设置:\n"
+            "  AWMC_API_MODE=team\n"
+            "  AWMC_API_BASE_URL=http://127.0.0.1:5001\n"
+            "  SDGBT_CLIENT_ID=your_keychip"
+        )
+
+    def _api_path(self, suffix: str) -> str:
+        """业务路径：public 用 /v1/...，team 用 /awmc/api/v1/...。"""
+        suffix = "/" + str(suffix or "").lstrip("/")
+        if self.is_public:
+            return f"/v1{suffix}"
+        return f"/awmc/api/v1{suffix}"
 
     def _machine_body(self, qrcode: str, **extra: Any) -> dict:
-        # sw-api 只要求 keychip + qrcode，不再传 regionId / placeId。
-        body: dict = {
-            "qrcode": qrcode,
-            "keychip": maiconfig.sdgbt_client_id,
-        }
+        # public：keychip 由网关注入，调用方只传业务参数。
+        # team：自建 sw-api 仍需 keychip + qrcode。
+        body: dict = {"qrcode": qrcode}
+        if not self.is_public:
+            body["keychip"] = maiconfig.sdgbt_client_id
         body.update(extra)
         return body
 
@@ -185,13 +214,19 @@ class SwApiClient:
 
     @staticmethod
     def flatten_user_music(payload: Any) -> List[dict]:
+        # public 网关 msg 可能直接是成绩数组；team 多为含 userMusicList 的对象。
+        if isinstance(payload, list):
+            return [row for row in payload if isinstance(row, dict)]
         if not isinstance(payload, dict):
             return []
 
         direct = payload.get("userMusicDetailList")
         if isinstance(direct, list):
-            if direct and isinstance(direct[0], dict) and "musicId" in direct[0]:
-                return direct
+            if (
+                not direct
+                or (isinstance(direct[0], dict) and "musicId" in direct[0])
+            ):
+                return [row for row in direct if isinstance(row, dict)]
 
         detail_list: List[dict] = []
         for music in payload.get("userMusicList") or []:
@@ -223,7 +258,7 @@ class SwApiClient:
             else getattr(maiconfig, "awmc_api_timeout_seconds", 120.0)
         )
         headers: Dict[str, str] = {}
-        if self.api_mode == "public":
+        if self.is_public:
             token = str(getattr(maiconfig, "awmc_public_gateway_token", "") or "")
             headers["Authorization"] = f"Bearer {token}"
         if retry_count is None:
@@ -258,20 +293,45 @@ class SwApiClient:
             raise SwApiError(str(last_error or "AWMC API 请求失败"))
         if res.status_code != 200:
             text = res.text[:200]
+            err_msg = ""
             try:
                 err_data = res.json()
-                if "error" in err_data:
-                    raise SwApiError(str(err_data["error"]))
-                if err_data.get("code") == -1:
-                    raise SwApiError(str(err_data.get("msg", text)))
+                if isinstance(err_data, dict):
+                    err_msg = str(
+                        err_data.get("error")
+                        or err_data.get("msg")
+                        or err_data.get("message")
+                        or ""
+                    )
+                    if err_msg:
+                        raise SwApiError(err_msg)
             except json.JSONDecodeError:
                 pass
+            except SwApiError:
+                admin_audit.add_step(
+                    "http.awmc",
+                    "error",
+                    {
+                        "method": method,
+                        "path": path,
+                        "status_code": res.status_code,
+                        "error": err_msg,
+                    },
+                    started_at=audit_started,
+                )
+                raise
             admin_audit.add_step(
                 "http.awmc",
                 "error",
                 {"method": method, "path": path, "status_code": res.status_code},
                 started_at=audit_started,
             )
+            if res.status_code == 401:
+                raise SwApiError("鉴权失败：令牌缺失或无效（HTTP 401）")
+            if res.status_code == 403:
+                raise SwApiError(
+                    f"拒绝访问（HTTP 403）：{text or '余额不足或无权限'}"
+                )
             raise SwApiError(f"HTTP {res.status_code}: {text}")
         data = res.json()
         admin_audit.add_step(
@@ -303,10 +363,8 @@ class SwApiClient:
         timeout: Optional[float] = None,
         retry_count: Optional[int] = None,
     ) -> List[dict]:
-        if self.api_mode == "public":
-            raise SwApiError("AWMC 公共网关暂不提供 PC 全量数据接口")
-        # 全量成绩默认 15s 硬超时，与 B50 上传对齐；禁止长重试把 OAuth 上传拖成「一直卡住」。
-        # 有新鲜 PC 缓存时上传路径会跳过本接口。
+        # 全量成绩默认 15s 硬超时；禁止长重试把 OAuth 上传拖成「一直卡住」。
+        # 有新鲜 PC 缓存时上传路径会跳过本接口。public 消耗 2 Token。
         music_timeout = float(
             timeout
             if timeout is not None
@@ -318,12 +376,12 @@ class SwApiClient:
             else int(getattr(maiconfig, "awmc_user_music_retry_count", 0))
         )
         log.info(
-            f"[SwApi] 开始拉取谱面成绩 timeout={music_timeout:.0f}s "
-            f"retry={music_retries}"
+            f"[SwApi] 开始拉取谱面成绩 mode={self.api_mode} "
+            f"timeout={music_timeout:.0f}s retry={music_retries}"
         )
         data = await self._request(
             "POST",
-            "/awmc/api/v1/user/music",
+            self._api_path("user/music"),
             json_body=self._machine_body(qrcode),
             timeout=music_timeout,
             retry_count=music_retries,
@@ -335,18 +393,11 @@ class SwApiClient:
 
     async def update_fish(self, qrcode: str, token: str) -> dict:
         # B50 生成偶尔较慢，允许 120s，但仍禁止自动重试造成重复提交。
+        # public / team 均为同步 JSON：{qrcode, token}；public 消耗 5 Token。
         upload_timeout = self._b50_upload_timeout()
-        if self.api_mode == "public":
-            return await self._request(
-                "POST",
-                "/v1/upload_b50",
-                params={"qr_text": qrcode, "fish_token": token},
-                timeout=upload_timeout,
-                retry_count=0,
-            )
         data = await self._request(
             "POST",
-            "/awmc/api/v1/update-fish",
+            self._api_path("update-fish"),
             json_body=self._machine_body(qrcode, token=token),
             timeout=upload_timeout,
             retry_count=0,
@@ -355,81 +406,63 @@ class SwApiClient:
 
     async def update_lx(self, qrcode: str, import_token: str) -> dict:
         # 兼容 Token 备选路径；允许 120s，但保持零重试避免重复提交。
+        # public / team 均为同步 JSON：{qrcode, key, type}；public 消耗 5 Token。
         upload_timeout = self._b50_upload_timeout()
-        if self.api_mode == "public":
-            return await self._request(
-                "POST",
-                "/v1/upload_lx_b50",
-                params={"qr_text": qrcode, "lxns_code": import_token},
-                timeout=upload_timeout,
-                retry_count=0,
-            )
         data = await self._request(
             "POST",
-            "/awmc/api/v1/update-lx",
-            json_body=self._machine_body(qrcode, key=import_token, type="maimai"),
+            self._api_path("update-lx"),
+            json_body=self._machine_body(
+                qrcode, key=import_token, type="maimai"
+            ),
             timeout=upload_timeout,
             retry_count=0,
         )
         return self._parse_envelope(data)
 
     async def get_upload_task(self, task_id: str, *, lxns: bool = False) -> dict:
-        """查询公共网关异步上传任务；team 模式上传为同步，无需调用。"""
-        if self.api_mode != "public":
-            raise SwApiError("team 模式没有异步上传任务")
-        path = "/v1/get_lx_b50_task_byid" if lxns else "/v1/get_b50_task_byid"
-        # 单次查询超时需远小于轮询总预算，避免一次卡住耗尽 15s。
-        return await self._request(
-            "GET", path, params={"task_id": task_id}, timeout=5, retry_count=0
+        """旧公共网关异步任务查询已移除；新版 upload 为同步，无需轮询。"""
+        raise SwApiError(
+            "当前 AWMC API 上传为同步接口，不再提供异步任务查询"
+            f"（task_id={task_id}, lxns={lxns}）"
         )
 
     async def charge_ticket(self, qrcode: str, charge_id: int) -> dict:
-        if self.api_mode == "public":
-            raise SwApiError("AWMC 公共网关暂不支持发放票券")
         # /charge 是异步入队接口。保留 code/msg 原始信封，不能把 code=0 的
         # 文本 msg 解析成 {"raw": ...}，否则调用方无法区分入队成功与最终到账。
+        # public 消耗 10 Token；入队成功后网关会绑定 mai userId。
         return await self._request(
             "POST",
-            "/awmc/api/v1/charge",
+            self._api_path("charge"),
             json_body=self._machine_body(qrcode, charge=charge_id),
             timeout=60,
             retry_count=0,
         )
 
     async def get_user_charge(self, qrcode: str) -> dict:
-        if self.api_mode == "public":
-            raise SwApiError("AWMC 公共网关暂不支持查询票券")
         data = await self._request(
             "POST",
-            "/awmc/api/v1/user/charge",
+            self._api_path("user/charge"),
             json_body=self._machine_body(qrcode),
             timeout=30,
         )
         return self._parse_envelope(data)
 
     async def get_charge_queue(self) -> dict:
-        if self.api_mode == "public":
-            raise SwApiError("AWMC 公共网关没有发票队列")
-        return await self._request("GET", "/awmc/api/v1/charge/queue", timeout=15)
+        # public：仅返回当前网关账号已绑定 userId 的任务，且不含 qrToken。
+        return await self._request(
+            "GET", self._api_path("charge/queue"), timeout=15
+        )
 
     async def health(self) -> dict:
-        path = "/v1/mai_ping" if self.api_mode == "public" else "/awmc/api/v1/health"
-        return await self._request("GET", path, timeout=10)
+        return await self._request("GET", self._api_path("health"), timeout=10)
 
     async def get_user_preview(self, qrcode: str) -> dict:
-        """读取绑定账号摘要；兼容公共网关与自建 sw-api。"""
+        """读取绑定账号摘要（POST /user/data）；兼容公共网关与自建 sw-api。"""
         # 上传前验码也会走这里；显式短超时，避免沿用默认 120s×重试。
-        if self.api_mode == "public":
-            return await self._request(
-                "GET",
-                "/v1/get_preview",
-                params={"qr_text": qrcode},
-                timeout=15,
-                retry_count=0,
-            )
+        # public 消耗 1 Token；msg 常为 JSON 字符串，由 _parse_envelope 二次解析。
         data = await self._request(
             "POST",
-            "/awmc/api/v1/user/data",
+            self._api_path("user/data"),
             json_body=self._machine_body(qrcode),
             timeout=15,
             retry_count=0,
@@ -437,18 +470,16 @@ class SwApiClient:
         return self._parse_envelope(data)
 
     async def get_user_region(self, qrcode: str) -> dict:
-        if self.api_mode == "public":
-            raise SwApiError("AWMC 公共网关暂不支持游玩地图")
         data = await self._request(
             "POST",
-            "/awmc/api/v1/user/region",
+            self._api_path("user/region"),
             json_body=self._machine_body(qrcode),
         )
         return self._parse_envelope(data)
 
     async def get_opt(self, title_ver: str) -> dict:
-        if self.api_mode == "public":
-            raise SwApiError("AWMC 公共网关暂不支持查询 opt")
+        if self.is_public:
+            raise SwApiError("AWMC 公共网关不提供 get_opt 接口")
         return await self._request(
             "GET",
             "/api/private/get_opt",
