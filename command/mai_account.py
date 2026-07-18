@@ -98,6 +98,7 @@ for _serial_account_matcher in (
     setattr(_serial_account_matcher, '_maimaidx_serial_user_operation', True)
 
 _RECALL_FAILED_NOTICE = "⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。\n"
+_QRCODE_RECALL_TIMEOUT_SECONDS = 3.0
 _TICKET_QRCODE_RETRY_SECONDS = 180
 _TICKET_QUEUE_UNIT_TIMING_KEY = "ticket_queue:seconds_per_request"
 _pending_ticket_retries: dict[str, tuple[int, float]] = {}
@@ -118,6 +119,27 @@ def _user_key(event: MessageEvent) -> str:
 
 def _arg_text(args: Message) -> str:
     return args.extract_plain_text().strip()
+
+
+async def _recall_qrcode_message(bot: Bot, event: MessageEvent) -> str:
+    """限时撤回二维码消息，避免 OneBot 无响应时卡住后续上传。"""
+    started_at = time.perf_counter()
+    try:
+        await asyncio.wait_for(
+            bot.delete_msg(message_id=event.message_id),
+            timeout=_QRCODE_RECALL_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        log.warning(
+            f"[upload] 二维码消息撤回失败：{type(exc).__name__} "
+            f"({time.perf_counter() - started_at:.2f}s)"
+        )
+        return _RECALL_FAILED_NOTICE
+    log.info(
+        f"[upload] 二维码消息已撤回 "
+        f"({time.perf_counter() - started_at:.2f}s)"
+    )
+    return ""
 
 
 def _mask(value: str, head: int = 5, tail: int = 4) -> str:
@@ -1936,10 +1958,7 @@ async def _(
     await _notify_upload_accepted(matcher, event, fish=fish, lxns=lxns)
     recall_notice = ""
     if extract_sgwcmaid_qrcode(raw):
-        try:
-            await bot.delete_msg(message_id=event.message_id)
-        except Exception:
-            recall_notice = _RECALL_FAILED_NOTICE
+        recall_notice = await _recall_qrcode_message(bot, event)
     timing_key = upload_workflow_key(fish=fish, lxns=lxns)
     started_at = time.perf_counter()
     result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=raw)
@@ -1947,7 +1966,6 @@ async def _(
         processing_time_estimator.record(
             timing_key, time.perf_counter() - started_at
         )
-    recall_notice = ""
     if not _upload_retryable(result):
         await matcher.finish(recall_notice + result, reply_message=False)
     attempt = 1 if raw else 0
@@ -1981,10 +1999,7 @@ async def _(
     qrcode = extract_sgwcmaid_qrcode(raw)
     recall_notice = ""
     if qrcode:
-        try:
-            await bot.delete_msg(message_id=event.message_id)
-        except Exception:
-            recall_notice = _RECALL_FAILED_NOTICE
+        recall_notice = await _recall_qrcode_message(bot, event)
     if qrcode:
         await _notify_upload_accepted(matcher, event, fish=fish, lxns=lxns)
         timing_key = upload_workflow_key(fish=fish, lxns=lxns)
@@ -1994,7 +2009,6 @@ async def _(
             processing_time_estimator.record(
                 timing_key, time.perf_counter() - started_at
             )
-        recall_notice = ""
     else:
         result = "上传失败：二维码格式无效"
     if not _upload_retryable(result):
