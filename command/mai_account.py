@@ -47,6 +47,7 @@ from ..libraries.maimaidx_processing_time import (
 from ..libraries.maimaidx_reaction import react_processing
 from ..libraries.maimaidx_sw_api import format_user_region_block, sw_api
 from .mai_agreement import agreement_prompt, has_user_agreed
+from ..libraries.maimaidx_data_scheduler import fetch_and_store_user_scores
 
 
 account_help = on_command("mai账号", aliases={"账号帮助", "mai账户"})
@@ -1610,6 +1611,10 @@ async def _upload(
                     meta={"operation": operation, "fish": False, "lxns": True, "source": "pc"},
                 )
                 await _refresh_b50_cache_after_upload(key, fish=False, lxns=True)
+                try:
+                    await fetch_and_store_user_scores(int(key), source="upload")
+                except Exception:
+                    log.warning(f"[DataStorage] 自动存档失败 user={key}")
                 ref = _log(
                     key, operation, "success",
                     f"charged={charge.charged},free={charge.free},source=pc,count={len(pc_scores)}",
@@ -1742,6 +1747,10 @@ async def _upload(
             meta={"operation": operation, "fish": fish, "lxns": lxns},
         )
         await _refresh_b50_cache_after_upload(key, fish=fish, lxns=lxns)
+        try:
+            await fetch_and_store_user_scores(int(key), source="upload")
+        except Exception:
+            log.warning(f"[DataStorage] 自动存档失败 user={key}")
         ref = _log(key, operation, "success", f"charged={charge.charged},free={charge.free}")
         return "上传完成\n" + "\n".join(results) + f"\n{_charge_text(charge)}\nRef_ID: {ref}"
     except Exception as exc:
