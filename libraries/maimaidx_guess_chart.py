@@ -76,8 +76,10 @@ def _default_batch_song_workers() -> int:
 
 def _default_ffmpeg_threads() -> int:
     n = _cpu_count()
-    # 多路 ffmpeg 并行时不宜每进程吃满全核
-    return max(2, min(20, n // 2))
+    # 录制结束后多路 ffmpeg 往往同时启动。按录制槽均分 CPU，避免 40 核
+    # 机器出现 10 路 x 20 线程的严重过量并发；720p 编码每路 4～6 线程足够。
+    workers = _default_render_workers()
+    return max(2, min(6, (n + workers - 1) // workers))
 
 
 # 可用环境变量覆盖：MAIMAIDX_CHART_RENDER_WORKERS / BATCH_SONGS / FFMPEG_THREADS
@@ -127,7 +129,6 @@ def _ffmpeg_x264_args() -> List[str]:
         '-preset', VIDEO_PRESET,
         '-crf', str(VIDEO_CRF),
         '-pix_fmt', 'yuv420p',
-        '-x264-params', f'threads={FFMPEG_THREADS}:sliced-threads=1',
     ]
 
 
@@ -410,6 +411,41 @@ def _encode_silent_mp4(webm: Path, silent: Path) -> float:
     return _ffprobe_duration(silent)
 
 
+def _encode_webm_with_audio(webm: Path, audio: Path, mp4: Path) -> None:
+    """一次完成 VP8/VP9 -> H.264 与音频混流，避免画面重复编码。"""
+    video_dur = _ffprobe_duration(webm)
+    audio_dur = _ffprobe_duration(audio)
+    pad = max(0.0, audio_dur - video_dur + 0.05)
+    video_filter = (
+        f'scale={DEFAULT_VIEWPORT}:{DEFAULT_VIEWPORT},fps={CAPTURE_FPS},'
+        f'tpad=stop_mode=clone:stop_duration={pad:.3f}'
+        if pad > 0.01 else
+        f'scale={DEFAULT_VIEWPORT}:{DEFAULT_VIEWPORT},fps={CAPTURE_FPS}'
+    )
+    tmp = mp4.with_suffix('.tmp.mp4')
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', str(webm),
+        '-i', str(audio),
+        '-map', '0:v:0',
+        '-map', '1:a:0',
+        *_ffmpeg_x264_args(),
+        '-vf', video_filter,
+        '-r', str(CAPTURE_FPS),
+        '-vsync', 'cfr',
+        '-c:a', 'aac',
+        '-b:a', AUDIO_BITRATE,
+        '-ar', '48000',
+        '-shortest',
+        '-movflags', '+faststart',
+        str(tmp),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f'ffmpeg 单次编码混音失败: {proc.stderr[-800:]}')
+    tmp.replace(mp4)
+
+
 def _ffmpeg_remux_embedded(webm: Path, mp4: Path) -> None:
     """webm 已含音画同轨时，高质量转码为 mp4。"""
     mp4.parent.mkdir(parents=True, exist_ok=True)
@@ -434,49 +470,6 @@ def _ffmpeg_remux_embedded(webm: Path, mp4: Path) -> None:
     tmp.replace(mp4)
 
 
-def _mux_video_audio(silent: Path, audio: Path, mp4: Path) -> None:
-    """画面 + 音轨；音轨更长时冻结尾帧。"""
-    video_dur = _ffprobe_duration(silent)
-    audio_dur = _ffprobe_duration(audio)
-    pad = max(0.0, audio_dur - video_dur + 0.05)
-    tmp = mp4.with_suffix('.tmp.mp4')
-    if pad > 0.01:
-        vf = f'[0:v]tpad=stop_mode=clone:stop_duration={pad:.3f}[v]'
-        cmd_mux = [
-            'ffmpeg', '-y',
-            '-i', str(silent),
-            '-i', str(audio),
-            '-filter_complex', f'{vf};[1:a]anull[a]',
-            '-map', '[v]',
-            '-map', '[a]',
-            *_ffmpeg_x264_args(),
-            '-c:a', 'aac',
-            '-b:a', AUDIO_BITRATE,
-            '-shortest',
-            '-movflags', '+faststart',
-            str(tmp),
-        ]
-    else:
-        cmd_mux = [
-            'ffmpeg', '-y',
-            '-i', str(silent),
-            '-i', str(audio),
-            '-map', '0:v:0',
-            '-map', '1:a:0',
-            '-c:v', 'copy',
-            '-c:a', 'aac',
-            '-b:a', AUDIO_BITRATE,
-            '-threads', str(FFMPEG_THREADS),
-            '-shortest',
-            '-movflags', '+faststart',
-            str(tmp),
-        ]
-    proc = subprocess.run(cmd_mux, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f'ffmpeg 混音失败: {proc.stderr[-800:]}')
-    tmp.replace(mp4)
-
-
 def _ffmpeg_mux(
     webm: Path,
     mp4: Path,
@@ -492,8 +485,7 @@ def _ffmpeg_mux(
         shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
 
-    silent = work / 'silent.mp4'
-    video_dur = _encode_silent_mp4(webm, silent)
+    video_dur = _ffprobe_duration(webm)
     lead = max(0.0, float(record_lead_ms))
     lead_sec = lead / 1000.0
     # 按实际画面播放段 / 名义时长等比映射 hit，补偿录制时钟漂移
@@ -509,11 +501,9 @@ def _ffmpeg_mux(
         hit_offsets_ms=aligned_hits,
     )
     if has_audio:
-        _mux_video_audio(silent, audio_wav, mp4)
+        _encode_webm_with_audio(webm, audio_wav, mp4)
     else:
-        tmp = mp4.with_suffix('.tmp.mp4')
-        shutil.copy2(silent, tmp)
-        tmp.replace(mp4)
+        _encode_silent_mp4(webm, mp4)
     shutil.rmtree(work, ignore_errors=True)
 
 
@@ -589,8 +579,7 @@ def _ffmpeg_mux_bgm(
         shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
 
-    silent = work / 'silent.mp4'
-    video_dur = _encode_silent_mp4(webm, silent)
+    video_dur = _ffprobe_duration(webm)
     lead_ms = max(0, int(round(float(record_lead_ms))))
     lead_sec = lead_ms / 1000.0
     play_video = max(0.5, video_dur - lead_sec)
@@ -612,7 +601,7 @@ def _ffmpeg_mux_bgm(
     if proc.returncode != 0:
         raise RuntimeError(f'ffmpeg BGM 裁剪失败: {proc.stderr[-800:]}')
 
-    _mux_video_audio(silent, clip, mp4)
+    _encode_webm_with_audio(webm, clip, mp4)
     shutil.rmtree(work, ignore_errors=True)
 
 
