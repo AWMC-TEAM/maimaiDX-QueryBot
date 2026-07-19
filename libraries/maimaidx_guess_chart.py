@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
+import math
 import os
 import shutil
 import socket
@@ -42,6 +44,7 @@ VIDEO_CRF = 18
 # faster：在 40 核上明显快于 medium，画质仍可接受
 VIDEO_PRESET = 'faster'
 AUDIO_BITRATE = '192k'
+BASE64_CHUNK_CHARS = 512 * 1024
 
 
 def _cpu_count() -> int:
@@ -315,9 +318,65 @@ def _ffprobe_duration(path: Path) -> float:
     if proc.returncode != 0:
         raise RuntimeError(f'ffprobe 失败: {proc.stderr[-400:]}')
     try:
-        return max(0.1, float(proc.stdout.strip()))
-    except ValueError as e:
-        raise RuntimeError(f'ffprobe 时长无效: {proc.stdout!r}') from e
+        duration = float(proc.stdout.strip())
+        if math.isfinite(duration) and duration > 0:
+            return max(0.1, duration)
+    except ValueError:
+        pass
+
+    # Chromium MediaRecorder 生成的 WebM 通常没有容器 duration，但每个 packet
+    # 仍有可靠的时间戳。只读取封装信息，不解码视频，速度远快于预转码一次。
+    packet_proc = subprocess.run(
+        [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'packet=pts_time,duration_time',
+            '-of', 'json',
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if packet_proc.returncode != 0:
+        raise RuntimeError(f'ffprobe packet 失败: {packet_proc.stderr[-400:]}')
+    try:
+        packet_data = json.loads(packet_proc.stdout)
+        packets = (
+            packet_data.get('packets') or []
+            if isinstance(packet_data, dict) else []
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as e:
+        raise RuntimeError('ffprobe packet 输出无效') from e
+    max_end = 0.0
+    for packet in packets:
+        try:
+            pts = float(packet.get('pts_time'))
+            packet_duration = float(packet.get('duration_time') or 0)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if math.isfinite(pts) and math.isfinite(packet_duration):
+            max_end = max(max_end, pts + max(0.0, packet_duration))
+    if max_end > 0:
+        return max(0.1, max_end)
+    raise RuntimeError(f'ffprobe 时长无效: {proc.stdout!r}')
+
+
+def _decode_video_base64(payload: object) -> bytes:
+    """严格解码录制视频，并把传输损坏变成可定位错误。"""
+    encoded = str(payload or '').strip()
+    if encoded.startswith('data:') and ',' in encoded:
+        encoded = encoded.split(',', 1)[1]
+    encoded = ''.join(encoded.split())
+    if not encoded:
+        raise RuntimeError('页面未返回录制视频（videoBase64 为空）')
+    remainder = len(encoded) % 4
+    if remainder == 1:
+        raise RuntimeError(f'录制视频 Base64 长度损坏（chars={len(encoded)}）')
+    if remainder:
+        encoded += '=' * (4 - remainder)
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise RuntimeError(f'录制视频 Base64 解码失败（chars={len(encoded)}）') from e
 
 
 def _answer_wav_path() -> Path:
@@ -679,7 +738,7 @@ async def _capture_record_page(
                         recordLeadMs: g.recordLeadMs || 0,
                         musicStartSec: g.musicStartSec || 0,
                         hasEmbeddedAudio: !!g.hasEmbeddedAudio,
-                        videoBase64: g.videoBase64 || null,
+                        videoBase64Length: (g.videoBase64 || '').length,
                         videoMime: g.videoMime || null,
                     };
                 }"""
@@ -687,14 +746,33 @@ async def _capture_record_page(
             if bridge.get('state') == 'error':
                 raise RuntimeError(bridge.get('error') or '谱面录制失败')
             meta = dict(bridge or {})
+            try:
+                base64_length = int(meta.pop('videoBase64Length', 0) or 0)
+            except (TypeError, ValueError):
+                base64_length = 0
+            if base64_length <= 0:
+                raise RuntimeError('页面未返回录制视频（videoBase64 为空）')
+            chunks: List[str] = []
+            for start in range(0, base64_length, BASE64_CHUNK_CHARS):
+                end = min(base64_length, start + BASE64_CHUNK_CHARS)
+                chunk = await page.evaluate(
+                    """({start, end}) => {
+                        const value = window.__GUESS_CHART__?.videoBase64 || '';
+                        return value.slice(start, end);
+                    }""",
+                    {'start': start, 'end': end},
+                )
+                if not isinstance(chunk, str) or len(chunk) != end - start:
+                    raise RuntimeError(
+                        f'录制视频 Base64 分块传输损坏（{start}:{end}）'
+                    )
+                chunks.append(chunk)
+            meta['videoBase64'] = ''.join(chunks)
         finally:
             await page.close()
             await context.close()
             await browser.close()
 
-    b64 = meta.get('videoBase64') or ''
-    if not b64:
-        raise RuntimeError('页面未返回录制视频（videoBase64 为空）')
     return meta
 
 
@@ -732,7 +810,7 @@ async def _render_chart_video(
             with_audio=mix_bgm,
         )
         webm = work / 'capture.webm'
-        webm.write_bytes(base64.b64decode(meta.get('videoBase64') or ''))
+        webm.write_bytes(_decode_video_base64(meta.get('videoBase64')))
         hits = meta.get('hitOffsetsMs') or []
         if not isinstance(hits, list):
             hits = []
