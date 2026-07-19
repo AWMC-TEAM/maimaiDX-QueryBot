@@ -1,7 +1,7 @@
 /**
- * 猜铺面录制页：仅渲染谱面动画，不加载音乐 / 背景视频 / UI。
- * 播放窗口内用 MediaRecorder 录制 canvas，供 Playwright 取回；
- * 正解音时间轴由 hitOffsetsMs 交给后端精确混音。
+ * 猜铺面录制页：仅渲染谱面动画，不加载背景 PV / UI。
+ * withAudio=1 时用 HTMLAudioElement.captureStream 与画面同轨录制 BGM（音画同步）；
+ * 否则只录画面，正解音时间轴由 hitOffsetsMs 交给后端混音。
  */
 import { useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -14,9 +14,13 @@ import { ANSWER_SOUND_BASE_OFFSET_MS } from './chart/utils/constants';
 import {
   chartFileIdForSong,
   fetchSimaiText,
+  musicMp3UrlForChartFileId,
   type ChartKind,
 } from './lxns/chartResolve';
 import { parsePreviewUrlParams } from './previewUrlParams';
+
+/** 与 useMusicPlayer 一致：谱面时间轴前有 4 拍静音导入 */
+const LEAD_IN_BEATS = 4;
 
 type GuessState = 'loading' | 'ready' | 'playing' | 'done' | 'error';
 
@@ -25,6 +29,8 @@ type GuessBridge = {
   error: string | null;
   durationSec: number;
   startSec: number;
+  /** 原曲文件内应对齐的起点（秒），已扣除 lead-in */
+  musicStartSec: number;
   songId: number | null;
   kind: ChartKind | null;
   diff: ChartDifficulty | null;
@@ -32,6 +38,8 @@ type GuessBridge = {
   hitOffsetsMs: number[];
   /** 录制开始 → play() 的前置空白（毫秒），用于音画对齐 */
   recordLeadMs: number;
+  /** 是否已在 webm 内嵌 BGM（无需后端再叠） */
+  hasEmbeddedAudio: boolean;
   /** MediaRecorder 产出的 webm（base64，无 data: 前缀） */
   videoBase64: string | null;
   videoMime: string | null;
@@ -176,11 +184,37 @@ function ensureBridge(): GuessBridge {
       diff: null,
       hitOffsetsMs: [],
       recordLeadMs: 0,
+      musicStartSec: 0,
+      hasEmbeddedAudio: false,
       videoBase64: null,
       videoMime: null,
     };
   }
   return window.__GUESS_CHART__;
+}
+
+function loadAudioElement(url: string): Promise<HTMLAudioElement> {
+  return new Promise((resolve, reject) => {
+    const audio = new Audio();
+    audio.crossOrigin = 'anonymous';
+    audio.preload = 'auto';
+    const onReady = () => {
+      cleanup();
+      resolve(audio);
+    };
+    const onErr = () => {
+      cleanup();
+      reject(new Error('audio load failed'));
+    };
+    const cleanup = () => {
+      audio.removeEventListener('canplaythrough', onReady);
+      audio.removeEventListener('error', onErr);
+    };
+    audio.addEventListener('canplaythrough', onReady, { once: true });
+    audio.addEventListener('error', onErr, { once: true });
+    audio.src = url;
+    audio.load();
+  });
 }
 
 function setBridge(patch: Partial<GuessBridge>) {
@@ -198,8 +232,9 @@ export default function RecordPage() {
     const startSec = parsePositiveFloat(searchParams.get('start'), -1);
     // tail>0：从曲末往前截取（秒），覆盖随机 start
     const tailSec = Math.min(120, parsePositiveFloat(searchParams.get('tail'), 0));
+    const withAudio = searchParams.get('withAudio') === '1' || searchParams.get('audio') === '1';
     const hiSpeed = Math.min(9, Math.max(3, parsePositiveFloat(searchParams.get('hispeed'), 6)));
-    return { songId, kind, diff, durationSec, startSec, tailSec, hiSpeed };
+    return { songId, kind, diff, durationSec, startSec, tailSec, withAudio, hiSpeed };
   }, [searchParams]);
 
   const reset = useGameStore((s) => s.reset);
@@ -229,6 +264,8 @@ export default function RecordPage() {
       diff: params.diff,
       hitOffsetsMs: [],
       recordLeadMs: 0,
+      musicStartSec: 0,
+      hasEmbeddedAudio: false,
       videoBase64: null,
       videoMime: null,
     });
@@ -240,6 +277,7 @@ export default function RecordPage() {
     params.durationSec,
     params.startSec,
     params.tailSec,
+    params.withAudio,
     params.songId,
     params.kind,
     params.diff,
@@ -311,14 +349,19 @@ export default function RecordPage() {
         playbackTimeRef.current = startBeats;
         setPreciseTime(startBeats, true);
         const hitOffsetsMs = collectHitOffsetsMs(chart, startMs, playMs);
+        // 与预览器一致：musicTime = chartMs - leadIn
+        const leadInMs = (60000 * LEAD_IN_BEATS) / bpm;
+        const musicStartSec = Math.max(0, (startMs - leadInMs) / 1000);
         setBridge({
           state: 'ready',
           startSec: startMs / 1000,
+          musicStartSec,
           durationSec: params.durationSec,
           diff: diffToUse,
           error: null,
           hitOffsetsMs,
           recordLeadMs: 0,
+          hasEmbeddedAudio: false,
           videoBase64: null,
           videoMime: null,
         });
@@ -360,10 +403,11 @@ export default function RecordPage() {
 
     startedRef.current = true;
     let cancelled = false;
+    let captureAudio: HTMLAudioElement | null = null;
 
     (async () => {
       // 等 canvas 首绘稳定
-      await sleep(300);
+      await sleep(400);
       if (cancelled) return;
 
       const canvas = document.querySelector(
@@ -378,15 +422,43 @@ export default function RecordPage() {
         return;
       }
 
+      const musicStartSec = window.__GUESS_CHART__?.musicStartSec ?? 0;
+      let hasEmbeddedAudio = false;
+      const tracks: MediaStreamTrack[] = [...canvas.captureStream(60).getVideoTracks()];
+
+      if (params.withAudio && params.songId != null && params.kind != null) {
+        try {
+          const chartFileId = chartFileIdForSong(params.songId, params.kind);
+          const musicUrl = musicMp3UrlForChartFileId(chartFileId);
+          captureAudio = await loadAudioElement(musicUrl);
+          if (cancelled) return;
+          captureAudio.currentTime = musicStartSec;
+          const aStream =
+            typeof (captureAudio as HTMLAudioElement & { captureStream?: () => MediaStream })
+              .captureStream === 'function'
+              ? (captureAudio as HTMLAudioElement & { captureStream: () => MediaStream }).captureStream()
+              : null;
+          if (aStream?.getAudioTracks().length) {
+            tracks.push(...aStream.getAudioTracks());
+            hasEmbeddedAudio = true;
+          }
+        } catch (e) {
+          console.warn('[RecordPage] embedded BGM unavailable, fallback mux', e);
+        }
+      }
+
+      const stream = new MediaStream(tracks);
       const mime = pickRecorderMime();
-      // 60fps 采集，后端再 CFR 到 30，减轻掉帧感
-      const stream = canvas.captureStream(60);
       const recorder = mime
         ? new MediaRecorder(stream, {
             mimeType: mime,
-            videoBitsPerSecond: 5_000_000,
+            videoBitsPerSecond: 8_000_000,
+            audioBitsPerSecond: 192_000,
           })
-        : new MediaRecorder(stream, { videoBitsPerSecond: 5_000_000 });
+        : new MediaRecorder(stream, {
+            videoBitsPerSecond: 8_000_000,
+            audioBitsPerSecond: 192_000,
+          });
       const chunks: Blob[] = [];
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) chunks.push(e.data);
@@ -399,7 +471,6 @@ export default function RecordPage() {
         };
       });
 
-      // 强制触发布局/合成，帮助 headless 下 captureStream 稳定出帧
       let paintRaf = 0;
       const paintLoop = () => {
         try {
@@ -412,23 +483,39 @@ export default function RecordPage() {
       };
 
       try {
-        // 先开录再 play：前置空白计入 recordLeadMs，后端据此对齐正解音
+        // 先对齐音频时钟，再几乎同时 start 录制 + play 谱面
+        if (captureAudio && hasEmbeddedAudio) {
+          captureAudio.currentTime = musicStartSec;
+          captureAudio.volume = 1;
+        }
         const tRec = performance.now();
-        recorder.start(200);
+        recorder.start(100);
         paintRaf = window.requestAnimationFrame(paintLoop);
         setBridge({
           state: 'playing',
+          hasEmbeddedAudio,
           videoBase64: null,
           videoMime: recorder.mimeType || mime || 'video/webm',
         });
+        const playPromises: Promise<unknown>[] = [];
+        if (captureAudio && hasEmbeddedAudio) {
+          playPromises.push(captureAudio.play().catch(() => undefined));
+        }
         play();
+        await Promise.all(playPromises);
         const recordLeadMs = Math.max(0, performance.now() - tRec);
-        setBridge({ recordLeadMs });
+        setBridge({ recordLeadMs, hasEmbeddedAudio });
         await sleep(params.durationSec * 1000);
         if (cancelled) return;
         pause();
-        // 多录一小段，保证末尾判定与正解音尾部进画面
-        await sleep(280);
+        if (captureAudio) {
+          try {
+            captureAudio.pause();
+          } catch {
+            // ignore
+          }
+        }
+        await sleep(200);
         if (recorder.state !== 'inactive') recorder.stop();
         const blob = await stopped;
         if (cancelled) return;
@@ -440,6 +527,8 @@ export default function RecordPage() {
         setBridge({
           state: 'done',
           recordLeadMs,
+          hasEmbeddedAudio,
+          musicStartSec,
           videoBase64,
           videoMime: blob.type || mime || 'video/webm',
         });
@@ -459,13 +548,22 @@ export default function RecordPage() {
       } finally {
         if (paintRaf) window.cancelAnimationFrame(paintRaf);
         stream.getTracks().forEach((t) => t.stop());
+        if (captureAudio) {
+          try {
+            captureAudio.pause();
+            captureAudio.removeAttribute('src');
+            captureAudio.load();
+          } catch {
+            // ignore
+          }
+        }
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [chartData, params.durationSec, play, pause]);
+  }, [chartData, params.durationSec, params.withAudio, params.songId, params.kind, play, pause]);
 
   useEffect(() => {
     return () => {

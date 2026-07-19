@@ -23,8 +23,8 @@ from playwright.async_api import async_playwright
 
 _PKG_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHART_CDN = 'https://assets2.lxns.net/maimai/chart'
-# rev=6：更高帧率录制 + CFR 转码，减轻卡顿
-CHART_VIDEO_REV = 6
+# rev=7：浏览器内嵌 BGM 同轨录制 + 高质量 CFR；进度文案不剧透
+CHART_VIDEO_REV = 7
 DEFAULT_DURATION = 40
 PHASE2_DURATION = 30
 STAGE_INTERVAL = 45
@@ -36,7 +36,10 @@ ANSWER_GRACE = STAGE_INTERVAL + STAGE_FINAL_GRACE
 COUNTDOWN_MARKS = (50, 40, 30, 20, 10)
 MAX_HIT_SOUNDS = 2500
 DEFAULT_CHART_BATCH_LIMIT = 20
-CAPTURE_FPS = 30
+CAPTURE_FPS = 60
+VIDEO_CRF = 18
+VIDEO_PRESET = 'medium'
+AUDIO_BITRATE = '192k'
 CHART_DIFF_NAMES = {
     2: '绿',
     3: '黄',
@@ -320,14 +323,13 @@ def _build_answer_track_wav(
 
 def _encode_silent_mp4(webm: Path, silent: Path) -> float:
     silent.parent.mkdir(parents=True, exist_ok=True)
-    # fps+CFR：抹平 MediaRecorder 时间戳抖动，减轻播放卡顿
     cmd_video = [
         'ffmpeg', '-y',
         '-i', str(webm),
         '-an',
         '-c:v', 'libx264',
-        '-preset', 'fast',
-        '-crf', '23',
+        '-preset', VIDEO_PRESET,
+        '-crf', str(VIDEO_CRF),
         '-pix_fmt', 'yuv420p',
         '-vf', f'scale={DEFAULT_VIEWPORT}:{DEFAULT_VIEWPORT},fps={CAPTURE_FPS}',
         '-r', str(CAPTURE_FPS),
@@ -339,6 +341,32 @@ def _encode_silent_mp4(webm: Path, silent: Path) -> float:
     if proc.returncode != 0:
         raise RuntimeError(f'ffmpeg 视频转码失败: {proc.stderr[-800:]}')
     return _ffprobe_duration(silent)
+
+
+def _ffmpeg_remux_embedded(webm: Path, mp4: Path) -> None:
+    """webm 已含音画同轨时，高质量转码为 mp4。"""
+    mp4.parent.mkdir(parents=True, exist_ok=True)
+    tmp = mp4.with_suffix('.tmp.mp4')
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', str(webm),
+        '-c:v', 'libx264',
+        '-preset', VIDEO_PRESET,
+        '-crf', str(VIDEO_CRF),
+        '-pix_fmt', 'yuv420p',
+        '-vf', f'scale={DEFAULT_VIEWPORT}:{DEFAULT_VIEWPORT},fps={CAPTURE_FPS}',
+        '-r', str(CAPTURE_FPS),
+        '-vsync', 'cfr',
+        '-c:a', 'aac',
+        '-b:a', AUDIO_BITRATE,
+        '-ar', '48000',
+        '-movflags', '+faststart',
+        str(tmp),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f'ffmpeg 同轨转码失败: {proc.stderr[-800:]}')
+    tmp.replace(mp4)
 
 
 def _mux_video_audio(silent: Path, audio: Path, mp4: Path) -> None:
@@ -357,11 +385,11 @@ def _mux_video_audio(silent: Path, audio: Path, mp4: Path) -> None:
             '-map', '[v]',
             '-map', '[a]',
             '-c:v', 'libx264',
-            '-preset', 'veryfast',
-            '-crf', '26',
+            '-preset', VIDEO_PRESET,
+            '-crf', str(VIDEO_CRF),
             '-pix_fmt', 'yuv420p',
             '-c:a', 'aac',
-            '-b:a', '160k',
+            '-b:a', AUDIO_BITRATE,
             '-shortest',
             '-movflags', '+faststart',
             str(tmp),
@@ -375,7 +403,7 @@ def _mux_video_audio(silent: Path, audio: Path, mp4: Path) -> None:
             '-map', '1:a:0',
             '-c:v', 'copy',
             '-c:a', 'aac',
-            '-b:a', '160k',
+            '-b:a', AUDIO_BITRATE,
             '-shortest',
             '-movflags', '+faststart',
             str(tmp),
@@ -392,6 +420,7 @@ def _ffmpeg_mux(
     *,
     hit_offsets_ms: Sequence[float],
     record_lead_ms: float = 0.0,
+    nominal_duration: float = DEFAULT_DURATION,
 ) -> None:
     """将 MediaRecorder webm 转码，并按录制时间轴混入正解音。"""
     mp4.parent.mkdir(parents=True, exist_ok=True)
@@ -403,7 +432,12 @@ def _ffmpeg_mux(
     silent = work / 'silent.mp4'
     video_dur = _encode_silent_mp4(webm, silent)
     lead = max(0.0, float(record_lead_ms))
-    aligned_hits = [lead + float(h) for h in hit_offsets_ms]
+    lead_sec = lead / 1000.0
+    # 按实际画面播放段 / 名义时长等比映射 hit，补偿录制时钟漂移
+    play_video = max(0.05, video_dur - lead_sec)
+    nominal = max(0.05, float(nominal_duration))
+    scale = play_video / nominal
+    aligned_hits = [lead + float(h) * scale for h in hit_offsets_ms]
 
     audio_wav = work / 'answers.wav'
     has_audio = _build_answer_track_wav(
@@ -481,11 +515,11 @@ def _ffmpeg_mux_bgm(
     mp4: Path,
     *,
     source_mp3: Path,
-    start_sec: float,
+    music_start_sec: float,
     duration_sec: float,
     record_lead_ms: float = 0.0,
 ) -> None:
-    """静音谱面 + 原曲裁剪；用 adelay 对齐 recordLeadMs。"""
+    """静音谱面 + 原曲裁剪（music_start_sec 已扣 lead-in）；adelay 对齐录制前置。"""
     mp4.parent.mkdir(parents=True, exist_ok=True)
     work = mp4.parent / '_encode_bgm'
     if work.exists():
@@ -493,19 +527,22 @@ def _ffmpeg_mux_bgm(
     work.mkdir(parents=True, exist_ok=True)
 
     silent = work / 'silent.mp4'
-    _encode_silent_mp4(webm, silent)
-
+    video_dur = _encode_silent_mp4(webm, silent)
     lead_ms = max(0, int(round(float(record_lead_ms))))
+    lead_sec = lead_ms / 1000.0
+    play_video = max(0.5, video_dur - lead_sec)
+    # 音频长度贴合实际画面播放段，减少尾部错位
+    clip_dur = max(0.5, min(float(duration_sec) + 0.05, play_video + 0.05))
+
     clip = work / 'bgm_clip.m4a'
-    # 先裁剪再延迟，保证谱面起播点与原曲 start_sec 对齐
     cmd_clip = [
         'ffmpeg', '-y',
-        '-ss', f'{max(0.0, float(start_sec)):.3f}',
-        '-t', f'{max(0.5, float(duration_sec)):.3f}',
+        '-ss', f'{max(0.0, float(music_start_sec)):.3f}',
+        '-t', f'{clip_dur:.3f}',
         '-i', str(source_mp3),
-        '-af', f'adelay={lead_ms}|{lead_ms}',
+        '-af', f'adelay={lead_ms}|{lead_ms},aresample=48000',
         '-c:a', 'aac',
-        '-b:a', '160k',
+        '-b:a', AUDIO_BITRATE,
         str(clip),
     ]
     proc = subprocess.run(cmd_clip, capture_output=True, text=True)
@@ -523,6 +560,7 @@ async def _capture_record_page(
     diff: int,
     duration: int,
     tail: Optional[int] = None,
+    with_audio: bool = False,
 ) -> dict:
     """打开录制页并返回 bridge meta（含 videoBase64）。"""
     port = await asyncio.to_thread(_ensure_static_server)
@@ -537,6 +575,8 @@ async def _capture_record_page(
     if tail and tail > 0:
         q['tail'] = str(int(tail))
         q['duration'] = str(int(tail))
+    if with_audio:
+        q['withAudio'] = '1'
     query = urlencode(q)
     url = f'http://127.0.0.1:{port}/#/record?{query}'
 
@@ -585,6 +625,8 @@ async def _capture_record_page(
                         diff: g.diff,
                         hitOffsetsMs: g.hitOffsetsMs || [],
                         recordLeadMs: g.recordLeadMs || 0,
+                        musicStartSec: g.musicStartSec || 0,
+                        hasEmbeddedAudio: !!g.hasEmbeddedAudio,
                         videoBase64: g.videoBase64 || null,
                         videoMime: g.videoMime || null,
                     };
@@ -626,6 +668,7 @@ async def _render_chart_video(
         diff=diff,
         duration=duration,
         tail=tail,
+        with_audio=mix_bgm,
     )
     webm = work / 'capture.webm'
     webm.write_bytes(base64.b64decode(meta.get('videoBase64') or ''))
@@ -640,8 +683,15 @@ async def _render_chart_video(
         start_sec = float(meta.get('startSec') or 0)
     except (TypeError, ValueError):
         start_sec = 0.0
+    try:
+        music_start_sec = float(meta.get('musicStartSec') or start_sec)
+    except (TypeError, ValueError):
+        music_start_sec = start_sec
+    embedded = bool(meta.get('hasEmbeddedAudio'))
 
-    if mix_bgm:
+    if mix_bgm and embedded:
+        await asyncio.to_thread(_ffmpeg_remux_embedded, webm, out_mp4)
+    elif mix_bgm:
         if not music_id:
             raise RuntimeError('BGM 混流需要 music_id')
         src = work / 'source.mp3'
@@ -651,7 +701,7 @@ async def _render_chart_video(
             webm,
             out_mp4,
             source_mp3=src,
-            start_sec=start_sec,
+            music_start_sec=music_start_sec,
             duration_sec=float(tail or duration),
             record_lead_ms=lead_ms,
         )
@@ -662,6 +712,7 @@ async def _render_chart_video(
             out_mp4,
             hit_offsets_ms=hits,
             record_lead_ms=lead_ms,
+            nominal_duration=float(duration),
         )
 
     shutil.rmtree(work, ignore_errors=True)
@@ -669,6 +720,8 @@ async def _render_chart_video(
     meta['hit_count'] = len(hits)
     meta['recordLeadMs'] = lead_ms
     meta['startSec'] = start_sec
+    meta['musicStartSec'] = music_start_sec
+    meta['hasEmbeddedAudio'] = embedded
     return meta
 
 
@@ -726,7 +779,7 @@ async def ensure_chart_video_ready(
     kind_candidates.append(alt)
 
     last_err = ''
-    set_chart_prepare_status(f'探测谱面 CDN（{title or music_id}）…')
+    set_chart_prepare_status('探测谱面资源…')
     for kind in kind_candidates:
         key = cache_key(music_id, kind, diff)
         out = video_path_for(music_id, kind, diff)
@@ -738,9 +791,7 @@ async def ensure_chart_video_ready(
                 async with _lock_for(key + '_bgm'):
                     if not is_chart_bgm_ready(music_id, kind, diff):
                         try:
-                            set_chart_prepare_status(
-                                f'补渲染曲末 BGM 谱面（{title or music_id}）…'
-                            )
+                            set_chart_prepare_status('补渲染曲末 BGM 谱面…')
                             log.info(
                                 f'[GuessChart] 补渲染 BGM music={music_id} '
                                 f'kind={kind} diff={diff}'
@@ -773,12 +824,12 @@ async def ensure_chart_video_ready(
                 entry = dict(entry)
                 entry.setdefault('path_bgm', str(out_bgm.resolve()))
                 entry['has_bgm'] = True
-            set_chart_prepare_status(f'命中缓存（{title or music_id}）')
+            set_chart_prepare_status('命中缓存')
             return True, 'cache', out, entry
 
         async with _lock_for(key):
             if is_chart_video_ready(music_id, kind, diff):
-                set_chart_prepare_status(f'命中缓存（{title or music_id}）')
+                set_chart_prepare_status('命中缓存')
                 return True, 'cache', out, get_chart_manifest_entry(music_id, kind, diff)
 
             if not await chart_simai_exists(song_id, kind):
@@ -791,9 +842,7 @@ async def ensure_chart_video_ready(
             )
             started = time.time()
             try:
-                set_chart_prepare_status(
-                    f'录制静音谱面（{title or music_id}，约 {duration}s）…'
-                )
+                set_chart_prepare_status(f'录制静音谱面（约 {duration}s）…')
                 meta = await _render_chart_video(
                     song_id=song_id,
                     kind=kind,
@@ -809,9 +858,7 @@ async def ensure_chart_video_ready(
             meta_bgm: Optional[dict] = None
             bgm_ok: Optional[Path] = None
             try:
-                set_chart_prepare_status(
-                    f'录制曲末 BGM 谱面（{title or music_id}，约 {PHASE2_DURATION}s）…'
-                )
+                set_chart_prepare_status(f'录制曲末 BGM 谱面（约 {PHASE2_DURATION}s）…')
                 log.info(
                     f'[GuessChart] 开始渲染 BGM music={music_id} '
                     f'tail={PHASE2_DURATION}s'
@@ -846,7 +893,7 @@ async def ensure_chart_video_ready(
             manifest = _load_manifest()
             manifest.setdefault('entries', {})[key] = entry
             _save_manifest(manifest)
-            set_chart_prepare_status(f'渲染完成（{title or music_id}）')
+            set_chart_prepare_status('渲染完成')
             log.info(
                 f'[GuessChart] 渲染完成 music={music_id} size={entry["size"]} '
                 f'bgm={entry["has_bgm"]} elapsed={elapsed}s'
@@ -915,7 +962,7 @@ async def build_hot_chart_cache(
             break
 
         set_chart_prepare_status(
-            f'预制 [{idx}/{len(pool)}] {music.title}（已新建 {built}/{build_limit}）…'
+            f'预制进度 {idx}/{len(pool)}（已新建 {built}/{build_limit}）…'
         )
         log.info(
             f'[GuessChart] 热门池预制 [{idx}/{len(pool)}] {mid} {music.title} '

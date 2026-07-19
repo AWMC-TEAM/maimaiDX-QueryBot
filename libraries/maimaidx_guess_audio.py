@@ -567,18 +567,18 @@ def build_audio_cache_sync(
     label = f' {title}' if title else ''
     log.info(f'[GuessAudio] 开始构建 music_id={mid}{label} force={force}')
     t0 = time.perf_counter()
-    set_audio_prepare_status(f'准备音频（{title or mid}）…')
+    set_audio_prepare_status('准备音频…')
 
     cache_dir = _song_cache_dir(mid)
     cache_dir.mkdir(parents=True, exist_ok=True)
     source = cache_dir / 'source.mp3'
 
     try:
-        set_audio_prepare_status(f'下载原曲（{title or mid}）…')
+        set_audio_prepare_status('下载原曲…')
         cdn_id = _download_source_sync(mid, source)
     except RuntimeError as e:
         log.warning(f'[GuessAudio] 下载失败 music_id={mid}: {e}')
-        set_audio_prepare_status(f'下载失败（{title or mid}）')
+        set_audio_prepare_status('下载失败')
         return False, str(e)
 
     try:
@@ -591,7 +591,7 @@ def build_audio_cache_sync(
         mode = 'ffmpeg'
         if _demucs_available():
             try:
-                set_audio_prepare_status(f'AI 分轨 demucs（{title or mid}，约 1～3 分钟）…')
+                set_audio_prepare_status('AI 分轨 demucs（约 1～3 分钟）…')
                 _build_stages_demucs(source, mid, offset)
                 mode = 'demucs'
             except Exception as demucs_err:
@@ -609,12 +609,12 @@ def build_audio_cache_sync(
                     p = _stage_path(mid, i)
                     if p.exists():
                         p.unlink()
-                set_audio_prepare_status(f'回退 ffmpeg 分轨（{title or mid}）…')
+                set_audio_prepare_status('回退 ffmpeg 分轨…')
                 _build_stages_ffmpeg(source, mid, offset)
                 mode = 'ffmpeg_fallback'
         else:
             log.warning('[GuessAudio] 未检测到 demucs，使用 ffmpeg 近似分轨')
-            set_audio_prepare_status(f'ffmpeg 近似分轨（{title or mid}）…')
+            set_audio_prepare_status('ffmpeg 近似分轨…')
             _build_stages_ffmpeg(source, mid, offset)
 
         manifest = _load_manifest()
@@ -629,7 +629,7 @@ def build_audio_cache_sync(
         }
         _save_manifest(manifest)
         elapsed = time.perf_counter() - t0
-        set_audio_prepare_status(f'音频就绪（{title or mid}）')
+        set_audio_prepare_status('音频已就绪')
         log.info(
             f'[GuessAudio] 构建成功 music_id={mid}{label} mode={mode} '
             f'elapsed={elapsed:.1f}s'
@@ -788,7 +788,7 @@ async def build_hot_audio_cache(*, force: bool = False) -> str:
                 )
             continue
         set_audio_prepare_status(
-            f'烘焙 [{idx}/{len(pool)}] {music.title}（成功 {len(ok_ids)} / 跳过 {len(skip_ids)}）…'
+            f'烘焙进度 {idx}/{len(pool)}（成功 {len(ok_ids)} / 跳过 {len(skip_ids)}）…'
         )
         log.info(f'[GuessAudio] 热门池 [{idx}/{len(pool)}] 处理 {mid} {music.title}')
         try:

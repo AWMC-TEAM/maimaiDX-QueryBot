@@ -1097,23 +1097,11 @@ async def _(event: PrivateMessageEvent, match=RegexMatched()):
     hint = '强制重建' if force else '增量烘焙'
     await update_guess_audio.send(
         f'开始{hint}猜曲音频（热门池）。单首通常需要 1～3 分钟，'
-        '完整热门池可能耗时数小时；已有缓存会自动跳过，期间会定时报告进度。'
+        '完整热门池可能耗时数小时；已有缓存会自动跳过。'
+        '进度请看服务器日志，完成后私聊汇总。'
     )
-    task = asyncio.create_task(build_hot_audio_cache(force=force))
-    started = asyncio.get_running_loop().time()
-    wait = 45
     try:
-        while True:
-            try:
-                report = await asyncio.wait_for(asyncio.shield(task), timeout=wait)
-                break
-            except asyncio.TimeoutError:
-                elapsed = int(asyncio.get_running_loop().time() - started)
-                detail = get_audio_prepare_status() or '烘焙中…'
-                await update_guess_audio.send(
-                    f'猜曲音频烘焙进行中（已 {elapsed} 秒）\n当前：{detail}'
-                )
-                wait = 60
+        report = await build_hot_audio_cache(force=force)
     except asyncio.CancelledError:
         request_hot_batch_cancel()
         log.warning(f'[GuessAudio] 「更新猜曲音频」被取消 qq={event.user_id}')
@@ -1140,27 +1128,10 @@ async def _(event: PrivateMessageEvent, match=RegexMatched()):
     await update_guess_chart.send(
         f'开始{hint}猜铺面视频（热门池）。\n'
         f'单首含静音段 + 曲末 BGM，通常 1.5～3 分钟；{limit_hint}\n'
-        '已有完整缓存会自动跳过；期间可私聊查看日志，完成后发送汇总。'
+        '已有完整缓存会自动跳过。进度请看服务器日志，完成后私聊汇总。'
     )
-
-    async def _batch() -> str:
-        return await build_hot_chart_cache(force=force, limit=limit)
-
-    task = asyncio.create_task(_batch())
-    started = asyncio.get_running_loop().time()
-    wait = 45
     try:
-        while True:
-            try:
-                report = await asyncio.wait_for(asyncio.shield(task), timeout=wait)
-                break
-            except asyncio.TimeoutError:
-                elapsed = int(asyncio.get_running_loop().time() - started)
-                detail = get_chart_prepare_status() or '预制中…'
-                await update_guess_chart.send(
-                    f'猜铺面预制进行中（已 {elapsed} 秒）\n当前：{detail}'
-                )
-                wait = 60
+        report = await build_hot_chart_cache(force=force, limit=limit)
     except asyncio.CancelledError:
         request_chart_batch_cancel()
         log.warning(f'[GuessChart] 「更新猜铺面」被取消 qq={event.user_id}')

@@ -906,15 +906,15 @@ class Guess:
         random.shuffle(candidates)
         set_audio_prepare_status('随机选曲中…')
         for music in candidates[:12]:
-            set_audio_prepare_status(f'尝试准备：{music.title}')
+            set_audio_prepare_status('准备音频资源…')
             ok, _msg = await ensure_audio_ready(music.id, title=music.title)
             if ok:
-                set_audio_prepare_status(f'已就绪：{music.title}')
+                set_audio_prepare_status('音频已就绪')
                 return self.guessaudiodata(music)
         if ready_pool:
             log.warning('[GuessAudio] 新曲音频生成失败，回退到已有缓存')
             picked = random.choice(ready_pool)
-            set_audio_prepare_status(f'回退缓存：{picked.title}')
+            set_audio_prepare_status('回退已有缓存…')
             return self.guessaudiodata(picked)
         set_audio_prepare_status('无可用音频')
         return None
@@ -959,7 +959,7 @@ class Guess:
         for music in candidates[:10]:
             kind = resolve_chart_kind(music.type)
             diff = pick_chart_diff(len(music.ds))
-            set_chart_prepare_status(f'尝试渲染：{music.title}')
+            set_chart_prepare_status('渲染铺面视频…')
             ok, _msg, path, entry = await ensure_chart_video_ready(
                 music.id,
                 music_type=music.type,
@@ -972,7 +972,7 @@ class Guess:
                 bgm = str(entry.get('path_bgm') or '')
                 if not bgm and is_chart_bgm_ready(music.id, kind, diff):
                     bgm = str(bgm_video_path_for(music.id, kind, diff).resolve())
-                set_chart_prepare_status(f'已就绪：{music.title}')
+                set_chart_prepare_status('铺面视频已就绪')
                 return self.guesschartdata(
                     music,
                     video_path=str(path.resolve()),
@@ -993,7 +993,7 @@ class Guess:
                     bgm = ''
                     if is_chart_bgm_ready(music.id, kind, diff):
                         bgm = str(bgm_video_path_for(music.id, kind, diff).resolve())
-                    set_chart_prepare_status(f'回退缓存：{music.title}')
+                    set_chart_prepare_status('回退已有缓存…')
                     return self.guesschartdata(
                         music,
                         video_path=str(path.resolve()),
