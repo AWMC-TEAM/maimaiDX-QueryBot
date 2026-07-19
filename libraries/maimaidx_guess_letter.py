@@ -68,7 +68,7 @@ TEXT_MODE_MIN_CONTRIBUTORS = 3  # 本局有贡献的 uid 数 ≥ 此值
 TEXT_MODE_BURST_WINDOW = 2.0  # 秒：统计窗口
 TEXT_MODE_BURST_COUNT = 4  # 窗口内开字母相关处理次数 ≥ 此值
 
-# 开字母专用答题冷却（非高峰）；与猜歌 3 秒全局限频互不共用
+# 开字母专用答题冷却（非高峰）；与猜歌 2.5 秒全局限频互不共用
 LETTER_ANSWER_COOLDOWN_SECONDS = 2.5
 
 
@@ -347,7 +347,7 @@ class LetterBoard:
         返回空串 ''：冷却中且本轮已提示过，静默丢弃。
 
         高峰（文字模式）直接放行，不做冷却判断。
-        与猜歌 consume_guess_answer_slot（3 秒全局）完全独立。
+        与猜歌 consume_guess_answer_slot（2.5 秒全局）完全独立。
         """
         if self.text_mode or self.prefer_text():
             return None

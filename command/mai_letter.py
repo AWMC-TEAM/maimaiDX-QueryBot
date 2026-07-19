@@ -268,7 +268,7 @@ async def _letter_cooldown_block(matcher, event: MessageEvent, board: LetterBoar
 
 
 async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> None:
-    # 非高峰：本局 2.5s/人冷却；高峰文字模式不检查。不用猜歌 3s 全局限频。
+    # 非高峰：本局 2.5s/人冷却；高峰文字模式不检查。不用猜歌全局限频。
     board = letter_guess.get(gid)
     assert board is not None
     key = raw.strip()[0]
@@ -290,7 +290,7 @@ async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> Non
 
 async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool:
     """尝试开歌；猜中或冷却拦截返回 True，未中返回 False（由调用方决定是否提示）。"""
-    # 开字母路径不用 consume_guess_answer_slot（猜歌等模式仍保留 3 秒限频）。
+    # 开字母路径不用 consume_guess_answer_slot（猜歌等模式仍走全局限频）。
     board = letter_guess.get(gid)
     if board is None:
         return False
