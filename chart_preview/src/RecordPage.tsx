@@ -196,8 +196,10 @@ export default function RecordPage() {
     const { songId, kind, diff } = parsePreviewUrlParams(searchParams);
     const durationSec = Math.min(120, Math.max(5, parsePositiveFloat(searchParams.get('duration'), 40)));
     const startSec = parsePositiveFloat(searchParams.get('start'), -1);
+    // tail>0：从曲末往前截取（秒），覆盖随机 start
+    const tailSec = Math.min(120, parsePositiveFloat(searchParams.get('tail'), 0));
     const hiSpeed = Math.min(9, Math.max(3, parsePositiveFloat(searchParams.get('hispeed'), 6)));
-    return { songId, kind, diff, durationSec, startSec, hiSpeed };
+    return { songId, kind, diff, durationSec, startSec, tailSec, hiSpeed };
   }, [searchParams]);
 
   const reset = useGameStore((s) => s.reset);
@@ -237,6 +239,7 @@ export default function RecordPage() {
   }, [
     params.durationSec,
     params.startSec,
+    params.tailSec,
     params.songId,
     params.kind,
     params.diff,
@@ -295,7 +298,10 @@ export default function RecordPage() {
         const playMs = params.durationSec * 1000;
         const maxStart = Math.max(0, totalMs - playMs - 500);
         let startMs = params.startSec;
-        if (startMs < 0) {
+        if (params.tailSec > 0) {
+          const tailMs = Math.min(playMs, Math.max(0, totalMs));
+          startMs = Math.max(0, totalMs - tailMs);
+        } else if (startMs < 0) {
           startMs = maxStart > 0 ? Math.floor(Math.random() * maxStart) : 0;
         } else {
           startMs = Math.min(Math.max(0, startMs * 1000), maxStart);
@@ -308,6 +314,7 @@ export default function RecordPage() {
         setBridge({
           state: 'ready',
           startSec: startMs / 1000,
+          durationSec: params.durationSec,
           diff: diffToUse,
           error: null,
           hitOffsetsMs,
@@ -335,6 +342,7 @@ export default function RecordPage() {
     params.diff,
     params.durationSec,
     params.startSec,
+    params.tailSec,
     reset,
     setMusicUrl,
     setSoundEnabled,

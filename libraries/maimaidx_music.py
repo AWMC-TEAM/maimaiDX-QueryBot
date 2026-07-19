@@ -22,8 +22,11 @@ from .maimaidx_guess_audio import (
 )
 from .maimaidx_guess_chart import (
     DEFAULT_DURATION as CHART_DEFAULT_DURATION,
+    PHASE2_DURATION as CHART_PHASE2_DURATION,
     CHART_DIFF_NAMES,
+    bgm_video_path_for,
     ensure_chart_video_ready,
+    is_chart_bgm_ready,
     is_chart_video_ready,
     pick_chart_diff,
     chart_kind as resolve_chart_kind,
@@ -920,6 +923,8 @@ class Guess:
         chart_kind: str,
         chart_diff: int,
         duration: int = CHART_DEFAULT_DURATION,
+        video_path_bgm: str = '',
+        bgm_duration: int = CHART_PHASE2_DURATION,
     ) -> GuessChartData:
         answer = mai.total_alias_list.by_id(music.id)[0].Alias
         answer.append(music.id)
@@ -929,14 +934,17 @@ class Guess:
             answer=answer,
             end=False,
             video_path=video_path,
+            video_path_bgm=video_path_bgm,
             chart_kind=chart_kind,
             chart_diff=chart_diff,
             chart_diff_name=CHART_DIFF_NAMES.get(chart_diff, str(chart_diff)),
             duration=duration,
+            bgm_duration=bgm_duration,
+            stage_count=2 if video_path_bgm else 1,
         )
 
     async def prepare_chart_round(self) -> Optional[GuessChartData]:
-        """随机选曲并渲染/命中猜铺面视频缓存。"""
+        """随机选曲并渲染/命中猜铺面视频缓存（尽量含 BGM 段）。"""
         candidates = self._guess_music_pool()[:]
         random.shuffle(candidates)
         for music in candidates[:10]:
@@ -949,12 +957,19 @@ class Guess:
                 level_count=len(music.ds),
             )
             if ok and path is not None:
+                kind = str(entry.get('kind') or kind)
+                diff = int(entry.get('diff') or diff)
+                bgm = str(entry.get('path_bgm') or '')
+                if not bgm and is_chart_bgm_ready(music.id, kind, diff):
+                    bgm = str(bgm_video_path_for(music.id, kind, diff).resolve())
                 return self.guesschartdata(
                     music,
                     video_path=str(path.resolve()),
                     chart_kind=kind,
-                    chart_diff=int(entry.get('diff') or diff),
+                    chart_diff=diff,
                     duration=int(entry.get('duration') or CHART_DEFAULT_DURATION),
+                    video_path_bgm=bgm,
+                    bgm_duration=int(entry.get('bgm_duration') or CHART_PHASE2_DURATION),
                 )
         # 回退已缓存（含 kind 回退）
         for music in candidates:
@@ -963,11 +978,15 @@ class Guess:
             for kind in (primary, 'standard' if primary == 'dx' else 'dx'):
                 if is_chart_video_ready(music.id, kind, diff):
                     path = video_path_for(music.id, kind, diff)
+                    bgm = ''
+                    if is_chart_bgm_ready(music.id, kind, diff):
+                        bgm = str(bgm_video_path_for(music.id, kind, diff).resolve())
                     return self.guesschartdata(
                         music,
                         video_path=str(path.resolve()),
                         chart_kind=kind,
                         chart_diff=diff,
+                        video_path_bgm=bgm,
                     )
         return None
 

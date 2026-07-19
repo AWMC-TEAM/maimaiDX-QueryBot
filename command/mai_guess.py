@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from pathlib import Path
 from textwrap import dedent
 from typing import Literal, Optional, Union
@@ -29,8 +30,10 @@ from ..libraries.maimaidx_guess_audio import (
     request_hot_batch_cancel,
 )
 from ..libraries.maimaidx_guess_chart import (
-    ANSWER_GRACE as CHART_ANSWER_GRACE,
     COUNTDOWN_MARKS as CHART_COUNTDOWN_MARKS,
+    PHASE2_DURATION as CHART_PHASE2_DURATION,
+    STAGE_FINAL_GRACE as CHART_STAGE_FINAL_GRACE,
+    STAGE_INTERVAL as CHART_STAGE_INTERVAL,
 )
 from ..libraries.maimaidx_music import guess
 from ..libraries.maimaidx_model import (
@@ -109,12 +112,25 @@ def _sender_name(event: MessageEvent) -> str:
 
 
 def _guess_first_stage(data: GuessData) -> bool:
-    """猜曲子：第二段发出前（仅听过第一段）仍算首阶段。猜铺面单段视频始终算首阶段。"""
+    """猜曲子/猜铺面：第二段发出前仍算首阶段。"""
     if isinstance(data, GuessAudioData):
         return data.hint_step < 2
     if isinstance(data, GuessChartData):
-        return True
+        return data.hint_step < 2
     return data.hint_step == 0
+
+
+def _chart_points_now(data: GuessChartData) -> int:
+    now = time.time()
+    started = float(getattr(data, 'started_at', 0) or 0)
+    elapsed = max(0.0, now - started) if started > 0 else 0.0
+    bgm_at = float(getattr(data, 'bgm_at', 0) or 0)
+    bgm_elapsed = max(0.0, now - bgm_at) if bgm_at > 0 else 0.0
+    return guess_score.chart_points_for(
+        data.hint_step,
+        elapsed_sec=elapsed,
+        bgm_elapsed_sec=bgm_elapsed,
+    )
 
 
 async def _award_guess_points(
@@ -130,7 +146,7 @@ async def _award_guess_points(
     elif isinstance(data, GuessAudioData):
         raw_base = guess_score.audio_points_for(data.hint_step)
     elif isinstance(data, GuessChartData):
-        raw_base = guess_score.chart_points_for()
+        raw_base = _chart_points_now(data)
     elif isinstance(data, GuessDefaultData):
         raw_base = guess_score.song_points_for(data.hint_step)
     else:
@@ -142,6 +158,9 @@ async def _award_guess_points(
     if isinstance(data, GuessAudioData) and guess_score.audio_season_double_active():
         multiplier *= 2
         multiplier_tags.append('赛季限时双倍得分')
+    if isinstance(data, GuessChartData) and guess_score.chart_season_double_active():
+        multiplier *= 2
+        multiplier_tags.append('猜铺面限时双倍')
     uid = platform_user_id(event)
     if await guess_boost_card.consume_one(gid, uid):
         multiplier *= 2
@@ -382,6 +401,15 @@ async def _send_guess_answer_bundle(
             + MessageSegment.record(str(stage_path))
         )
 
+    chart_bgm = None
+    if isinstance(data, GuessChartData) and data.video_path_bgm:
+        bgm_path = Path(data.video_path_bgm).resolve()
+        if bgm_path.is_file():
+            chart_bgm = (
+                MessageSegment.text('\n[曲末带 BGM 谱面]\n')
+                + MessageSegment.video(str(bgm_path))
+            )
+
     if bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
         bundle = Message()
         if lines:
@@ -399,6 +427,11 @@ async def _send_guess_answer_bundle(
         if final_audio is not None:
             await _safe_matcher_send(
                 matcher, event, final_audio, gid, media=True, fatal=False,
+            )
+        if chart_bgm is not None:
+            await _safe_matcher_send(
+                matcher, event, chart_bgm, gid,
+                media=True, fatal=False, timeout=GUESS_SEND_TIMEOUT_VIDEO,
             )
         return
 
@@ -422,6 +455,11 @@ async def _send_guess_answer_bundle(
             matcher, event, final_audio, gid,
             media=True,
             fatal=False,
+        )
+    if chart_bgm is not None:
+        await _safe_matcher_send(
+            matcher, event, chart_bgm, gid,
+            media=True, fatal=False, timeout=GUESS_SEND_TIMEOUT_VIDEO,
         )
 
 
@@ -902,19 +940,32 @@ async def _(event: MessageEvent):
             guess.end_prepare(gid)
 
         video_path = Path(data.video_path).resolve()
+        has_bgm = bool(data.video_path_bgm and Path(data.video_path_bgm).is_file())
         log.info(
             f'[GuessChart] 猜铺面开始 gid={gid} music_id={data.music.id} '
             f'title={data.music.title} kind={data.chart_kind} '
-            f'diff={data.chart_diff_name} file={video_path.name}'
+            f'diff={data.chart_diff_name} bgm={has_bgm} file={video_path.name}'
         )
-        intro = dedent(f'''\
-            猜铺面开始！将发送一段约 {data.duration} 秒的谱面视频
-            （无 BGM / 无背景 PV，带正解音；难度倾向 {data.chart_diff_name} 谱）。
-            请根据铺面输入歌曲 id、标题或别名作答。
-            视频发出后有 {CHART_ANSWER_GRACE} 秒作答时间。
-            发送 重置猜歌 可结束本局。
-        ''')
-        stage_text = intro if compact else '谱面视频：'
+        season_line = ''
+        if guess_score.chart_season_double_active():
+            end = guess_score.CHART_SEASON_DOUBLE_END.strftime('%Y-%m-%d')
+            season_line = f'\n【限时双倍】猜铺面积分 ×2（截至 {end}）'
+        if has_bgm:
+            intro = dedent(f'''\
+                猜铺面开始！共 2 个阶段：
+                ① 约 {data.duration} 秒静音谱面（带正解音，难度倾向 {data.chart_diff_name}）
+                ② 约 {CHART_STAGE_INTERVAL} 秒后放出曲末约 {data.bgm_duration or CHART_PHASE2_DURATION} 秒带 BGM 谱面
+                越早答分越高；BGM 放出后继续扣分，最低 1 分。
+                请输入歌曲 id、标题或别名作答。发送 重置猜歌 可结束本局。{season_line}
+            ''')
+        else:
+            intro = dedent(f'''\
+                猜铺面开始！将发送一段约 {data.duration} 秒的静音谱面视频
+                （无 BGM；难度倾向 {data.chart_diff_name} 谱）。
+                请根据铺面输入歌曲 id、标题或别名作答。
+                发送 重置猜歌 可结束本局。{season_line}
+            ''')
+        stage_text = intro if compact else '【阶段1】静音谱面：'
         if not compact:
             await _safe_matcher_send(guess_music_chart, event, intro, gid)
 
@@ -926,23 +977,70 @@ async def _(event: MessageEvent):
             media=True,
             timeout=GUESS_SEND_TIMEOUT_VIDEO,
         )
+        data.started_at = time.time()
         data.hint_step = 1
 
-        remaining = CHART_ANSWER_GRACE
-        await _guess_notify(
-            guess_music_chart, event,
-            f'⏳ 还剩 {remaining}秒 作答时间哟！',
-        )
-        for _ in range(CHART_ANSWER_GRACE):
-            await _guess_sleep(gid, 1)
+        if has_bgm:
+            for _ in range(CHART_STAGE_INTERVAL):
+                await _guess_sleep(gid, 1)
+                if _guess_loop_should_stop(gid):
+                    await guess_music_chart.finish()
+
             if _guess_loop_should_stop(gid):
                 await guess_music_chart.finish()
-            remaining -= 1
-            if remaining in CHART_COUNTDOWN_MARKS:
-                await _guess_notify(
-                    guess_music_chart, event,
-                    f'⏳ 还剩 {remaining}秒 作答时间哟！',
-                )
+
+            bgm_path = Path(data.video_path_bgm).resolve()
+            stage2 = (
+                f'【阶段2】曲末约 {data.bgm_duration or CHART_PHASE2_DURATION} 秒带 BGM 谱面：\n'
+                if not compact else
+                f'【阶段2】曲末带 BGM（约 {data.bgm_duration or CHART_PHASE2_DURATION}s）\n'
+            )
+            await _safe_matcher_send(
+                guess_music_chart, event,
+                MessageSegment.text(stage2)
+                + MessageSegment.video(str(bgm_path)),
+                gid,
+                media=True,
+                timeout=GUESS_SEND_TIMEOUT_VIDEO,
+            )
+            cur = guess.Group.get(gid)
+            if cur is None or cur.end:
+                await guess_music_chart.finish()
+            cur.hint_step = 2
+            cur.bgm_at = time.time()
+            data = cur
+
+            remaining = CHART_STAGE_FINAL_GRACE
+            await _guess_notify(
+                guess_music_chart, event,
+                f'曲末 BGM 已放出！⏳ 还剩 {remaining}秒 作答时间哟！',
+            )
+            for _ in range(CHART_STAGE_FINAL_GRACE):
+                await _guess_sleep(gid, 1)
+                if _guess_loop_should_stop(gid):
+                    await guess_music_chart.finish()
+                remaining -= 1
+                if remaining in CHART_COUNTDOWN_MARKS:
+                    await _guess_notify(
+                        guess_music_chart, event,
+                        f'⏳ 还剩 {remaining}秒 作答时间哟！',
+                    )
+        else:
+            remaining = CHART_STAGE_FINAL_GRACE
+            await _guess_notify(
+                guess_music_chart, event,
+                f'⏳ 还剩 {remaining}秒 作答时间哟！',
+            )
+            for _ in range(CHART_STAGE_FINAL_GRACE):
+                await _guess_sleep(gid, 1)
+                if _guess_loop_should_stop(gid):
+                    await guess_music_chart.finish()
+                remaining -= 1
+                if remaining in CHART_COUNTDOWN_MARKS:
+                    await _guess_notify(
+                        guess_music_chart, event,
+                        f'⏳ 还剩 {remaining}秒 作答时间哟！',
+                    )
 
         if _guess_loop_should_stop(gid):
             await guess_music_chart.finish()

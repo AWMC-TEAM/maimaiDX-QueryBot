@@ -153,10 +153,15 @@ class GuessAudioData(GuessData):
 class GuessChartData(GuessData):
 
     video_path: str
+    video_path_bgm: str = ''
     chart_kind: str = 'dx'
     chart_diff: int = 5
     chart_diff_name: str = '紫'
-    duration: int = 25
+    duration: int = 40
+    bgm_duration: int = 30
+    stage_count: int = 2
+    started_at: float = 0.0
+    bgm_at: float = 0.0
 
 
 class Switch(BaseModel):

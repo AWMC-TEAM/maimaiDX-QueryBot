@@ -73,10 +73,12 @@ class GuessScoreManager:
     AUDIO_MIN_POINTS = 5
     AUDIO_MAX_POINTS = 10
     AUDIO_STAGE_POINTS = (10, 9, 7, 5)
-    # 猜铺面：单段视频，固定基础分（可叠加首答/首阶段/加倍卡）
-    CHART_POINTS = 8
+    # 猜铺面：按时扣分（可叠加首答/首阶段/加倍卡）
+    CHART_POINTS = 10
     # 猜曲子赛季限时双倍（含 2026-06-30 当天）
     AUDIO_SEASON_DOUBLE_END = date(2026, 6, 30)
+    # 猜铺面限时双倍（含 2026-07-26 当天）
+    CHART_SEASON_DOUBLE_END = date(2026, 7, 26)
     MAX_HISTORY_PER_PERIOD = 30
 
     PERIODS: Dict[str, PeriodSpec] = {
@@ -102,12 +104,25 @@ class GuessScoreManager:
         idx = min(int(hint_step), len(self.AUDIO_STAGE_POINTS)) - 1
         return self.AUDIO_STAGE_POINTS[idx]
 
-    def chart_points_for(self) -> int:
-        return self.CHART_POINTS
+    def chart_points_for(
+        self,
+        hint_step: int = 1,
+        *,
+        elapsed_sec: float = 0.0,
+        bgm_elapsed_sec: float = 0.0,
+    ) -> int:
+        """BGM 前：10 起每 7 秒 -1 最低 4；BGM 后：3 起每 20 秒 -1 最低 1。"""
+        if int(hint_step) >= 2:
+            return max(1, 3 - int(max(0.0, bgm_elapsed_sec)) // 20)
+        return max(4, 10 - int(max(0.0, elapsed_sec)) // 7)
 
     @classmethod
     def audio_season_double_active(cls) -> bool:
         return date.today() <= cls.AUDIO_SEASON_DOUBLE_END
+
+    @classmethod
+    def chart_season_double_active(cls) -> bool:
+        return date.today() <= cls.CHART_SEASON_DOUBLE_END
 
     def __init__(self) -> None:
         if guess_score_file.exists():
