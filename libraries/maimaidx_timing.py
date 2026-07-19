@@ -193,8 +193,10 @@ async def finish_timed_sync(
     reply_message: bool = True,
     **kwargs,
 ) -> None:
-    """计时执行同步生成函数，成功时追加 ⏱️ 耗时后 finish。"""
-    result, total = run_timed_call(fn, *args, **kwargs)
+    """计时执行同步生成函数（线程池，不堵事件循环），成功时追加 ⏱️ 耗时后 finish。"""
+    import asyncio
+
+    result, total = await asyncio.to_thread(run_timed_call, fn, *args, **kwargs)
     if isinstance(result, str):
         await matcher.finish(result, reply_message=reply_message)
         return

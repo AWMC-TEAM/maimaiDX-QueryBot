@@ -59,46 +59,44 @@ def _cpu_count() -> int:
     return max(1, int(os.cpu_count() or 4))
 
 
-def _env_int(name: str, default: int) -> int:
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    """读取正整数环境变量；minimum=0 时允许关闭（如 BG_FILL_WORKERS=0）。"""
     raw = os.environ.get(name)
     if raw is None or not str(raw).strip():
         return default
     try:
-        return max(1, int(raw))
+        return max(minimum, int(raw))
     except ValueError:
         return default
 
 
 def _default_render_workers() -> int:
-    """Playwright 录制槽：必须远小于核数，否则掉帧并拖垮查分。"""
+    """在线录制槽：宁少勿多，避免 Chromium 饿死查分/传分。"""
     n = _cpu_count()
-    # 40 核默认 4 路；硬顶 6，留核给 bot / 传分
-    if n >= 32:
-        return 4
-    return max(1, min(3, n // 8))
+    # 多核机默认 2；硬顶 3。低峰可用 MAIMAIDX_CHART_RENDER_WORKERS 加大。
+    if n >= 16:
+        return 2
+    return 1
 
 
 def _default_batch_song_workers() -> int:
     """预制时并发曲目数；每曲最多占 2 个录制槽（静音+BGM）。"""
-    rw = _default_render_workers()
-    return max(1, min(3, rw))
+    return max(1, min(2, _default_render_workers()))
 
 
 def _default_ffmpeg_threads() -> int:
     """单路 ffmpeg 线程；总占用约 render×threads，勿打满整机。"""
-    n = _cpu_count()
-    workers = _default_render_workers()
-    return max(2, min(4, max(1, (n - 2) // max(1, workers))))
+    return 2
 
 
 def _default_cpu_pool_workers() -> int:
-    """ffmpeg 线程池：默认 min(32, cpu-2)，与 bot 错峰。"""
-    return max(1, min(32, _cpu_count() - 2))
+    """ffmpeg 线程池：与 bot 错峰，默认保守。"""
+    return max(2, min(6, _cpu_count() // 8 or 2))
 
 
 def _default_bg_fill_workers() -> int:
-    """启动后后台补 BGM 的并发；默认 2，避免一启动打满。"""
-    return 2
+    """启动后后台补 BGM；默认 1。设 0 可完全关闭。"""
+    return 1
 
 
 # 环境变量：
@@ -110,7 +108,13 @@ BATCH_SONG_WORKERS = _env_int(
 )
 FFMPEG_THREADS = _env_int('MAIMAIDX_CHART_FFMPEG_THREADS', _default_ffmpeg_threads())
 CPU_POOL_WORKERS = _env_int('MAIMAIDX_CHART_CPU_POOL', _default_cpu_pool_workers())
-BG_FILL_WORKERS = _env_int('MAIMAIDX_CHART_BG_FILL_WORKERS', _default_bg_fill_workers())
+# 允许 0：关闭后台补洞（在线高峰止血）
+BG_FILL_WORKERS = _env_int(
+    'MAIMAIDX_CHART_BG_FILL_WORKERS', _default_bg_fill_workers(), minimum=0,
+)
+# 负载超过该阈值时跳过本轮后台补洞（load1 / nproc）
+BG_FILL_LOAD_RATIO = float(os.environ.get('MAIMAIDX_CHART_BG_FILL_LOAD_RATIO') or '0.35')
+CHROMIUM_NICE = _env_int('MAIMAIDX_CHART_CHROMIUM_NICE', FFMPEG_NICE, minimum=0)
 CHART_DIFF_NAMES = {
     2: '绿',
     3: '黄',
@@ -155,12 +159,13 @@ def _get_render_sem() -> asyncio.Semaphore:
 def _get_bg_fill_sem() -> asyncio.Semaphore:
     global _bg_fill_sem
     if _bg_fill_sem is None:
-        _bg_fill_sem = asyncio.Semaphore(BG_FILL_WORKERS)
+        # Semaphore(0) 会永久阻塞；BG_FILL=0 时不应进入此路径
+        _bg_fill_sem = asyncio.Semaphore(max(1, BG_FILL_WORKERS))
     return _bg_fill_sem
 
 
 def _get_cpu_executor() -> concurrent.futures.ThreadPoolExecutor:
-    """ffmpeg 专用线程池：不阻塞 NoneBot 事件循环，且与录制槽分开限流。"""
+    """ffmpeg 专用线程池：不占用默认线程池，避免饿死查分等 to_thread。"""
     global _cpu_executor
     if _cpu_executor is None:
         _cpu_executor = concurrent.futures.ThreadPoolExecutor(
@@ -184,6 +189,57 @@ def _low_priority_cmd(cmd: Sequence[str]) -> List[str]:
     if os.name == 'nt':
         return list(cmd)
     return ['nice', '-n', str(FFMPEG_NICE), *cmd]
+
+
+def _system_load_ratio() -> float:
+    try:
+        return float(os.getloadavg()[0]) / float(_cpu_count())
+    except (AttributeError, OSError, ZeroDivisionError):
+        return 0.0
+
+
+def _bg_fill_should_pause() -> bool:
+    """在线高峰：load 偏高时跳过后台补洞，把核留给查分/消息。"""
+    if BG_FILL_WORKERS <= 0:
+        return True
+    return _system_load_ratio() >= max(0.05, BG_FILL_LOAD_RATIO)
+
+
+def _renice_pid(pid: int, nice: int) -> None:
+    if os.name == 'nt' or pid <= 0:
+        return
+    try:
+        subprocess.run(
+            ['renice', '-n', str(nice), '-p', str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
+def _renice_playwright_chromium(nice: int = CHROMIUM_NICE) -> int:
+    """降低本机 ms-playwright chromium 优先级（best-effort）。"""
+    if os.name == 'nt' or nice <= 0:
+        return 0
+    try:
+        out = subprocess.run(
+            ['pgrep', '-f', 'ms-playwright/chromium'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return 0
+    n = 0
+    for line in (out.stdout or '').splitlines():
+        line = line.strip()
+        if not line.isdigit():
+            continue
+        _renice_pid(int(line), nice)
+        n += 1
+    return n
 
 
 def _run_cmd(cmd: Sequence[str], *, low_priority: bool = True) -> subprocess.CompletedProcess:
@@ -770,6 +826,8 @@ async def _capture_record_page(
                 '--autoplay-policy=no-user-gesture-required',
             ],
         )
+        # Chromium 默认 nice=0，会与 bot 抢核；降到与 ffmpeg 同级
+        await asyncio.to_thread(_renice_playwright_chromium, CHROMIUM_NICE)
         context = await browser.new_context(
             viewport={'width': DEFAULT_VIEWPORT, 'height': DEFAULT_VIEWPORT},
             device_scale_factor=1,
@@ -1287,14 +1345,16 @@ async def fill_missing_chart_bgm(
     music_type_lookup: Optional[Dict[str, str]] = None,
 ) -> Tuple[int, int]:
     """补渲染缺失 BGM。返回 (成功, 失败)。"""
+    if BG_FILL_WORKERS <= 0:
+        return 0, 0
     holes = list_mute_without_bgm()
     if not holes:
         return 0, 0
-    todo = holes[: max(1, int(limit))]
+    todo = holes[: max(1, min(int(limit), BG_FILL_WORKERS))]
     ok_n = fail_n = 0
     log.info(
         f'[GuessChart] 开始补 BGM 空洞 {len(todo)}/{len(holes)} '
-        f'bg_fill_workers={BG_FILL_WORKERS}'
+        f'bg_fill_workers={BG_FILL_WORKERS} load={_system_load_ratio():.2f}'
     )
 
     async def _one(mid: str, kind: str, diff: int) -> bool:
@@ -1342,14 +1402,18 @@ async def _chart_bgm_background_fill_loop() -> None:
     cleanup_stale_chart_workdirs()
     log.info(
         f'[GuessChart] 后台补 BGM 已启动 workers={BG_FILL_WORKERS} '
-        f'(延迟 {BG_FILL_STARTUP_DELAY_SEC}s，不打满 CPU)'
+        f'load_pause>={BG_FILL_LOAD_RATIO:.2f} '
+        f'(延迟 {BG_FILL_STARTUP_DELAY_SEC}s；在线高峰会自动停)'
     )
     while True:
         try:
-            if _batch_cancel.is_set():
+            if BG_FILL_WORKERS <= 0:
                 await asyncio.sleep(BG_FILL_IDLE_SLEEP_SEC)
                 continue
-            holes = list_mute_without_bgm()
+            if _batch_cancel.is_set() or _bg_fill_should_pause():
+                await asyncio.sleep(BG_FILL_IDLE_SLEEP_SEC)
+                continue
+            holes = await asyncio.to_thread(list_mute_without_bgm)
             if not holes:
                 await asyncio.sleep(BG_FILL_IDLE_SLEEP_SEC)
                 continue
@@ -1365,8 +1429,11 @@ async def _chart_bgm_background_fill_loop() -> None:
 
 
 def schedule_chart_cache_background_fill() -> None:
-    """启动后小并发补齐 BGM 空洞；可重复调用（单例）。"""
+    """启动后小并发补齐 BGM 空洞；可重复调用（单例）。BG_FILL=0 时不启动。"""
     global _bg_fill_task
+    if BG_FILL_WORKERS <= 0:
+        log.info('[GuessChart] MAIMAIDX_CHART_BG_FILL_WORKERS=0，跳过后台补 BGM')
+        return
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

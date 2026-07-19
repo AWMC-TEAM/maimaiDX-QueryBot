@@ -60,6 +60,23 @@ class GuessChartCacheTests(unittest.TestCase):
         self.assertEqual(cmd[0], 'nice')
         self.assertIn('ffmpeg', cmd)
 
+    def test_env_int_allows_zero_for_bg_fill(self):
+        self.assertEqual(self.gc._env_int('__no_such__', 1, minimum=0), 1)
+        import os
+        os.environ['MAIMAIDX_TEST_BG_FILL'] = '0'
+        try:
+            self.assertEqual(
+                self.gc._env_int('MAIMAIDX_TEST_BG_FILL', 2, minimum=0), 0,
+            )
+        finally:
+            os.environ.pop('MAIMAIDX_TEST_BG_FILL', None)
+
+    def test_online_defaults_are_conservative(self):
+        # 多核机默认应保守，避免在线时打满
+        self.assertLessEqual(self.gc._default_render_workers(), 2)
+        self.assertLessEqual(self.gc._default_bg_fill_workers(), 1)
+        self.assertLessEqual(self.gc._default_cpu_pool_workers(), 6)
+
     def test_cache_key_and_round_ready(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp) / 'cache'

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 from nonebot import on_command, on_message
@@ -142,7 +143,7 @@ async def _send_board(matcher, event: MessageEvent, board, *, text: str = "") ->
             reply_message=False,
         )
         return
-    msg = board_image_segment(board)
+    msg = await asyncio.to_thread(board_image_segment, board)
     if text:
         msg = text + msg
     await matcher.send(
@@ -231,10 +232,10 @@ async def _maybe_finish_board(
     msg = Message(text)
     try:
         split_im = await render_settlement_split(settlement)
-        msg += MessageSegment.image(image_b64(split_im))
+        msg += MessageSegment.image(await asyncio.to_thread(image_b64, split_im))
     except Exception as exc:
         log.warning(f"[LetterGuess] 结算分成图失败：{type(exc).__name__}: {exc}")
-    msg += board_image_segment(board)
+    msg += await asyncio.to_thread(board_image_segment, board)
     await matcher.send(
         adapt_guess_outbound(msg, event=event),
         reply_message=resolve_reply_message(event, reply_message=True),

@@ -151,7 +151,9 @@ async def render_score_board(
                 avatars[i] if i < len(avatars) else _placeholder_avatar(m.name, 44),
             )
         )
-    return _draw_rank_panel(title=title, subtitle=subtitle, rows=rows)
+    return await asyncio.to_thread(
+        _draw_rank_panel, title=title, subtitle=subtitle, rows=rows
+    )
 
 
 async def render_contrib_board(
@@ -172,7 +174,9 @@ async def render_contrib_board(
                 avatars[i] if i < len(avatars) else _placeholder_avatar(m.name, 44),
             )
         )
-    return _draw_rank_panel(title=title, subtitle=subtitle, rows=rows)
+    return await asyncio.to_thread(
+        _draw_rank_panel, title=title, subtitle=subtitle, rows=rows
+    )
 
 
 async def render_time_board(
@@ -194,11 +198,15 @@ async def render_time_board(
                 avatars[i] if i < len(avatars) else _placeholder_avatar(m.name, 44),
             )
         )
-    return _draw_rank_panel(title=title, subtitle=subtitle, rows=rows)
+    return await asyncio.to_thread(
+        _draw_rank_panel, title=title, subtitle=subtitle, rows=rows
+    )
 
 
-async def render_settlement_split(settlement: LetterSettlement) -> Image.Image:
-    """本局榜单+分成：贡献、权重、分到的分/BREAK（一张综合图）。"""
+def _paint_settlement_split(
+    settlement: LetterSettlement, avatars: List[Image.Image]
+) -> Image.Image:
+    """同步绘制结算分成图（供 to_thread）。"""
     width = 900
     row_h = 78
     header_h = 128
@@ -234,9 +242,6 @@ async def render_settlement_split(settlement: LetterSettlement) -> Image.Image:
         font.draw(44, header_h + 12, 22, "本局无人有效贡献", _MUTED, "lt")
         return im
 
-    avatars = await _load_avatars(
-        [(avatar_qq_candidate(r.uid, r.billing_id), r.name) for r in rewards], 48
-    )
     y = header_h
     for idx, r in enumerate(rewards):
         if idx > 0:
@@ -257,6 +262,17 @@ async def render_settlement_split(settlement: LetterSettlement) -> Image.Image:
         y += row_h
     font.draw(44, height - 40, 14, "开字母×1 / 补齐×3 / 开歌×4 · 无贡献不得分", _MUTED, "lt")
     return im
+
+
+async def render_settlement_split(settlement: LetterSettlement) -> Image.Image:
+    """本局榜单+分成：贡献、权重、分到的分/BREAK（一张综合图）。"""
+    rewards = list(settlement.rewards)
+    if not rewards:
+        return await asyncio.to_thread(_paint_settlement_split, settlement, [])
+    avatars = await _load_avatars(
+        [(avatar_qq_candidate(r.uid, r.billing_id), r.name) for r in rewards], 48
+    )
+    return await asyncio.to_thread(_paint_settlement_split, settlement, avatars)
 
 
 def image_b64(im: Image.Image) -> str:
