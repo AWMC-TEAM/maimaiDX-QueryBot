@@ -8,7 +8,8 @@ import { ChartCanvas } from './chart/components/ChartCanvas';
 import { getAvailableDifficulties, parseSimaiChart } from './chart/core/parser/ChartParser';
 import { useGameSettingsStore } from './chart/stores/useGameSettingsStore';
 import { playbackTimeRef, useGameStore } from './chart/stores/useGameStore';
-import type { ChartDifficulty } from './chart/types';
+import type { Chart, ChartDifficulty, Note } from './chart/types';
+import { ANSWER_SOUND_BASE_OFFSET_MS } from './chart/utils/constants';
 import {
   chartFileIdForSong,
   fetchSimaiText,
@@ -26,6 +27,8 @@ type GuessBridge = {
   songId: number | null;
   kind: ChartKind | null;
   diff: ChartDifficulty | null;
+  /** 相对播放起点的正解音时间（毫秒），供后端混音 */
+  hitOffsetsMs: number[];
 };
 
 declare global {
@@ -90,16 +93,55 @@ function parsePositiveFloat(raw: string | null, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+function shouldPlayAnswerSound(note: Note): boolean {
+  switch (note.type) {
+    case 'tap':
+    case 'break':
+    case 'simultaneous':
+    case 'hold-start':
+    case 'hold-start-simultaneous':
+    case 'slide':
+    case 'touch':
+    case 'touch-hold-start':
+    case 'touch-hold-end':
+    case 'hold-end':
+    case 'hold-end-simultaneous':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** 收集录制窗口内的正解音相对偏移（与 AudioManager 调度一致） */
+function collectHitOffsetsMs(chart: Chart, startMs: number, durationMs: number): number[] {
+  const endMs = startMs + durationMs;
+  const seen = new Set<string>();
+  const hits: number[] = [];
+  for (const note of chart.notes) {
+    if (!shouldPlayAnswerSound(note)) continue;
+    const key = note.timingMs.toFixed(3);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // timingOffset=-50 → 正解音略早于判定时刻
+    const absMs = note.timingMs + ANSWER_SOUND_BASE_OFFSET_MS;
+    if (absMs < startMs || absMs > endMs) continue;
+    hits.push(Math.max(0, absMs - startMs));
+  }
+  hits.sort((a, b) => a - b);
+  return hits;
+}
+
 function ensureBridge(): GuessBridge {
   if (!window.__GUESS_CHART__) {
     window.__GUESS_CHART__ = {
       state: 'loading',
       error: null,
-      durationSec: 25,
+      durationSec: 40,
       startSec: 0,
       songId: null,
       kind: null,
       diff: null,
+      hitOffsetsMs: [],
     };
   }
   return window.__GUESS_CHART__;
@@ -116,7 +158,7 @@ export default function RecordPage() {
 
   const params = useMemo(() => {
     const { songId, kind, diff } = parsePreviewUrlParams(searchParams);
-    const durationSec = Math.min(90, Math.max(5, parsePositiveFloat(searchParams.get('duration'), 25)));
+    const durationSec = Math.min(120, Math.max(5, parsePositiveFloat(searchParams.get('duration'), 40)));
     const startSec = parsePositiveFloat(searchParams.get('start'), -1);
     const hiSpeed = Math.min(9, Math.max(3, parsePositiveFloat(searchParams.get('hispeed'), 6)));
     return { songId, kind, diff, durationSec, startSec, hiSpeed };
@@ -147,7 +189,9 @@ export default function RecordPage() {
       songId: params.songId,
       kind: params.kind,
       diff: params.diff,
+      hitOffsetsMs: [],
     });
+    // 页面内正解音仍关闭：Playwright 录屏不含 WebAudio，改由后端混入 answer.wav
     setSoundEnabled(false);
     setMusicVolume(0);
     setMusicUrl('');
@@ -222,11 +266,13 @@ export default function RecordPage() {
         const startBeats = msToBeats(startMs, bpmEvents, bpm);
         playbackTimeRef.current = startBeats;
         setPreciseTime(startBeats, true);
+        const hitOffsetsMs = collectHitOffsetsMs(chart, startMs, playMs);
         setBridge({
           state: 'ready',
           startSec: startMs / 1000,
           diff: diffToUse,
           error: null,
+          hitOffsetsMs,
         });
       } catch (e) {
         console.error(e);

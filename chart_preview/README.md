@@ -6,7 +6,8 @@
 
 路径：`/record?song=<id>&kind=dx|standard&diff=2-6&duration=25&start=-1&hispeed=6`
 
-- **不加载音乐**、不播放正解音、无背景视频 / 曲绘背景
+- **不加载音乐**、无背景视频 / 曲绘背景
+- 导出 `hitOffsetsMs`，由 bot 用 `answer.wav` 混入正解音
 - 仅黑底谱面动画；Playwright 读取 `window.__GUESS_CHART__.state`：
   `loading` → `ready` → `playing` → `done` / `error`
 

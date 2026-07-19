@@ -6,12 +6,14 @@ import asyncio
 import json
 import shutil
 import socket
+import struct
 import subprocess
 import threading
 import time
+import wave
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlencode
 
 import httpx
@@ -20,10 +22,16 @@ from playwright.async_api import async_playwright
 
 _PKG_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHART_CDN = 'https://assets2.lxns.net/maimai/chart'
-CHART_VIDEO_REV = 1
-DEFAULT_DURATION = 25
+# rev=2：加长片段 + 混入正解音，使旧缓存失效
+CHART_VIDEO_REV = 2
+DEFAULT_DURATION = 40
 DEFAULT_VIEWPORT = 720
-ANSWER_GRACE = 75
+ANSWER_GRACE = 120
+# 作答倒计时提醒节点（秒）
+COUNTDOWN_MARKS = (100, 80, 60, 40, 20)
+# Playwright 收尾等待，用于裁剪出纯播放段
+RECORD_END_PAD_SEC = 0.45
+MAX_HIT_SOUNDS = 80
 CHART_DIFF_NAMES = {
     2: '绿',
     3: '黄',
@@ -178,25 +186,155 @@ def _ensure_static_server() -> int:
         return port
 
 
-def _ffmpeg_to_mp4(webm: Path, mp4: Path) -> None:
+def _ffprobe_duration(path: Path) -> float:
+    proc = subprocess.run(
+        [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=nw=1:nk=1',
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f'ffprobe 失败: {proc.stderr[-400:]}')
+    try:
+        return max(0.1, float(proc.stdout.strip()))
+    except ValueError as e:
+        raise RuntimeError(f'ffprobe 时长无效: {proc.stdout!r}') from e
+
+
+def _answer_wav_path() -> Path:
+    return chart_preview_dir() / 'assets' / 'maimai' / 'chart' / 'answer.wav'
+
+
+def _load_wav_mono_pcm16(path: Path) -> Tuple[int, List[int]]:
+    with wave.open(str(path), 'rb') as wf:
+        channels = wf.getnchannels()
+        width = wf.getsampwidth()
+        rate = wf.getframerate()
+        frames = wf.readframes(wf.getnframes())
+    if width != 2:
+        raise RuntimeError(f'answer.wav 需为 16-bit PCM，实际 sampwidth={width}')
+    samples = list(struct.unpack('<' + 'h' * (len(frames) // 2), frames))
+    if channels == 2:
+        samples = [
+            int((samples[i] + samples[i + 1]) / 2)
+            for i in range(0, len(samples) - 1, 2)
+        ]
+    elif channels != 1:
+        raise RuntimeError(f'不支持的声道数: {channels}')
+    return rate, samples
+
+
+def _build_answer_track_wav(
+    out_wav: Path,
+    *,
+    duration_sec: float,
+    hit_offsets_ms: Sequence[float],
+) -> bool:
+    """按击打时间铺正解音轨；失败返回 False（仍可输出无声视频）。"""
+    answer_path = _answer_wav_path()
+    if not answer_path.is_file():
+        log.warning(f'[GuessChart] 未找到正解音文件: {answer_path}')
+        return False
+    try:
+        rate, answer = _load_wav_mono_pcm16(answer_path)
+    except Exception as e:
+        log.warning(f'[GuessChart] 读取正解音失败: {e}')
+        return False
+
+    total = max(1, int(duration_sec * rate) + len(answer))
+    mix = [0] * total
+    hits = sorted(float(x) for x in hit_offsets_ms if float(x) >= 0)[:MAX_HIT_SOUNDS]
+    for hit_ms in hits:
+        start = int(hit_ms / 1000.0 * rate)
+        if start >= total:
+            continue
+        for i, sample in enumerate(answer):
+            idx = start + i
+            if idx >= total:
+                break
+            val = mix[idx] + int(sample * 0.85)
+            mix[idx] = max(-32767, min(32767, val))
+
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(out_wav), 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(struct.pack('<' + 'h' * len(mix), *mix))
+    return True
+
+
+def _ffmpeg_finalize(
+    webm: Path,
+    mp4: Path,
+    *,
+    duration: int,
+    hit_offsets_ms: Sequence[float],
+) -> None:
+    """裁剪播放段、混入正解音并压成 H.264 mp4。"""
     mp4.parent.mkdir(parents=True, exist_ok=True)
-    tmp = mp4.with_suffix('.tmp.mp4')
-    cmd = [
+    work = mp4.parent / '_encode'
+    if work.exists():
+        shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+
+    silent = work / 'silent.mp4'
+    video_dur = _ffprobe_duration(webm)
+    play_start = max(0.0, video_dur - float(duration) - RECORD_END_PAD_SEC)
+    cmd_video = [
         'ffmpeg', '-y',
+        '-ss', f'{play_start:.3f}',
         '-i', str(webm),
+        '-t', str(duration),
         '-an',
         '-c:v', 'libx264',
         '-preset', 'veryfast',
         '-crf', '28',
         '-pix_fmt', 'yuv420p',
-        '-movflags', '+faststart',
         '-vf', f'scale={DEFAULT_VIEWPORT}:{DEFAULT_VIEWPORT}',
-        str(tmp),
+        str(silent),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd_video, capture_output=True, text=True)
     if proc.returncode != 0:
-        raise RuntimeError(f'ffmpeg 转码失败: {proc.stderr[-800:]}')
+        raise RuntimeError(f'ffmpeg 视频转码失败: {proc.stderr[-800:]}')
+
+    audio_wav = work / 'answers.wav'
+    has_audio = _build_answer_track_wav(
+        audio_wav,
+        duration_sec=float(duration) + 0.2,
+        hit_offsets_ms=hit_offsets_ms,
+    )
+    tmp = mp4.with_suffix('.tmp.mp4')
+    if has_audio:
+        cmd_mux = [
+            'ffmpeg', '-y',
+            '-i', str(silent),
+            '-i', str(audio_wav),
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-shortest',
+            '-movflags', '+faststart',
+            str(tmp),
+        ]
+    else:
+        cmd_mux = [
+            'ffmpeg', '-y',
+            '-i', str(silent),
+            '-c:v', 'copy',
+            '-an',
+            '-movflags', '+faststart',
+            str(tmp),
+        ]
+    proc = subprocess.run(cmd_mux, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f'ffmpeg 混音失败: {proc.stderr[-800:]}')
     tmp.replace(mp4)
+    shutil.rmtree(work, ignore_errors=True)
 
 
 async def _render_chart_video(
@@ -248,14 +386,14 @@ async def _render_chart_video(
                 """() => window.__GUESS_CHART__
                     && (window.__GUESS_CHART__.state === 'done'
                         || window.__GUESS_CHART__.state === 'error')""",
-                timeout=(duration + 45) * 1000,
+                timeout=(duration + 60) * 1000,
             )
             bridge = await page.evaluate('() => window.__GUESS_CHART__')
             if bridge.get('state') == 'error':
                 raise RuntimeError(bridge.get('error') or '谱面录制失败')
             meta = dict(bridge or {})
             # 尾帧多留一点，避免录制提前截断
-            await page.wait_for_timeout(400)
+            await page.wait_for_timeout(int(RECORD_END_PAD_SEC * 1000))
         finally:
             await page.close()
             await context.close()
@@ -264,7 +402,16 @@ async def _render_chart_video(
     webms = sorted(work.glob('*.webm'), key=lambda p: p.stat().st_mtime, reverse=True)
     if not webms:
         raise RuntimeError('Playwright 未产出 webm 视频')
-    await asyncio.to_thread(_ffmpeg_to_mp4, webms[0], out_mp4)
+    hits = meta.get('hitOffsetsMs') or []
+    if not isinstance(hits, list):
+        hits = []
+    await asyncio.to_thread(
+        _ffmpeg_finalize,
+        webms[0],
+        out_mp4,
+        duration=duration,
+        hit_offsets_ms=hits,
+    )
     shutil.rmtree(work, ignore_errors=True)
     return meta
 

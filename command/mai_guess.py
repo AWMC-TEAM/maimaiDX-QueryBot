@@ -28,7 +28,10 @@ from ..libraries.maimaidx_guess_audio import (
     get_audio_manifest_entry,
     request_hot_batch_cancel,
 )
-from ..libraries.maimaidx_guess_chart import ANSWER_GRACE as CHART_ANSWER_GRACE
+from ..libraries.maimaidx_guess_chart import (
+    ANSWER_GRACE as CHART_ANSWER_GRACE,
+    COUNTDOWN_MARKS as CHART_COUNTDOWN_MARKS,
+)
 from ..libraries.maimaidx_music import guess
 from ..libraries.maimaidx_model import (
     GuessAudioData,
@@ -905,8 +908,8 @@ async def _(event: MessageEvent):
             f'diff={data.chart_diff_name} file={video_path.name}'
         )
         intro = dedent(f'''\
-            猜铺面开始！将发送一段约 {data.duration} 秒的静音谱面视频
-            （无音乐、无背景 PV，难度倾向 {data.chart_diff_name} 谱）。
+            猜铺面开始！将发送一段约 {data.duration} 秒的谱面视频
+            （无 BGM / 无背景 PV，带正解音；难度倾向 {data.chart_diff_name} 谱）。
             请根据铺面输入歌曲 id、标题或别名作答。
             视频发出后有 {CHART_ANSWER_GRACE} 秒作答时间。
             发送 重置猜歌 可结束本局。
@@ -925,10 +928,21 @@ async def _(event: MessageEvent):
         )
         data.hint_step = 1
 
+        remaining = CHART_ANSWER_GRACE
+        await _guess_notify(
+            guess_music_chart, event,
+            f'⏳ 还剩 {remaining}秒 作答时间哟！',
+        )
         for _ in range(CHART_ANSWER_GRACE):
             await _guess_sleep(gid, 1)
             if _guess_loop_should_stop(gid):
                 await guess_music_chart.finish()
+            remaining -= 1
+            if remaining in CHART_COUNTDOWN_MARKS:
+                await _guess_notify(
+                    guess_music_chart, event,
+                    f'⏳ 还剩 {remaining}秒 作答时间哟！',
+                )
 
         if _guess_loop_should_stop(gid):
             await guess_music_chart.finish()
