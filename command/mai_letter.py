@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from nonebot import on_command
+from nonebot import on_command, on_message
 from nonebot.adapters.onebot.v11 import Message, MessageEvent
 from nonebot.params import CommandArg
 from nonebot.rule import Rule
@@ -32,6 +32,21 @@ from ..libraries.maimaidx_platform import (
     resolve_reply_message,
 )
 
+_RESERVED_PREFIXES = (
+    "开字母",
+    "开歌",
+    "不玩了",
+    "结束开字母",
+    "舞萌开字母",
+    "开字母看板",
+    "重置猜歌",
+    "猜歌",
+    "猜曲绘",
+    "猜曲子",
+    "猜铺面",
+    "猜谱面",
+)
+
 
 def _is_group_message(event) -> bool:
     return is_group_message_event(event)
@@ -53,12 +68,14 @@ letter_song = on_command("开歌", rule=LETTER_PLAYING, priority=5, block=True)
 letter_quit = on_command(
     "不玩了", aliases={"结束开字母"}, rule=LETTER_PLAYING, priority=5, block=True
 )
+# 对局中可直接发字母 / 别名，无需命令前缀
+letter_quick = on_message(rule=LETTER_PLAYING, priority=9, block=False)
 
 _HELP = (
     "【舞萌开字母】\n"
     f"· 发送「舞萌开字母」或「开字母」开局（{BOARD_SIZE} 首歌）\n"
-    "· 开字母 x — 揭示字母/数字/汉字\n"
-    "· 开歌 <曲名或别名> — 猜中整首歌\n"
+    "· 对局中直接发字母（如 m）即可开字符\n"
+    "· 直接发曲名/别名即可猜歌（也可「开歌 xxx」）\n"
     "· 不玩了 — 结束并揭晓剩余\n"
     "与猜歌等模式同群互斥；需先「开启mai猜歌」。"
 )
@@ -129,6 +146,76 @@ def _ensure_enabled(gid) -> str | None:
     return None
 
 
+def _plain_guess_text(event: MessageEvent) -> str:
+    text = event.get_plaintext().strip()
+    # 去掉开头 @机器人
+    text = re.sub(r"^@\S+\s*", "", text).strip()
+    return text
+
+
+def _is_reserved_command(text: str) -> bool:
+    if not text:
+        return True
+    for prefix in _RESERVED_PREFIXES:
+        if text == prefix or text.startswith(prefix + " ") or text.startswith(prefix):
+            # 「开字母m」无空格也算命令，留给 command matcher
+            if text.startswith(prefix):
+                return True
+    return False
+
+
+async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> None:
+    board = letter_guess.get(gid)
+    assert board is not None
+    key = raw.strip()[0]
+    if not _is_maskable(key):
+        await matcher.finish("只能开字母、数字或日文/汉字字符哦", reply_message=True)
+    norm = _norm_token(key)
+    already = norm in board.revealed
+    hit = 0
+    if not already:
+        for song in board.songs:
+            if song.solved:
+                continue
+            hit += sum(1 for c in song.title if _norm_token(c) == norm)
+    msg, board = letter_guess.open_letter(gid, raw)
+    parts = [msg]
+    pts = 0 if already else points_for_letter_hit(hit)
+    if pts > 0:
+        settlement = await _award_points(event, gid, pts, tag="开字母")
+        if settlement:
+            parts.append(settlement)
+    if board.finished:
+        letter_guess.end(gid)
+        parts.append("🎉 全部解开，本局结束！")
+    await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
+    await matcher.finish()
+
+
+async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool:
+    """尝试开歌；猜中返回 True，未中返回 False（由调用方决定是否提示）。"""
+    board = letter_guess.get(gid)
+    if board is None:
+        return False
+    hidden_map = {s.music_id: s.hidden_count(board.revealed) for s in board.songs}
+    msg, board, song = letter_guess.open_song(
+        gid, text, solver=get_sender_display_name(event)
+    )
+    if song is None:
+        return False
+    parts = [msg]
+    pts = points_for_song_solve(hidden_map.get(song.music_id, 0))
+    settlement = await _award_points(event, gid, pts, tag="开歌")
+    if settlement:
+        parts.append(settlement)
+    if board.finished:
+        letter_guess.end(gid)
+        parts.append("🎉 全部解开，本局结束！")
+    await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
+    await matcher.finish()
+    return True
+
+
 @letter_start.handle()
 @letter_open.handle()
 async def _(event: MessageEvent, args: Message = CommandArg()):
@@ -140,7 +227,6 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
     if enabled_err:
         await letter_open.finish(enabled_err, reply_message=True)
 
-    # 进行中：开字母 x
     if letter_guess.is_playing(gid):
         if not raw:
             board = letter_guess.get(gid)
@@ -148,43 +234,20 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
                 letter_open,
                 event,
                 board,
-                text="当前开字母进行中。用法：开字母 x\n",
+                text="当前开字母进行中。直接发字母或别名即可。\n",
             )
             await letter_open.finish()
-        if len(raw) > 4:
-            await letter_open.finish(
-                "一次只开一个字符，例如：开字母 m", reply_message=True
-            )
-        # 统计命中数用于计分
-        board = letter_guess.get(gid)
-        assert board is not None
-        key = raw.strip()[0]
-        if not _is_maskable(key):
-            await letter_open.finish("只能开字母、数字或日文/汉字字符哦", reply_message=True)
-        norm = _norm_token(key)
-        already = norm in board.revealed
-        hit = 0
-        if not already:
-            for song in board.songs:
-                if song.solved:
-                    continue
-                hit += sum(1 for c in song.title if _norm_token(c) == norm)
-        msg, board = letter_guess.open_letter(gid, raw)
-        parts = [msg]
-        pts = 0 if already else points_for_letter_hit(hit)
-        if pts > 0:
-            settlement = await _award_points(event, gid, pts, tag="开字母")
-            if settlement:
-                parts.append(settlement)
-        if board.finished:
-            letter_guess.end(gid)
-            parts.append("🎉 全部解开，本局结束！")
-        await _send_board(letter_open, event, board, text="\n".join(parts) + "\n")
-        await letter_open.finish()
+        if len(raw) == 1 and _is_maskable(raw):
+            await _apply_open_letter(letter_open, event, gid, raw)
+        if await _apply_open_song(letter_open, event, gid, raw):
+            return
+        await letter_open.finish(
+            "一次开一个字符（如：m / 开字母 m），或直接发曲名/别名猜歌。",
+            reply_message=True,
+        )
 
-    # 未开局：无参数则开局；有参数则提示先开局
     if raw:
-        if re.fullmatch(r"[A-Za-z0-9]", raw) or len(raw) == 1:
+        if len(raw) == 1 and _is_maskable(raw):
             await letter_open.finish(
                 "还没有开局。请先发送「舞萌开字母」或「开字母」。",
                 reply_message=True,
@@ -209,7 +272,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         board,
         text=(
             f"🎮 舞萌开字母开始！共 {len(board.songs)} 首歌。\n"
-            "发送「开字母 x」开字符，「开歌 曲名」猜整首。\n"
+            "直接发字母开字符，直接发别名/曲名猜歌。\n"
         ),
     )
     await letter_open.finish()
@@ -229,23 +292,17 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         await letter_song.finish(enabled_err, reply_message=True)
 
     text = args.extract_plain_text().strip()
+    if not text:
+        await letter_song.finish("请发送歌名或别名，或对局中直接发别名。", reply_message=True)
+    if await _apply_open_song(letter_song, event, gid, text):
+        return
     board = letter_guess.get(gid)
-    assert board is not None
-    # 先算隐藏数再开歌
-    hidden_map = {s.music_id: s.hidden_count(board.revealed) for s in board.songs}
-    msg, board, song = letter_guess.open_song(
-        gid, text, solver=get_sender_display_name(event)
+    await _send_board(
+        letter_song,
+        event,
+        board,
+        text="没有对上未解开的歌，再想想？\n",
     )
-    parts = [msg]
-    if song is not None:
-        pts = points_for_song_solve(hidden_map.get(song.music_id, 0))
-        settlement = await _award_points(event, gid, pts, tag="开歌")
-        if settlement:
-            parts.append(settlement)
-    if board.finished:
-        letter_guess.end(gid)
-        parts.append("🎉 全部解开，本局结束！")
-    await _send_board(letter_song, event, board, text="\n".join(parts) + "\n")
     await letter_song.finish()
 
 
@@ -266,3 +323,31 @@ async def _(event: MessageEvent):
         text="🔚 本局结束，剩余歌曲已揭晓。\n",
     )
     await letter_quit.finish()
+
+
+@letter_quick.handle()
+async def _(event: MessageEvent):
+    """对局中：单字开字母，其它短文本尝试开歌。"""
+    gid = get_event_group_id(event)
+    if gid is None or not letter_guess.is_playing(gid):
+        return
+    text = _plain_guess_text(event)
+    if not text or _is_reserved_command(text):
+        return
+
+    # 单字符 → 开字母
+    if len(text) == 1 and _is_maskable(text):
+        await _apply_open_letter(letter_quick, event, gid, text)
+        return
+
+    # 多字符 → 先尝试开歌（别名/曲名）
+    if 2 <= len(text) <= 48:
+        if await _apply_open_song(letter_quick, event, gid, text):
+            return
+        # 未命中时轻提示，避免刷屏：仅短文本回复
+        if len(text) <= 24:
+            await letter_quick.send(
+                adapt_guess_outbound("没有对上未解开的歌（也可发单个字母开字符）", event=event),
+                reply_message=resolve_reply_message(event, reply_message=True),
+            )
+            await letter_quick.finish()

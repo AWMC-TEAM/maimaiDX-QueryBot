@@ -294,9 +294,9 @@ def render_letter_board(board: LetterBoard) -> Image.Image:
     height = header_h + row_h * len(board.songs) + footer_h
     im = Image.new("RGBA", (width, height), _BG)
     dr = ImageDraw.Draw(im)
+    # 曲名可能含中日文/扩展拉丁，必须用 CJK 字体；Torus 等西文字体会豆腐字。
     font_path = _board_font()
     title_font = DrawText(dr, font_path)
-    mono = DrawText(dr, TBFONT if getattr(TBFONT, "exists", lambda: False)() else font_path)
 
     dr.rounded_rectangle((24, 24, width - 24, height - 24), radius=22, fill=_CARD)
     title_font.draw(48, 44, 40, "舞萌开字母", _TITLE, "lt", 2, (0, 0, 0, 120))
@@ -313,16 +313,12 @@ def render_letter_board(board: LetterBoard) -> Image.Image:
     for idx, song in enumerate(board.songs, 1):
         if idx > 1:
             dr.line((48, y, width - 48, y), fill=_LINE, width=1)
-        # 不用 emoji，避免静态字体缺字
         icon = "[OK]" if song.solved else "[??]"
         shown = song.display(board.revealed)
         color = _OK if song.solved else _WAIT
         title_font.draw(56, y + 14, 22, f"{idx}.", _MUTED, "lt")
         title_font.draw(96, y + 14, 22, icon, color, "lt")
-        try:
-            mono.draw(170, y + 14, 26, shown, _TEXT, "lt")
-        except Exception:
-            title_font.draw(170, y + 14, 24, shown, _TEXT, "lt")
+        title_font.draw(170, y + 14, 24, shown, _TEXT, "lt")
         y += row_h
 
     opened = ", ".join(board.opened_order) if board.opened_order else "（还没有）"
@@ -351,7 +347,7 @@ def render_letter_board(board: LetterBoard) -> Image.Image:
         48,
         height - 52,
         16,
-        "开字母 x  ·  开歌 <曲名>  ·  不玩了",
+        "直接发字母 / 别名  ·  不玩了",
         _MUTED,
         "lt",
     )
