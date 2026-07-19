@@ -26,6 +26,7 @@ names = {
     "LetterBoard",
     "points_for_song_solve",
     "points_for_letter_hit",
+    "points_for_letter_complete",
 }
 selected = []
 for node in tree.body:
@@ -65,6 +66,7 @@ _is_maskable = ns["_is_maskable"]
 _norm_token = ns["_norm_token"]
 points_for_letter_hit = ns["points_for_letter_hit"]
 points_for_song_solve = ns["points_for_song_solve"]
+points_for_letter_complete = ns["points_for_letter_complete"]
 
 song = LetterSong(
     music_id="1",
@@ -80,26 +82,15 @@ assert song.display(board.revealed) == "????y??"
 for ch in "halcon":
     board.revealed.add(ch)
 assert song.is_fully_revealed(board.revealed)
-queued = board.queue_fully_revealed()
-assert queued and not song.solved and song.music_id in board.pending_auto
-# 同回合不自动揭晓；下一回合 flush 才揭晓
-flushed = board.flush_pending_auto()
-assert flushed and flushed[0].solved and flushed[0].solved_by == "字母揭完"
-assert not board.pending_auto
-
-# 待抢开时可被手动开歌抢走
-song2 = LetterSong(music_id="2", title="ab", answers=["ab", "2"])
-board2 = LetterBoard(songs=[song2])
-board2.revealed.update({"a", "b"})
-assert board2.queue_fully_revealed() and not song2.solved
-song2.solved = True
-song2.solved_by = "手动"
-board2.pending_auto.discard(song2.music_id)
-assert not board2.flush_pending_auto()
+newly = board.claim_fully_revealed("补齐侠")
+assert newly and newly[0].solved and newly[0].solved_by == "补齐侠"
 
 assert points_for_letter_hit(0) == 0
+assert points_for_letter_hit(1) == 1
 assert points_for_letter_hit(3) == 2
-assert points_for_song_solve(10) == 16
+assert points_for_song_solve(10) == 8
+assert points_for_letter_complete(1) == 2
+assert points_for_letter_complete(9) == 4
 assert _is_maskable("あ") or _is_maskable("雨") or True  # CJK may vary by font range
 assert _is_maskable("m")
 assert not _is_maskable(" ")
