@@ -21,6 +21,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 DATA_ROOT = PLUGIN_ROOT / "data"
 STATE_DIR = DATA_ROOT / "storage"
 MARKER_PATH = STATE_DIR / "active_backend.json"
+FILE_INDEX_PATH = STATE_DIR / "local_file_index.json"
 PENDING_PATH = STATE_DIR / "pending_restore.yaml"
 STATIC_STATE_FILES = {
     "local_music_alias.json",
@@ -181,6 +182,62 @@ def local_change_token(config: Any) -> str:
     return digest.hexdigest()
 
 
+def _file_fingerprint(path: Path) -> str:
+    """单文件变更指纹（含 SQLite WAL/SHM），用于跳过重复读盘。"""
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return "missing"
+    parts = [str(stat.st_size), str(stat.st_mtime_ns)]
+    if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+        for suffix in ("-wal", "-shm"):
+            side = Path(str(path) + suffix)
+            try:
+                side_stat = side.stat()
+                parts.extend([suffix, str(side_stat.st_size), str(side_stat.st_mtime_ns)])
+            except FileNotFoundError:
+                parts.extend([suffix, "missing"])
+    return ":".join(parts)
+
+
+def _read_marker() -> dict[str, Any]:
+    if not MARKER_PATH.is_file():
+        return {}
+    try:
+        data = json.loads(MARKER_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _load_file_index() -> dict[str, Any]:
+    if not FILE_INDEX_PATH.is_file():
+        return {}
+    try:
+        data = json.loads(FILE_INDEX_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_file_index(index: dict[str, Any]) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = FILE_INDEX_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(index, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+    tmp.replace(FILE_INDEX_PATH)
+
+
+def _manifest_from_meta(files: dict[str, tuple[str, int]]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(files):
+        sha_hex, size = files[name]
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(bytes.fromhex(sha_hex))
+        digest.update(str(size).encode())
+    return digest.hexdigest()
+
+
 def collect_local_snapshot(config: Any) -> dict[str, Any]:
     files = {name: _file_bytes(path) for name, path in _managed_files(config).items()}
     created = time.time()
@@ -192,6 +249,38 @@ def collect_local_snapshot(config: Any) -> dict[str, Any]:
         "file_count": len(files),
         "total_bytes": sum(len(value) for value in files.values()),
     }
+
+
+def _plan_local_files(config: Any) -> tuple[list[tuple[str, str, int, Optional[bytes]]], dict[str, Any]]:
+    """按指纹复用未变文件，避免每次同步都把数 GiB 读进内存。
+
+    返回 (name, sha256, size, raw_or_None) 列表与新的本地文件索引。
+    raw 为 None 表示内容未变，MySQL 侧可从上一活动快照复制。
+    """
+    index = _load_file_index()
+    new_index: dict[str, Any] = {}
+    planned: list[tuple[str, str, int, Optional[bytes]]] = []
+    for name, path in sorted(_managed_files(config).items()):
+        fp = _file_fingerprint(path)
+        cached = index.get(name) if isinstance(index.get(name), dict) else None
+        if (
+            cached
+            and cached.get("fp") == fp
+            and isinstance(cached.get("sha256"), str)
+            and len(str(cached.get("sha256"))) == 64
+            and cached.get("size") is not None
+        ):
+            sha = str(cached["sha256"])
+            size = int(cached["size"])
+            raw: Optional[bytes] = None
+        else:
+            raw = _file_bytes(path)
+            sha = hashlib.sha256(raw).hexdigest()
+            size = len(raw)
+            fp = _file_fingerprint(path)
+        new_index[name] = {"fp": fp, "sha256": sha, "size": size}
+        planned.append((name, sha, size, raw))
+    return planned, new_index
 
 
 def validate_snapshot(snapshot: dict[str, Any]) -> None:
@@ -389,34 +478,101 @@ def check_mysql(config: Any) -> None:
         conn.close()
 
 
+def _mysql_active_ids(cur: Any, prefix: str, namespace: str) -> tuple[Optional[str], Optional[str]]:
+    cur.execute(
+        f"SELECT a.snapshot_id,s.manifest FROM `{prefix}storage_active` a "
+        f"JOIN `{prefix}storage_snapshots` s ON s.snapshot_id=a.snapshot_id "
+        "WHERE a.namespace=%s",
+        (namespace,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None, None
+    return str(row[0]), str(row[1])
+
+
+def _mysql_insert_files(
+    cur: Any,
+    prefix: str,
+    snapshot_id: str,
+    previous_id: Optional[str],
+    planned: list[tuple[str, str, int, Optional[bytes]]],
+    *,
+    managed_paths: Optional[dict[str, Path]] = None,
+) -> tuple[int, int]:
+    """写入文件行；未变内容优先从上一快照复制，避免重复上传 BLOB。"""
+    uploaded = 0
+    reused = 0
+    for name, sha, size, raw in planned:
+        if raw is None and previous_id:
+            cur.execute(
+                f"INSERT INTO `{prefix}storage_files` (snapshot_id,path,sha256,size,content) "
+                f"SELECT %s,path,sha256,size,content FROM `{prefix}storage_files` "
+                "WHERE snapshot_id=%s AND path=%s AND sha256=%s AND size=%s",
+                (snapshot_id, previous_id, name, sha, size),
+            )
+            if cur.rowcount:
+                reused += 1
+                continue
+        if raw is None:
+            if not managed_paths or name not in managed_paths:
+                raise StorageError(f"MySQL 无法复用未变文件：{name}")
+            raw = _file_bytes(managed_paths[name])
+            sha = hashlib.sha256(raw).hexdigest()
+            size = len(raw)
+        cur.execute(
+            f"INSERT INTO `{prefix}storage_files` VALUES (%s,%s,%s,%s,%s)",
+            (snapshot_id, name, sha, size, raw),
+        )
+        uploaded += 1
+    return uploaded, reused
+
+
 def save_mysql_snapshot(config: Any, snapshot: dict[str, Any]) -> None:
     validate_snapshot(snapshot)
+    planned = [
+        (name, hashlib.sha256(raw).hexdigest(), len(raw), raw)
+        for name, raw in sorted(snapshot["files"].items())
+    ]
+    _save_mysql_planned(
+        config,
+        planned,
+        created_at=float(snapshot["created_at"]),
+        manifest=str(snapshot["manifest"]),
+        file_count=int(snapshot["file_count"]),
+        total_bytes=int(snapshot["total_bytes"]),
+    )
+
+
+def _save_mysql_planned(
+    config: Any,
+    planned: list[tuple[str, str, int, Optional[bytes]]],
+    *,
+    created_at: float,
+    manifest: str,
+    file_count: int,
+    total_bytes: int,
+    managed_paths: Optional[dict[str, Path]] = None,
+) -> dict[str, int]:
     namespace = str(_setting(config, "maimaidx_storage_namespace", "default") or "default")
     prefix = _mysql_prefix(config)
     snapshot_id = uuid.uuid4().hex
     conn = _mysql_connect(config)
+    uploaded = reused = 0
     try:
         _mysql_schema(conn, prefix)
         with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT s.manifest FROM `{prefix}storage_active` a "
-                f"JOIN `{prefix}storage_snapshots` s ON s.snapshot_id=a.snapshot_id "
-                "WHERE a.namespace=%s",
-                (namespace,),
-            )
-            current = cur.fetchone()
-            if current and str(current[0]) == snapshot["manifest"]:
+            previous_id, current_manifest = _mysql_active_ids(cur, prefix, namespace)
+            if current_manifest == manifest:
                 conn.rollback()
-                return
+                return {"uploaded": 0, "reused": 0, "skipped": 1}
             cur.execute(
                 f"INSERT INTO `{prefix}storage_snapshots` VALUES (%s,%s,%s,%s,%s,%s)",
-                (snapshot_id, namespace, snapshot["created_at"], snapshot["manifest"], snapshot["file_count"], snapshot["total_bytes"]),
+                (snapshot_id, namespace, created_at, manifest, file_count, total_bytes),
             )
-            for name, raw in snapshot["files"].items():
-                cur.execute(
-                    f"INSERT INTO `{prefix}storage_files` VALUES (%s,%s,%s,%s,%s)",
-                    (snapshot_id, name, hashlib.sha256(raw).hexdigest(), len(raw), raw),
-                )
+            uploaded, reused = _mysql_insert_files(
+                cur, prefix, snapshot_id, previous_id, planned, managed_paths=managed_paths
+            )
             cur.execute(
                 f"INSERT INTO `{prefix}storage_active` VALUES (%s,%s) "
                 "ON DUPLICATE KEY UPDATE snapshot_id=VALUES(snapshot_id)",
@@ -429,7 +585,6 @@ def save_mysql_snapshot(config: Any, snapshot: dict[str, Any]) -> None:
                 "WHERE namespace=%s AND snapshot_id<>%s ORDER BY created_at DESC",
                 (namespace, snapshot_id),
             )
-            # 活动快照必须保留；其余位置再按源快照时间保留最近版本。
             stale = [row[0] for row in cur.fetchall()[max(0, keep - 1):]]
             if stale:
                 placeholders = ",".join(["%s"] * len(stale))
@@ -443,15 +598,17 @@ def save_mysql_snapshot(config: Any, snapshot: dict[str, Any]) -> None:
         raise StorageError(f"MySQL 写入失败，旧快照未切换：{type(exc).__name__}: {exc}") from exc
     finally:
         conn.close()
-    _verify_mysql_active_snapshot(config, snapshot)
+    expected = {
+        "manifest": manifest,
+        "file_count": file_count,
+        "total_bytes": total_bytes,
+    }
+    _verify_mysql_active_snapshot(config, expected)
+    return {"uploaded": uploaded, "reused": reused, "skipped": 0}
 
 
 def _verify_mysql_active_snapshot(config: Any, expected: dict[str, Any]) -> None:
-    """流式校验活动快照，避免为了校验再把整个快照复制一份到内存。"""
-    try:
-        import pymysql
-    except ImportError as exc:
-        raise StorageError("MySQL 后端需要安装 PyMySQL") from exc
+    """校验活动快照元数据与逐文件 sha/size，不再回拉整包 BLOB。"""
     namespace = str(_setting(config, "maimaidx_storage_namespace", "default") or "default")
     prefix = _mysql_prefix(config)
     conn = _mysql_connect(config)
@@ -465,44 +622,27 @@ def _verify_mysql_active_snapshot(config: Any, expected: dict[str, Any]) -> None
                 (namespace,),
             )
             meta = cur.fetchone()
-        if not meta:
-            raise StorageError("MySQL 写入后活动快照不存在")
-        snapshot_id, manifest, file_count, total_bytes = meta
-        if (
-            str(manifest) != expected["manifest"]
-            or int(file_count) != expected["file_count"]
-            or int(total_bytes) != expected["total_bytes"]
-        ):
-            raise StorageError("MySQL 写入后元数据校验失败")
-
-        entries: list[tuple[str, bytes, int]] = []
-        actual_count = 0
-        actual_bytes = 0
-        with conn.cursor(pymysql.cursors.SSCursor) as cur:
+            if not meta:
+                raise StorageError("MySQL 写入后活动快照不存在")
+            snapshot_id, manifest, file_count, total_bytes = meta
+            if (
+                str(manifest) != expected["manifest"]
+                or int(file_count) != expected["file_count"]
+                or int(total_bytes) != expected["total_bytes"]
+            ):
+                raise StorageError("MySQL 写入后元数据校验失败")
             cur.execute(
-                f"SELECT path,sha256,size,content FROM `{prefix}storage_files` "
+                f"SELECT path,sha256,size FROM `{prefix}storage_files` "
                 "WHERE snapshot_id=%s ORDER BY path",
                 (snapshot_id,),
             )
-            for name, sha256, size, content in cur:
-                raw = bytes(content)
-                raw_hash = hashlib.sha256(raw)
-                if len(raw) != int(size) or raw_hash.hexdigest() != str(sha256):
-                    raise StorageError(f"MySQL 文件 {name} 写入后校验失败")
-                entries.append((str(name), raw_hash.digest(), len(raw)))
-                actual_count += 1
-                actual_bytes += len(raw)
-        digest = hashlib.sha256()
-        for name, raw_hash, size in sorted(entries, key=lambda item: item[0]):
-            digest.update(name.encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(raw_hash)
-            digest.update(str(size).encode())
-        if (
-            digest.hexdigest() != expected["manifest"]
-            or actual_count != expected["file_count"]
-            or actual_bytes != expected["total_bytes"]
-        ):
+            rows = cur.fetchall()
+        meta_map = {str(name): (str(sha256), int(size)) for name, sha256, size in rows}
+        if len(meta_map) != expected["file_count"]:
+            raise StorageError("MySQL 写入后文件数量校验失败")
+        if sum(size for _, size in meta_map.values()) != expected["total_bytes"]:
+            raise StorageError("MySQL 写入后总字节数校验失败")
+        if _manifest_from_meta(meta_map) != expected["manifest"]:
             raise StorageError("MySQL 写入后内容校验失败")
     except StorageError:
         raise
@@ -677,42 +817,126 @@ def restore_snapshot(config: Any, snapshot: dict[str, Any]) -> None:
         shutil.rmtree(backup_root, ignore_errors=True)
 
 
-def _write_marker(config: Any, backend: str, manifest: str) -> None:
+def _write_marker(
+    config: Any,
+    backend: str,
+    manifest: str,
+    *,
+    change_token: Optional[str] = None,
+    file_count: int = 0,
+    total_bytes: int = 0,
+    created_at: Optional[float] = None,
+) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    MARKER_PATH.write_text(json.dumps({
+    payload = {
         "backend": backend,
         "namespace": str(_setting(config, "maimaidx_storage_namespace", "default")),
         "manifest": manifest,
+        "file_count": int(file_count),
+        "total_bytes": int(total_bytes),
         "updated_at": time.time(),
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+        "created_at": float(created_at if created_at is not None else time.time()),
+    }
+    if change_token:
+        payload["change_token"] = change_token
+    MARKER_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _trim_process_memory() -> None:
+    gc.collect()
+    if os.name == "posix":
+        try:
+            import ctypes
+
+            trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+            if trim is not None:
+                trim(0)
+        except (OSError, TypeError):
+            pass
 
 
 def sync_configured_backend(config: Any) -> Optional[dict[str, Any]]:
     backend = backend_name(config)
     if backend == "sqlite":
         return None
+    namespace = str(_setting(config, "maimaidx_storage_namespace", "default") or "default")
+    change_token = local_change_token(config)
+    marker = _read_marker()
+    if (
+        marker.get("backend") == backend
+        and str(marker.get("namespace") or "") == namespace
+        and marker.get("change_token") == change_token
+        and marker.get("manifest")
+    ):
+        return {
+            "version": 1,
+            "created_at": float(marker.get("created_at") or marker.get("updated_at") or 0),
+            "manifest": str(marker["manifest"]),
+            "file_count": int(marker.get("file_count") or 0),
+            "total_bytes": int(marker.get("total_bytes") or 0),
+            "skipped": True,
+        }
+
+    if backend == "mysql":
+        planned, new_index = _plan_local_files(config)
+        created_at = time.time()
+        meta = {name: (sha, size) for name, sha, size, _ in planned}
+        manifest = _manifest_from_meta(meta)
+        file_count = len(planned)
+        total_bytes = sum(size for _, _, size, _ in planned)
+        try:
+            stats = _save_mysql_planned(
+                config,
+                planned,
+                created_at=created_at,
+                manifest=manifest,
+                file_count=file_count,
+                total_bytes=total_bytes,
+                managed_paths=_managed_files(config),
+            )
+            _save_file_index(new_index)
+            _write_marker(
+                config,
+                backend,
+                manifest,
+                change_token=change_token,
+                file_count=file_count,
+                total_bytes=total_bytes,
+                created_at=created_at,
+            )
+            return {
+                "version": 1,
+                "created_at": created_at,
+                "manifest": manifest,
+                "file_count": file_count,
+                "total_bytes": total_bytes,
+                "uploaded": int(stats.get("uploaded") or 0),
+                "reused": int(stats.get("reused") or 0),
+                "skipped": bool(stats.get("skipped")),
+            }
+        finally:
+            planned.clear()
+            _trim_process_memory()
+
     snapshot = collect_local_snapshot(config)
     try:
         save_snapshot(config, backend, snapshot)
-        _write_marker(config, backend, snapshot["manifest"])
-        # 调用方只需要同步摘要。大型历史成绩快照不能跨线程返回并长期占用堆。
+        _write_marker(
+            config,
+            backend,
+            snapshot["manifest"],
+            change_token=change_token,
+            file_count=int(snapshot["file_count"]),
+            total_bytes=int(snapshot["total_bytes"]),
+            created_at=float(snapshot["created_at"]),
+        )
         return {
             key: snapshot[key]
             for key in ("version", "created_at", "manifest", "file_count", "total_bytes")
         }
     finally:
         snapshot.clear()
-        gc.collect()
-        # glibc 可能保留数 GiB 的大 bytes 分配；同步结束后主动归还给系统。
-        if os.name == "posix":
-            try:
-                import ctypes
-
-                trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
-                if trim is not None:
-                    trim(0)
-            except (OSError, TypeError):
-                pass
+        _trim_process_memory()
 
 
 def bootstrap_storage(config: Any) -> str:
