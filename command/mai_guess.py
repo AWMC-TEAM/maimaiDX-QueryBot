@@ -435,7 +435,7 @@ async def _send_guess_answer_bundle(
         if bgm_path.is_file():
             chart_bgm = (
                 MessageSegment.text('\n[曲末带 BGM 谱面]\n')
-                + MessageSegment.video(str(bgm_path))
+                + MessageSegment.video('file://' + str(bgm_path))
             )
 
     if bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
@@ -1007,7 +1007,7 @@ async def _(event: MessageEvent):
         await _safe_matcher_send(
             guess_music_chart, event,
             MessageSegment.text(stage_text + '\n')
-            + MessageSegment.video(str(video_path)),
+            + MessageSegment.video('file://' + str(video_path)),
             gid,
             media=True,
             timeout=GUESS_SEND_TIMEOUT_VIDEO,
@@ -1033,7 +1033,7 @@ async def _(event: MessageEvent):
             await _safe_matcher_send(
                 guess_music_chart, event,
                 MessageSegment.text(stage2)
-                + MessageSegment.video(str(bgm_path)),
+                + MessageSegment.video('file://' + str(bgm_path)),
                 gid,
                 media=True,
                 timeout=GUESS_SEND_TIMEOUT_VIDEO,
