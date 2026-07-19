@@ -57,6 +57,11 @@ STAR_THRESHOLDS: Tuple[Tuple[float, int], ...] = (
 SCORE_POOL_BY_STAR: Dict[int, int] = {5: 40, 4: 28, 3: 20, 2: 12, 1: 8, 0: 4}
 BREAK_POOL_BY_STAR: Dict[int, int] = {5: 8, 4: 6, 3: 4, 2: 3, 1: 2, 0: 1}
 
+# 人多/突发负载 → 文字模式（本局粘性，直到结束；跳过看板/结算图）
+TEXT_MODE_MIN_CONTRIBUTORS = 5  # 本局有贡献的 uid 数 ≥ 此值
+TEXT_MODE_BURST_WINDOW = 2.0  # 秒：统计窗口
+TEXT_MODE_BURST_COUNT = 8  # 窗口内开字母相关处理次数 ≥ 此值
+
 _BG = (42, 28, 22, 255)
 _CARD = (58, 40, 32, 255)
 _TITLE = (255, 214, 170, 255)
@@ -269,6 +274,9 @@ class LetterBoard:
     started_at: float = field(default_factory=time.time)
     starter: str = ""
     contributions: Dict[str, LetterContribution] = field(default_factory=dict)
+    # 人多/突发时粘性降级为纯文字，本局内不再出图
+    text_mode: bool = False
+    process_times: List[float] = field(default_factory=list)
 
     @property
     def solved_count(self) -> int:
@@ -278,9 +286,40 @@ class LetterBoard:
     def finished(self) -> bool:
         return all(s.solved for s in self.songs)
 
+    @property
+    def contributor_count(self) -> int:
+        """本局有有效贡献（权重>0）的 uid 数。"""
+        return sum(1 for c in self.contributions.values() if c.weight > 0)
+
     def elapsed(self, now: Optional[float] = None) -> float:
         t = time.time() if now is None else float(now)
         return max(0.0, t - float(self.started_at))
+
+    def note_process(self, now: Optional[float] = None) -> bool:
+        """
+        记录一次开字母相关处理，并按阈值进入文字模式（本局粘性）。
+        条件：贡献人数 ≥ TEXT_MODE_MIN_CONTRIBUTORS
+          或 最近 TEXT_MODE_BURST_WINDOW 秒内处理次数 ≥ TEXT_MODE_BURST_COUNT。
+        """
+        t = time.time() if now is None else float(now)
+        cutoff = t - TEXT_MODE_BURST_WINDOW
+        self.process_times = [x for x in self.process_times if x >= cutoff]
+        self.process_times.append(t)
+        if not self.text_mode:
+            if self.contributor_count >= TEXT_MODE_MIN_CONTRIBUTORS:
+                self.text_mode = True
+            elif len(self.process_times) >= TEXT_MODE_BURST_COUNT:
+                self.text_mode = True
+        return self.text_mode
+
+    def prefer_text(self) -> bool:
+        """是否应走文字路径（已粘性进入，或当前贡献人数已达阈值）。"""
+        if self.text_mode:
+            return True
+        if self.contributor_count >= TEXT_MODE_MIN_CONTRIBUTORS:
+            self.text_mode = True
+            return True
+        return False
 
     def ensure_contribution(
         self, uid: str, billing_id: int, name: str
@@ -370,6 +409,50 @@ def format_settlement_message(settlement: LetterSettlement) -> str:
     if not settlement.rewards:
         lines.append("本局无人有效贡献，不发奖。")
     return "\n".join(lines)
+
+
+def format_board_text(board: LetterBoard) -> str:
+    """纯文字看板（人多/突发时用，避免 PIL 出图）。"""
+    lines = [
+        (
+            f"【舞萌开字母】进度 {board.solved_count}/{len(board.songs)}"
+            f" · 已开 {len(board.revealed)} 字"
+            f" · 用时 {format_elapsed(board.elapsed())}"
+        )
+    ]
+    for idx, song in enumerate(board.songs, 1):
+        icon = "[OK]" if song.solved else "[??]"
+        lines.append(f"{idx}. {icon} {song.display(board.revealed)}")
+    opened = ", ".join(board.opened_order) if board.opened_order else "（还没有）"
+    lines.append(f"已开：{opened}")
+    return "\n".join(lines)
+
+
+def format_settlement_ranking_text(settlement: LetterSettlement) -> str:
+    """文字版贡献分成榜（人多结算用）。"""
+    lines = [
+        f"🎉 全部解开！用时 {settlement.elapsed_text} · {settlement.stars_text}",
+        (
+            f"本局奖池：{settlement.score_pool} 分 / {settlement.break_pool} BREAK"
+            "（按贡献分配；无贡献不得分）"
+        ),
+    ]
+    if not settlement.rewards:
+        lines.append("本局无人有效贡献，不发奖。")
+        return "\n".join(lines)
+    for i, r in enumerate(settlement.rewards, 1):
+        detail = f"（{r.detail}）" if r.detail and r.detail != "无贡献" else ""
+        lines.append(
+            f"#{i} {r.name}  权重{r.weight} → +{r.score}分 +{r.break_points}BREAK{detail}"
+        )
+    return "\n".join(lines)
+
+
+def format_settlement_text(settlement: LetterSettlement, board: LetterBoard) -> str:
+    """通关结算纯文字：分成榜 + 终局看板（一条消息）。"""
+    return "\n".join(
+        [format_settlement_ranking_text(settlement), format_board_text(board)]
+    )
 
 
 def _format_letter_complete(songs: List[LetterSong]) -> str:

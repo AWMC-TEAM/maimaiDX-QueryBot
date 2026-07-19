@@ -16,8 +16,10 @@ from ..libraries.maimaidx_guess_letter import (
     LetterSettlement,
     _is_maskable,
     board_image_segment,
+    format_board_text,
     format_elapsed,
     format_settlement_message,
+    format_settlement_text,
     letter_guess,
 )
 from ..libraries.maimaidx_guess_score import guess_score
@@ -131,6 +133,15 @@ async def _payout_settlement(event: MessageEvent, gid, settlement: LetterSettlem
 
 
 async def _send_board(matcher, event: MessageEvent, board, *, text: str = "") -> None:
+    # 人多/突发：纯文字看板，跳过 PIL；不挂 reply 链以加快发送
+    if board.prefer_text():
+        body = format_board_text(board)
+        msg = f"{text}{body}" if text else body
+        await matcher.send(
+            adapt_guess_outbound(msg, event=event),
+            reply_message=False,
+        )
+        return
     msg = board_image_segment(board)
     if text:
         msg = text + msg
@@ -140,10 +151,14 @@ async def _send_board(matcher, event: MessageEvent, board, *, text: str = "") ->
     )
 
 
-async def _send_plain(matcher, event: MessageEvent, text: str) -> None:
+async def _send_plain(
+    matcher, event: MessageEvent, text: str, *, fast: bool = False
+) -> None:
     await matcher.send(
         adapt_guess_outbound(text, event=event),
-        reply_message=resolve_reply_message(event, reply_message=True),
+        reply_message=False
+        if fast
+        else resolve_reply_message(event, reply_message=True),
     )
 
 
@@ -180,9 +195,11 @@ async def _maybe_finish_board(
     matcher, event: MessageEvent, gid, board: LetterBoard, parts: list[str]
 ) -> None:
     """
-    通关结算：同一条消息内依次为
-    文案 → 本局榜单+分成图 → 开字母终局看板图。
+    通关结算：同一条消息。
+    人少：文案 → 本局榜单+分成图 → 开字母终局看板图。
+    人多/突发文字模式：文案 + 文字分成榜 + 文字终局看板（不出图）。
     """
+    board.note_process()
     if not board.finished:
         await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
         await matcher.finish()
@@ -206,6 +223,16 @@ async def _maybe_finish_board(
         ],
     )
     await _payout_settlement(event, gid, settlement)
+
+    # 文字模式：一条纯文字，跳过结算图/看板图/头像
+    if board.prefer_text():
+        text = "\n".join([*parts, format_settlement_text(settlement, board)])
+        await matcher.send(
+            adapt_guess_outbound(text, event=event),
+            reply_message=False,
+        )
+        await matcher.finish()
+        return
 
     text = "\n".join([*parts, format_settlement_message(settlement)])
     msg = Message(text)
@@ -254,6 +281,8 @@ async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool
         billing_id=billing_user_id(event),
     )
     if song is None:
+        # 未中也记一次处理，便于突发负载及时切文字
+        board.note_process()
         return False
     await _maybe_finish_board(matcher, event, gid, board, [msg])
     return True

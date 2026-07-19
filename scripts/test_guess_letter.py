@@ -44,6 +44,12 @@ names = {
     "LetterGuessManager",
     "_format_letter_complete",
     "format_settlement_message",
+    "format_board_text",
+    "format_settlement_ranking_text",
+    "format_settlement_text",
+    "TEXT_MODE_MIN_CONTRIBUTORS",
+    "TEXT_MODE_BURST_WINDOW",
+    "TEXT_MODE_BURST_COUNT",
 }
 selected = []
 for node in tree.body:
@@ -90,6 +96,12 @@ star_text = ns["star_text"]
 format_threshold_lines = ns["format_threshold_lines"]
 distribute_pool = ns["distribute_pool"]
 format_settlement_message = ns["format_settlement_message"]
+format_board_text = ns["format_board_text"]
+format_settlement_ranking_text = ns["format_settlement_ranking_text"]
+format_settlement_text = ns["format_settlement_text"]
+TEXT_MODE_MIN_CONTRIBUTORS = ns["TEXT_MODE_MIN_CONTRIBUTORS"]
+TEXT_MODE_BURST_WINDOW = ns["TEXT_MODE_BURST_WINDOW"]
+TEXT_MODE_BURST_COUNT = ns["TEXT_MODE_BURST_COUNT"]
 SCORE_POOL_BY_STAR = ns["SCORE_POOL_BY_STAR"]
 BREAK_POOL_BY_STAR = ns["BREAK_POOL_BY_STAR"]
 
@@ -199,6 +211,43 @@ assert "⭐️⭐️⭐️⭐️⭐️" in text
 assert "本局奖池：40 分 / 8 BREAK" in text
 assert "按贡献分配" in text
 assert "本局阈值" not in text  # 阈值放分成图，短文案不含
+
+# 文字看板 / 文字结算榜
+board_txt = format_board_text(settle_board)
+assert "【舞萌开字母】进度 2/2" in board_txt
+assert "[OK] AA" in board_txt
+assert "[OK] BB" in board_txt
+rank_txt = format_settlement_ranking_text(result)
+assert "#1" in rank_txt and "权重" in rank_txt
+assert "→ +" in rank_txt and "BREAK" in rank_txt
+assert "开字母×" in rank_txt or "开歌×" in rank_txt or "补齐×" in rank_txt
+full_txt = format_settlement_text(result, settle_board)
+assert "全部解开" in full_txt and "【舞萌开字母】" in full_txt
+
+# 文字模式：贡献人数阈值（粘性）
+assert TEXT_MODE_MIN_CONTRIBUTORS == 5
+assert TEXT_MODE_BURST_WINDOW == 2.0
+assert TEXT_MODE_BURST_COUNT == 8
+crowd = LetterBoard(
+    songs=[LetterSong("1", "AA", ["AA"], solved=True, solved_by="x")],
+    started_at=0.0,
+)
+for i in range(TEXT_MODE_MIN_CONTRIBUTORS):
+    crowd.ensure_contribution(str(i), 1000 + i, f"p{i}").letter_hits = 1
+assert crowd.contributor_count == TEXT_MODE_MIN_CONTRIBUTORS
+assert not crowd.text_mode
+assert crowd.prefer_text() and crowd.text_mode  # 粘性锁定
+
+# 文字模式：突发处理次数
+burst = LetterBoard(
+    songs=[LetterSong("1", "AA", ["AA"])],
+    started_at=time.time(),
+)
+t0 = time.time()
+for i in range(TEXT_MODE_BURST_COUNT):
+    burst.note_process(now=t0 + i * 0.01)
+assert burst.text_mode
+assert burst.prefer_text()
 
 slow = LetterBoard(
     songs=[LetterSong("1", "AA", ["AA"], solved=True, solved_by="甲")],
