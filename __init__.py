@@ -72,6 +72,13 @@ async def get_music():
             '请及时私聊BOT使用指令「更新完成表」进行生成。'
         )
     log.opt(colors=True).success('<g>maimaiDX 插件初始化完成，等待客户端连接</g>')
+    try:
+        from .libraries.maimaidx_guess_chart import schedule_chart_cache_background_fill
+
+        schedule_chart_cache_background_fill()
+        log.info('猜铺面 BGM 后台补洞已调度（低并发）')
+    except Exception as e:
+        log.warning(f'猜铺面后台补洞调度失败: {e}')
     if maiconfig.b50_assets_path:
         from .libraries.b50_analysis.context_builder import load_peer_stats
         from .command.mai_b50_analysis import set_peer_stats

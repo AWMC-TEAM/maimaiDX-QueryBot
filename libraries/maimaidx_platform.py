@@ -278,11 +278,30 @@ def _onebot_video_path(seg: MessageSegment) -> Optional[Path]:
     raw = seg.data.get('file') or seg.data.get('url') or ''
     if not raw:
         return None
-    s = str(raw)
+    if isinstance(raw, Path):
+        return raw.resolve() if raw.is_file() else None
+    s = str(raw).strip()
     if s.startswith('file://'):
-        return Path(s[7:])
+        # file:///abs/path 与 file://abs/path 都兼容
+        from urllib.parse import unquote, urlparse
+
+        parsed = urlparse(s)
+        candidate = Path(unquote(parsed.path))
+        if candidate.is_file():
+            return candidate.resolve()
+        # 少数实现把路径放在 netloc
+        alt = Path(unquote(parsed.netloc + parsed.path))
+        return alt.resolve() if alt.is_file() else None
     p = Path(s)
-    return p if p.is_file() else None
+    return p.resolve() if p.is_file() else None
+
+
+def local_video_segment(path: Union[str, Path]) -> MessageSegment:
+    """本地视频段：统一绝对路径，供 OneBot / 官方 QQ 适配解析。"""
+    p = Path(path).expanduser().resolve()
+    if not p.is_file():
+        raise FileNotFoundError(f'视频文件不存在: {p}')
+    return MessageSegment.video(str(p))
 
 
 def _onebot_image_bytes(seg: MessageSegment) -> Optional[bytes]:
@@ -427,6 +446,11 @@ def adapt_guess_outbound(message: Any, *, event=None) -> Any:
             video_path = _onebot_video_path(seg)
             if video_path:
                 parts.append(QQSeg.file_video(video_path))
+            else:
+                log.warning(
+                    f'[maimai] 官方 QQ 视频段无法解析路径，已跳过: '
+                    f'file={seg.data.get("file")!r}'
+                )
         elif seg.type == 'at':
             qq = seg.data.get('qq')
             if str(qq) == 'all':

@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import concurrent.futures
+import functools
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -39,12 +42,17 @@ ANSWER_GRACE = STAGE_INTERVAL + STAGE_FINAL_GRACE  # 120
 COUNTDOWN_MARKS = (60, 30, 20, 10)
 MAX_HIT_SOUNDS = 2500
 DEFAULT_CHART_BATCH_LIMIT = 20
-CAPTURE_FPS = 60
+# 30fps：高负载下 60fps 录制易掉帧；编码侧统一 CFR，观感更稳
+CAPTURE_FPS = 30
 VIDEO_CRF = 18
-# faster：在 40 核上明显快于 medium，画质仍可接受
-VIDEO_PRESET = 'faster'
+# medium：预制流畅优先；可用环境变量改回 faster 提速
+VIDEO_PRESET = os.environ.get('MAIMAIDX_CHART_VIDEO_PRESET', 'medium').strip() or 'medium'
 AUDIO_BITRATE = '192k'
 BASE64_CHUNK_CHARS = 512 * 1024
+FFMPEG_NICE = 15
+BG_FILL_IDLE_SLEEP_SEC = 180
+BG_FILL_BUSY_SLEEP_SEC = 8
+BG_FILL_STARTUP_DELAY_SEC = 45
 
 
 def _cpu_count() -> int:
@@ -62,35 +70,47 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _default_render_workers() -> int:
-    """同时进行的 Playwright 录制数（Chromium 吃内存，不宜 = 核心数）。"""
+    """Playwright 录制槽：必须远小于核数，否则掉帧并拖垮查分。"""
     n = _cpu_count()
-    # 32+ 核：约 10～12 路录制；40 核默认 10
+    # 40 核默认 4 路；硬顶 6，留核给 bot / 传分
     if n >= 32:
-        return min(12, max(8, n // 4))
-    return max(2, min(8, n // 5))
+        return 4
+    return max(1, min(3, n // 8))
 
 
 def _default_batch_song_workers() -> int:
     """预制时并发曲目数；每曲最多占 2 个录制槽（静音+BGM）。"""
     rw = _default_render_workers()
-    # 录制槽约一半用于同时开多曲，避免只串行一首
-    return max(1, min(6, rw // 2))
+    return max(1, min(3, rw))
 
 
 def _default_ffmpeg_threads() -> int:
+    """单路 ffmpeg 线程；总占用约 render×threads，勿打满整机。"""
     n = _cpu_count()
-    # 录制结束后多路 ffmpeg 往往同时启动。按录制槽均分 CPU，避免 40 核
-    # 机器出现 10 路 x 20 线程的严重过量并发；720p 编码每路 4～6 线程足够。
     workers = _default_render_workers()
-    return max(2, min(6, (n + workers - 1) // workers))
+    return max(2, min(4, max(1, (n - 2) // max(1, workers))))
 
 
-# 可用环境变量覆盖：MAIMAIDX_CHART_RENDER_WORKERS / BATCH_SONGS / FFMPEG_THREADS
+def _default_cpu_pool_workers() -> int:
+    """ffmpeg 线程池：默认 min(32, cpu-2)，与 bot 错峰。"""
+    return max(1, min(32, _cpu_count() - 2))
+
+
+def _default_bg_fill_workers() -> int:
+    """启动后后台补 BGM 的并发；默认 2，避免一启动打满。"""
+    return 2
+
+
+# 环境变量：
+# MAIMAIDX_CHART_RENDER_WORKERS / BATCH_SONGS / FFMPEG_THREADS
+# MAIMAIDX_CHART_CPU_POOL / BG_FILL_WORKERS / VIDEO_PRESET
 RENDER_WORKERS = _env_int('MAIMAIDX_CHART_RENDER_WORKERS', _default_render_workers())
 BATCH_SONG_WORKERS = _env_int(
     'MAIMAIDX_CHART_BATCH_SONGS', _default_batch_song_workers(),
 )
 FFMPEG_THREADS = _env_int('MAIMAIDX_CHART_FFMPEG_THREADS', _default_ffmpeg_threads())
+CPU_POOL_WORKERS = _env_int('MAIMAIDX_CHART_CPU_POOL', _default_cpu_pool_workers())
+BG_FILL_WORKERS = _env_int('MAIMAIDX_CHART_BG_FILL_WORKERS', _default_bg_fill_workers())
 CHART_DIFF_NAMES = {
     2: '绿',
     3: '黄',
@@ -111,6 +131,12 @@ _prepare_status = ''
 _prepare_status_lock = threading.Lock()
 _batch_cancel = threading.Event()
 _render_sem: Optional[asyncio.Semaphore] = None
+_bg_fill_sem: Optional[asyncio.Semaphore] = None
+_cpu_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_bg_fill_task: Optional[asyncio.Task] = None
+_CACHE_KEY_RE = re.compile(
+    r'^(?P<mid>.+)_(?P<kind>standard|dx|utage)_(?P<diff>\d+)_r(?P<rev>\d+)$'
+)
 
 
 def _get_render_sem() -> asyncio.Semaphore:
@@ -120,18 +146,62 @@ def _get_render_sem() -> asyncio.Semaphore:
         log.info(
             f'[GuessChart] 并行度 cpu={_cpu_count()} '
             f'render_workers={RENDER_WORKERS} batch_songs={BATCH_SONG_WORKERS} '
-            f'ffmpeg_threads={FFMPEG_THREADS}'
+            f'bg_fill={BG_FILL_WORKERS} cpu_pool={CPU_POOL_WORKERS} '
+            f'ffmpeg_threads={FFMPEG_THREADS} preset={VIDEO_PRESET} fps={CAPTURE_FPS}'
         )
     return _render_sem
 
 
+def _get_bg_fill_sem() -> asyncio.Semaphore:
+    global _bg_fill_sem
+    if _bg_fill_sem is None:
+        _bg_fill_sem = asyncio.Semaphore(BG_FILL_WORKERS)
+    return _bg_fill_sem
+
+
+def _get_cpu_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """ffmpeg 专用线程池：不阻塞 NoneBot 事件循环，且与录制槽分开限流。"""
+    global _cpu_executor
+    if _cpu_executor is None:
+        _cpu_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=CPU_POOL_WORKERS,
+            thread_name_prefix='chart-ffmpeg',
+        )
+        log.info(f'[GuessChart] ffmpeg 线程池 workers={CPU_POOL_WORKERS}')
+    return _cpu_executor
+
+
+async def _to_cpu(func, /, *args, **kwargs):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _get_cpu_executor(),
+        functools.partial(func, *args, **kwargs),
+    )
+
+
+def _low_priority_cmd(cmd: Sequence[str]) -> List[str]:
+    """用 nice 降低 ffmpeg 优先级，避免饿死查分/传分。"""
+    if os.name == 'nt':
+        return list(cmd)
+    return ['nice', '-n', str(FFMPEG_NICE), *cmd]
+
+
+def _run_cmd(cmd: Sequence[str], *, low_priority: bool = True) -> subprocess.CompletedProcess:
+    final = _low_priority_cmd(cmd) if low_priority else list(cmd)
+    return subprocess.run(final, capture_output=True, text=True)
+
+
 def _ffmpeg_x264_args() -> List[str]:
+    # 固定 GOP + CFR，减轻掉帧后的抖动/花屏观感
     return [
         '-threads', str(FFMPEG_THREADS),
         '-c:v', 'libx264',
         '-preset', VIDEO_PRESET,
         '-crf', str(VIDEO_CRF),
         '-pix_fmt', 'yuv420p',
+        '-g', str(CAPTURE_FPS),
+        '-keyint_min', str(max(1, CAPTURE_FPS // 2)),
+        '-sc_threshold', '0',
     ]
 
 
@@ -305,15 +375,14 @@ def _ensure_static_server() -> int:
 
 
 def _ffprobe_duration(path: Path) -> float:
-    proc = subprocess.run(
+    proc = _run_cmd(
         [
             'ffprobe', '-v', 'error',
             '-show_entries', 'format=duration',
             '-of', 'default=nw=1:nk=1',
             str(path),
         ],
-        capture_output=True,
-        text=True,
+        low_priority=True,
     )
     if proc.returncode != 0:
         raise RuntimeError(f'ffprobe 失败: {proc.stderr[-400:]}')
@@ -324,17 +393,16 @@ def _ffprobe_duration(path: Path) -> float:
     except ValueError:
         pass
 
-    # Chromium MediaRecorder 生成的 WebM 通常没有容器 duration，但每个 packet
-    # 仍有可靠的时间戳。只读取封装信息，不解码视频，速度远快于预转码一次。
-    packet_proc = subprocess.run(
+    # Chromium MediaRecorder 生成的 WebM 通常没有容器 duration；取末包即可。
+    packet_proc = _run_cmd(
         [
             'ffprobe', '-v', 'error',
+            '-select_streams', 'v:0',
             '-show_entries', 'packet=pts_time,duration_time',
             '-of', 'json',
             str(path),
         ],
-        capture_output=True,
-        text=True,
+        low_priority=True,
     )
     if packet_proc.returncode != 0:
         raise RuntimeError(f'ffprobe packet 失败: {packet_proc.stderr[-400:]}')
@@ -464,7 +532,7 @@ def _encode_silent_mp4(webm: Path, silent: Path) -> float:
         '-movflags', '+faststart',
         str(silent),
     ]
-    proc = subprocess.run(cmd_video, capture_output=True, text=True)
+    proc = _run_cmd(cmd_video)
     if proc.returncode != 0:
         raise RuntimeError(f'ffmpeg 视频转码失败: {proc.stderr[-800:]}')
     return _ffprobe_duration(silent)
@@ -499,7 +567,7 @@ def _encode_webm_with_audio(webm: Path, audio: Path, mp4: Path) -> None:
         '-movflags', '+faststart',
         str(tmp),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = _run_cmd(cmd)
     if proc.returncode != 0:
         raise RuntimeError(f'ffmpeg 单次编码混音失败: {proc.stderr[-800:]}')
     tmp.replace(mp4)
@@ -523,7 +591,7 @@ def _ffmpeg_remux_embedded(webm: Path, mp4: Path) -> None:
         '-movflags', '+faststart',
         str(tmp),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = _run_cmd(cmd)
     if proc.returncode != 0:
         raise RuntimeError(f'ffmpeg 同轨转码失败: {proc.stderr[-800:]}')
     tmp.replace(mp4)
@@ -656,7 +724,7 @@ def _ffmpeg_mux_bgm(
         '-b:a', AUDIO_BITRATE,
         str(clip),
     ]
-    proc = subprocess.run(cmd_clip, capture_output=True, text=True)
+    proc = _run_cmd(cmd_clip)
     if proc.returncode != 0:
         raise RuntimeError(f'ffmpeg BGM 裁剪失败: {proc.stderr[-800:]}')
 
@@ -792,90 +860,89 @@ async def _render_chart_video(
         if work.exists():
             shutil.rmtree(work, ignore_errors=True)
         work.mkdir(parents=True, exist_ok=True)
-
-        # BGM 回退混流时与录制并行下载原曲，吃满网络+CPU 空隙
         dl_task: Optional[asyncio.Task] = None
         src = work / 'source.mp3'
-        if mix_bgm and music_id:
-            dl_task = asyncio.create_task(
-                asyncio.to_thread(_download_music_mp3, music_id, src)
+        try:
+            # BGM：浏览器内 withAudio 在 headless 下易因 audio 加载挂起；
+            # 统一静音录制曲末谱面，再用 CDN mp3 混流（稳定、可预制）。
+            if mix_bgm and music_id:
+                dl_task = asyncio.create_task(
+                    _to_cpu(_download_music_mp3, music_id, src)
+                )
+
+            meta = await _capture_record_page(
+                song_id=song_id,
+                kind=kind,
+                diff=diff,
+                duration=duration,
+                tail=tail,
+                with_audio=False,
             )
+            webm = work / 'capture.webm'
+            webm.write_bytes(_decode_video_base64(meta.get('videoBase64')))
+            hits = meta.get('hitOffsetsMs') or []
+            if not isinstance(hits, list):
+                hits = []
+            try:
+                lead_ms = float(meta.get('recordLeadMs') or 0)
+            except (TypeError, ValueError):
+                lead_ms = 0.0
+            try:
+                start_sec = float(meta.get('startSec') or 0)
+            except (TypeError, ValueError):
+                start_sec = 0.0
+            try:
+                music_start_sec = float(meta.get('musicStartSec') or start_sec)
+            except (TypeError, ValueError):
+                music_start_sec = start_sec
 
-        meta = await _capture_record_page(
-            song_id=song_id,
-            kind=kind,
-            diff=diff,
-            duration=duration,
-            tail=tail,
-            with_audio=mix_bgm,
-        )
-        webm = work / 'capture.webm'
-        webm.write_bytes(_decode_video_base64(meta.get('videoBase64')))
-        hits = meta.get('hitOffsetsMs') or []
-        if not isinstance(hits, list):
-            hits = []
-        try:
-            lead_ms = float(meta.get('recordLeadMs') or 0)
-        except (TypeError, ValueError):
-            lead_ms = 0.0
-        try:
-            start_sec = float(meta.get('startSec') or 0)
-        except (TypeError, ValueError):
-            start_sec = 0.0
-        try:
-            music_start_sec = float(meta.get('musicStartSec') or start_sec)
-        except (TypeError, ValueError):
-            music_start_sec = start_sec
-        embedded = bool(meta.get('hasEmbeddedAudio'))
+            if mix_bgm:
+                if not music_id:
+                    raise RuntimeError('BGM 混流需要 music_id')
+                if dl_task is not None:
+                    await dl_task
+                elif not src.is_file():
+                    await _to_cpu(_download_music_mp3, music_id, src)
+                await _to_cpu(
+                    _ffmpeg_mux_bgm,
+                    webm,
+                    out_mp4,
+                    source_mp3=src,
+                    music_start_sec=music_start_sec,
+                    duration_sec=float(tail or duration),
+                    record_lead_ms=lead_ms,
+                )
+            else:
+                if dl_task is not None:
+                    dl_task.cancel()
+                    try:
+                        await dl_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                await _to_cpu(
+                    _ffmpeg_mux,
+                    webm,
+                    out_mp4,
+                    hit_offsets_ms=hits,
+                    record_lead_ms=lead_ms,
+                    nominal_duration=float(duration),
+                )
 
-        if mix_bgm and embedded:
-            if dl_task is not None:
+            meta.pop('videoBase64', None)
+            meta['hit_count'] = len(hits)
+            meta['recordLeadMs'] = lead_ms
+            meta['startSec'] = start_sec
+            meta['musicStartSec'] = music_start_sec
+            meta['hasEmbeddedAudio'] = False
+            return meta
+        finally:
+            if dl_task is not None and not dl_task.done():
                 dl_task.cancel()
                 try:
                     await dl_task
                 except (asyncio.CancelledError, Exception):
                     pass
-            await asyncio.to_thread(_ffmpeg_remux_embedded, webm, out_mp4)
-        elif mix_bgm:
-            if not music_id:
-                raise RuntimeError('BGM 混流需要 music_id')
-            if dl_task is not None:
-                await dl_task
-            elif not src.is_file():
-                await asyncio.to_thread(_download_music_mp3, music_id, src)
-            await asyncio.to_thread(
-                _ffmpeg_mux_bgm,
-                webm,
-                out_mp4,
-                source_mp3=src,
-                music_start_sec=music_start_sec,
-                duration_sec=float(tail or duration),
-                record_lead_ms=lead_ms,
-            )
-        else:
-            if dl_task is not None:
-                dl_task.cancel()
-                try:
-                    await dl_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            await asyncio.to_thread(
-                _ffmpeg_mux,
-                webm,
-                out_mp4,
-                hit_offsets_ms=hits,
-                record_lead_ms=lead_ms,
-                nominal_duration=float(duration),
-            )
-
-        shutil.rmtree(work, ignore_errors=True)
-        meta.pop('videoBase64', None)
-        meta['hit_count'] = len(hits)
-        meta['recordLeadMs'] = lead_ms
-        meta['startSec'] = start_sec
-        meta['musicStartSec'] = music_start_sec
-        meta['hasEmbeddedAudio'] = embedded
-        return meta
+            shutil.rmtree(work, ignore_errors=True)
 
 
 def _entry_with_paths(
@@ -915,6 +982,84 @@ def _entry_with_paths(
     return entry
 
 
+async def _ensure_bgm_for_ready_mute(
+    music_id: str,
+    *,
+    kind: str,
+    diff: int,
+    song_id: str,
+    entry: dict,
+    render_bgm: bool = True,
+) -> dict:
+    """静音已就绪时补齐 BGM；失败保留静音并打明确日志。"""
+    key = cache_key(music_id, kind, diff)
+    out_bgm = bgm_video_path_for(music_id, kind, diff)
+    if is_chart_bgm_ready(music_id, kind, diff):
+        entry = dict(entry)
+        entry.setdefault('path_bgm', str(out_bgm.resolve()))
+        entry['has_bgm'] = True
+        entry.setdefault('bgm_duration', PHASE2_DURATION)
+        return entry
+    if not render_bgm:
+        entry = dict(entry)
+        entry['has_bgm'] = False
+        entry['path_bgm'] = ''
+        return entry
+
+    async with _lock_for(key + '_bgm'):
+        if is_chart_bgm_ready(music_id, kind, diff):
+            entry = dict(entry)
+            entry['path_bgm'] = str(out_bgm.resolve())
+            entry['has_bgm'] = True
+            entry.setdefault('bgm_duration', PHASE2_DURATION)
+            return entry
+        try:
+            set_chart_prepare_status('补渲染曲末 BGM 谱面…')
+            log.info(
+                f'[GuessChart] 补渲染 BGM music={music_id} kind={kind} diff={diff}'
+            )
+            meta_bgm = await _render_chart_video(
+                song_id=song_id,
+                kind=kind,
+                diff=diff,
+                out_mp4=out_bgm,
+                duration=PHASE2_DURATION,
+                tail=PHASE2_DURATION,
+                music_id=str(music_id),
+                mix_bgm=True,
+            )
+            if not is_chart_bgm_ready(music_id, kind, diff):
+                raise RuntimeError('BGM 文件未生成或过小')
+            entry = dict(entry)
+            entry['music_id'] = str(music_id)
+            entry['kind'] = kind
+            entry['diff'] = diff
+            entry['path'] = str(video_path_for(music_id, kind, diff).resolve())
+            entry['path_bgm'] = str(out_bgm.resolve())
+            entry['has_bgm'] = True
+            entry['size_bgm'] = out_bgm.stat().st_size
+            entry['bgm_duration'] = PHASE2_DURATION
+            entry['bgm_start_sec'] = meta_bgm.get('startSec')
+            entry['rev'] = CHART_VIDEO_REV
+            manifest = _load_manifest()
+            manifest.setdefault('entries', {})[key] = entry
+            _save_manifest(manifest)
+            log.info(
+                f'[GuessChart] BGM 补渲染成功 music={music_id} '
+                f'size_bgm={entry["size_bgm"]}'
+            )
+            return entry
+        except Exception as e:
+            log.warning(
+                f'[GuessChart] BGM 补渲染失败 music={music_id} '
+                f'kind={kind} diff={diff}: {type(e).__name__}: {e}'
+            )
+            entry = dict(entry)
+            entry['has_bgm'] = False
+            entry['path_bgm'] = ''
+            return entry
+
+
 async def ensure_chart_video_ready(
     music_id: str,
     *,
@@ -922,14 +1067,18 @@ async def ensure_chart_video_ready(
     title: str = '',
     level_count: int = 5,
     duration: int = DEFAULT_DURATION,
+    render_bgm: bool = True,
+    prefer_kind: Optional[str] = None,
+    prefer_diff: Optional[int] = None,
 ) -> Tuple[bool, str, Optional[Path], dict]:
     """确保缓存中有阶段1视频；尽力同时准备阶段2 BGM 视频。"""
-    primary_kind = chart_kind(music_type)
+    primary_kind = prefer_kind or chart_kind(music_type)
     song_id = preview_song_id(music_id, music_type)
-    diff = pick_chart_diff(level_count)
+    diff = int(prefer_diff) if prefer_diff is not None else pick_chart_diff(level_count)
     kind_candidates = [primary_kind]
     alt = 'standard' if primary_kind == 'dx' else 'dx'
-    kind_candidates.append(alt)
+    if alt not in kind_candidates:
+        kind_candidates.append(alt)
 
     last_err = ''
     set_chart_prepare_status('探测谱面资源…')
@@ -939,51 +1088,46 @@ async def ensure_chart_video_ready(
         out_bgm = bgm_video_path_for(music_id, kind, diff)
 
         if is_chart_video_ready(music_id, kind, diff):
-            entry = get_chart_manifest_entry(music_id, kind, diff)
-            if not is_chart_bgm_ready(music_id, kind, diff):
-                async with _lock_for(key + '_bgm'):
-                    if not is_chart_bgm_ready(music_id, kind, diff):
-                        try:
-                            set_chart_prepare_status('补渲染曲末 BGM 谱面…')
-                            log.info(
-                                f'[GuessChart] 补渲染 BGM music={music_id} '
-                                f'kind={kind} diff={diff}'
-                            )
-                            meta_bgm = await _render_chart_video(
-                                song_id=song_id,
-                                kind=kind,
-                                diff=diff,
-                                out_mp4=out_bgm,
-                                duration=PHASE2_DURATION,
-                                tail=PHASE2_DURATION,
-                                music_id=str(music_id),
-                                mix_bgm=True,
-                            )
-                            entry = dict(entry)
-                            entry['path_bgm'] = str(out_bgm.resolve())
-                            entry['has_bgm'] = True
-                            entry['size_bgm'] = out_bgm.stat().st_size
-                            entry['bgm_duration'] = PHASE2_DURATION
-                            entry['bgm_start_sec'] = meta_bgm.get('startSec')
-                            manifest = _load_manifest()
-                            manifest.setdefault('entries', {})[key] = entry
-                            _save_manifest(manifest)
-                        except Exception as e:
-                            log.warning(f'[GuessChart] BGM 补渲染失败 music={music_id}: {e}')
-                            entry = dict(entry)
-                            entry['has_bgm'] = False
-                            entry['path_bgm'] = ''
-            else:
-                entry = dict(entry)
-                entry.setdefault('path_bgm', str(out_bgm.resolve()))
-                entry['has_bgm'] = True
-            set_chart_prepare_status('命中缓存')
+            entry = get_chart_manifest_entry(music_id, kind, diff) or {
+                'music_id': str(music_id),
+                'kind': kind,
+                'diff': diff,
+                'path': str(out.resolve()),
+                'duration': duration,
+            }
+            entry = await _ensure_bgm_for_ready_mute(
+                music_id,
+                kind=kind,
+                diff=diff,
+                song_id=song_id,
+                entry=entry,
+                render_bgm=render_bgm,
+            )
+            set_chart_prepare_status(
+                '命中完整缓存' if entry.get('has_bgm') else '命中静音缓存'
+            )
             return True, 'cache', out, entry
 
         async with _lock_for(key):
             if is_chart_video_ready(music_id, kind, diff):
-                set_chart_prepare_status('命中缓存')
-                return True, 'cache', out, get_chart_manifest_entry(music_id, kind, diff)
+                entry = get_chart_manifest_entry(music_id, kind, diff) or {
+                    'music_id': str(music_id),
+                    'kind': kind,
+                    'diff': diff,
+                    'path': str(out.resolve()),
+                }
+                entry = await _ensure_bgm_for_ready_mute(
+                    music_id,
+                    kind=kind,
+                    diff=diff,
+                    song_id=song_id,
+                    entry=entry,
+                    render_bgm=render_bgm,
+                )
+                set_chart_prepare_status(
+                    '命中完整缓存' if entry.get('has_bgm') else '命中静音缓存'
+                )
+                return True, 'cache', out, entry
 
             if not await chart_simai_exists(song_id, kind):
                 last_err = f'CDN 无谱面（{song_id}/{kind}）'
@@ -1026,7 +1170,7 @@ async def ensure_chart_video_ready(
             if not isinstance(mute_res, dict):
                 last_err = str(mute_res)
                 log.warning(f'[GuessChart] 渲染失败 music={music_id} kind={kind}: {mute_res}')
-                if isinstance(bgm_res, dict) and out_bgm.is_file():
+                if out_bgm.is_file():
                     out_bgm.unlink(missing_ok=True)
                 continue
 
@@ -1034,11 +1178,18 @@ async def ensure_chart_video_ready(
             meta_bgm: Optional[dict] = None
             bgm_ok: Optional[Path] = None
             if not isinstance(bgm_res, dict):
-                log.warning(f'[GuessChart] BGM 渲染失败 music={music_id}: {bgm_res}')
+                log.warning(
+                    f'[GuessChart] BGM 渲染失败 music={music_id}: '
+                    f'{type(bgm_res).__name__}: {bgm_res}'
+                )
             else:
                 meta_bgm = bgm_res
-                if out_bgm.is_file():
+                if is_chart_bgm_ready(music_id, kind, diff):
                     bgm_ok = out_bgm
+                else:
+                    log.warning(
+                        f'[GuessChart] BGM 渲染返回成功但文件无效 music={music_id}'
+                    )
 
             elapsed = int(time.time() - started)
             entry = _entry_with_paths(
@@ -1078,6 +1229,157 @@ def list_ready_chart_music_ids() -> List[str]:
     return ids
 
 
+def list_ready_chart_rounds() -> List[Tuple[str, str, int]]:
+    """已具备静音+BGM 的 (music_id, kind, diff)。"""
+    ready: List[Tuple[str, str, int]] = []
+    if not CHART_GUESS_CACHE_DIR.is_dir():
+        return ready
+    for d in CHART_GUESS_CACHE_DIR.iterdir():
+        if not d.is_dir():
+            continue
+        m = _CACHE_KEY_RE.match(d.name)
+        if not m:
+            continue
+        mid, kind, diff = m.group('mid'), m.group('kind'), int(m.group('diff'))
+        if is_chart_round_ready(mid, kind, diff):
+            ready.append((mid, kind, diff))
+    return ready
+
+
+def list_mute_without_bgm() -> List[Tuple[str, str, int]]:
+    """静音已缓存、BGM 缺失的条目（后台补洞优先）。"""
+    holes: List[Tuple[str, str, int]] = []
+    if not CHART_GUESS_CACHE_DIR.is_dir():
+        return holes
+    for d in CHART_GUESS_CACHE_DIR.iterdir():
+        if not d.is_dir():
+            continue
+        m = _CACHE_KEY_RE.match(d.name)
+        if not m:
+            continue
+        mid, kind, diff = m.group('mid'), m.group('kind'), int(m.group('diff'))
+        if is_chart_video_ready(mid, kind, diff) and not is_chart_bgm_ready(mid, kind, diff):
+            holes.append((mid, kind, diff))
+    return holes
+
+
+def cleanup_stale_chart_workdirs() -> int:
+    """清理失败残留的 _work / _work_bgm。"""
+    removed = 0
+    if not CHART_GUESS_CACHE_DIR.is_dir():
+        return 0
+    for d in CHART_GUESS_CACHE_DIR.iterdir():
+        if not d.is_dir():
+            continue
+        for name in ('_work', '_work_bgm', '_encode', '_encode_bgm'):
+            junk = d / name
+            if junk.exists():
+                shutil.rmtree(junk, ignore_errors=True)
+                removed += 1
+    if removed:
+        log.info(f'[GuessChart] 清理残留工作目录 {removed} 个')
+    return removed
+
+
+async def fill_missing_chart_bgm(
+    *,
+    limit: int = 20,
+    music_type_lookup: Optional[Dict[str, str]] = None,
+) -> Tuple[int, int]:
+    """补渲染缺失 BGM。返回 (成功, 失败)。"""
+    holes = list_mute_without_bgm()
+    if not holes:
+        return 0, 0
+    todo = holes[: max(1, int(limit))]
+    ok_n = fail_n = 0
+    log.info(
+        f'[GuessChart] 开始补 BGM 空洞 {len(todo)}/{len(holes)} '
+        f'bg_fill_workers={BG_FILL_WORKERS}'
+    )
+
+    async def _one(mid: str, kind: str, diff: int) -> bool:
+        async with _get_bg_fill_sem():
+            if _batch_cancel.is_set():
+                return False
+            music_type = 'DX' if kind == 'dx' else 'SD'
+            if music_type_lookup and mid in music_type_lookup:
+                music_type = music_type_lookup[mid]
+            song_id = preview_song_id(mid, music_type)
+            entry = get_chart_manifest_entry(mid, kind, diff) or {
+                'music_id': mid, 'kind': kind, 'diff': diff,
+            }
+            try:
+                new_entry = await _ensure_bgm_for_ready_mute(
+                    mid,
+                    kind=kind,
+                    diff=diff,
+                    song_id=song_id,
+                    entry=entry,
+                    render_bgm=True,
+                )
+                return bool(new_entry.get('has_bgm'))
+            except Exception as e:
+                log.warning(
+                    f'[GuessChart] 后台补 BGM 异常 {mid}/{kind}/{diff}: {e}'
+                )
+                return False
+
+    results = await asyncio.gather(
+        *[_one(mid, kind, diff) for mid, kind, diff in todo],
+        return_exceptions=True,
+    )
+    for item in results:
+        if item is True:
+            ok_n += 1
+        else:
+            fail_n += 1
+    log.info(f'[GuessChart] 补 BGM 本轮完成 ok={ok_n} fail={fail_n}')
+    return ok_n, fail_n
+
+
+async def _chart_bgm_background_fill_loop() -> None:
+    await asyncio.sleep(BG_FILL_STARTUP_DELAY_SEC)
+    cleanup_stale_chart_workdirs()
+    log.info(
+        f'[GuessChart] 后台补 BGM 已启动 workers={BG_FILL_WORKERS} '
+        f'(延迟 {BG_FILL_STARTUP_DELAY_SEC}s，不打满 CPU)'
+    )
+    while True:
+        try:
+            if _batch_cancel.is_set():
+                await asyncio.sleep(BG_FILL_IDLE_SLEEP_SEC)
+                continue
+            holes = list_mute_without_bgm()
+            if not holes:
+                await asyncio.sleep(BG_FILL_IDLE_SLEEP_SEC)
+                continue
+            ok_n, _fail_n = await fill_missing_chart_bgm(limit=BG_FILL_WORKERS)
+            await asyncio.sleep(
+                BG_FILL_BUSY_SLEEP_SEC if ok_n > 0 else BG_FILL_IDLE_SLEEP_SEC
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning(f'[GuessChart] 后台补 BGM 循环异常: {e}')
+            await asyncio.sleep(BG_FILL_IDLE_SLEEP_SEC)
+
+
+def schedule_chart_cache_background_fill() -> None:
+    """启动后小并发补齐 BGM 空洞；可重复调用（单例）。"""
+    global _bg_fill_task
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        log.warning('[GuessChart] 无事件循环，跳过后台补 BGM')
+        return
+    if _bg_fill_task is not None and not _bg_fill_task.done():
+        return
+    _bg_fill_task = loop.create_task(
+        _chart_bgm_background_fill_loop(),
+        name='maimaidx-chart-bgm-fill',
+    )
+
+
 async def build_hot_chart_cache(
     *,
     force: bool = False,
@@ -1087,6 +1389,7 @@ async def build_hot_chart_cache(
     from .maimaidx_music import guess, mai
 
     _reset_chart_batch_cancel()
+    cleanup_stale_chart_workdirs()
     if not mai.total_list:
         return '曲库未加载，请等待 bot 初始化完成后再试。'
     pool = guess._guess_music_pool()
@@ -1100,12 +1403,29 @@ async def build_hot_chart_cache(
     ok_ids: List[str] = []
     skip_ids: List[str] = []
     fail_lines: List[str] = []
+    bgm_filled = 0
     cancelled = False
     t0 = time.time()
 
-    # 先收集待建列表，再并发处理
+    # 优先补已有静音缺 BGM 的空洞（不依赖随机 diff）
+    type_lookup = {str(m.id): m.type for m in pool}
+    if not force:
+        set_chart_prepare_status('优先补齐已有缓存的曲末 BGM…')
+        fill_budget = min(build_limit, max(BG_FILL_WORKERS * 4, 8))
+        bgm_ok, bgm_fail = await fill_missing_chart_bgm(
+            limit=fill_budget,
+            music_type_lookup=type_lookup,
+        )
+        bgm_filled = bgm_ok
+        build_limit = max(0, build_limit - bgm_ok)
+        if bgm_fail:
+            fail_lines.append(f'补 BGM 失败 {bgm_fail} 首（详见日志）')
+
+    # 再收集热门池待建列表
     todo: List = []
     for music in pool:
+        if build_limit <= 0:
+            break
         mid = str(music.id)
         kind = chart_kind(music.type)
         diff = pick_chart_diff(len(music.ds))
@@ -1129,7 +1449,8 @@ async def build_hot_chart_cache(
     )
     log.info(
         f'[GuessChart] 热门池并行预制 todo={len(todo)} skip={len(skip_ids)} '
-        f'batch_songs={BATCH_SONG_WORKERS} render_workers={RENDER_WORKERS} '
+        f'bgm_filled={bgm_filled} batch_songs={BATCH_SONG_WORKERS} '
+        f'render_workers={RENDER_WORKERS} cpu_pool={CPU_POOL_WORKERS} '
         f'ffmpeg_threads={FFMPEG_THREADS} cpu={_cpu_count()}'
     )
 
@@ -1166,7 +1487,12 @@ async def build_hot_chart_cache(
                     music_type=music.type,
                     title=music.title,
                     level_count=len(music.ds),
+                    render_bgm=True,
                 )
+                # 仅静音不算完整成功：避免烧尽配额却永远无 BGM
+                if ok and not (isinstance(entry, dict) and entry.get('has_bgm')):
+                    ok = False
+                    msg = msg + '（缺 BGM）'
             except asyncio.CancelledError:
                 request_chart_batch_cancel()
                 cancelled = True
@@ -1190,8 +1516,7 @@ async def build_hot_chart_cache(
         mid, ok, msg, entry = item
         if ok:
             ok_ids.append(mid)
-            bgm = '有BGM' if entry.get('has_bgm') else '无BGM'
-            log.info(f'[GuessChart] 预制成功 {mid} {msg} {bgm}')
+            log.info(f'[GuessChart] 预制成功 {mid} {msg} 有BGM')
         elif msg == '烘焙任务已取消':
             cancelled = True
         else:
@@ -1199,14 +1524,18 @@ async def build_hot_chart_cache(
             log.warning(f'[GuessChart] 预制失败 {mid}: {msg}')
 
     elapsed = int(time.time() - t0)
+    holes_left = len(list_mute_without_bgm())
+    ready_n = len(list_ready_chart_rounds())
     set_chart_prepare_status('预制结束')
     lines = [
         f'猜铺面热门池预制完成（rev={CHART_VIDEO_REV}）',
-        f'扫描 {len(pool)} 首，本次新建/重建 {len(ok_ids)}，跳过 {len(skip_ids)}，'
-        f'失败 {len(fail_lines)}，耗时 {elapsed}s',
+        f'扫描 {len(pool)} 首，补 BGM {bgm_filled}，新建完整 {len(ok_ids)}，'
+        f'跳过 {len(skip_ids)}，失败 {len(fail_lines)}，耗时 {elapsed}s',
+        f'当前完整缓存 {ready_n}，仍缺 BGM {holes_left}',
         f'并发：曲目×{BATCH_SONG_WORKERS} / 录制槽×{RENDER_WORKERS} / '
-        f'ffmpeg线程×{FFMPEG_THREADS}（CPU {_cpu_count()}）',
-        f'上限 {build_limit}；增量默认每次最多 {DEFAULT_CHART_BATCH_LIMIT} 首，'
+        f'ffmpeg池×{CPU_POOL_WORKERS} / 单路线程×{FFMPEG_THREADS} / '
+        f'后台补洞×{BG_FILL_WORKERS}（CPU {_cpu_count()}，nice={FFMPEG_NICE}）',
+        f'上限相关；增量默认每次最多 {DEFAULT_CHART_BATCH_LIMIT} 首，'
         f'可用「更新猜铺面 50」或「更新猜铺面 -full」调整。',
     ]
     if cancelled:

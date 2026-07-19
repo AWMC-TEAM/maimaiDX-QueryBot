@@ -29,6 +29,7 @@ from .maimaidx_guess_chart import (
     ensure_chart_video_ready,
     is_chart_bgm_ready,
     is_chart_video_ready,
+    list_ready_chart_rounds,
     pick_chart_diff,
     chart_kind as resolve_chart_kind,
     set_chart_prepare_status,
@@ -952,27 +953,48 @@ class Guess:
         )
 
     async def prepare_chart_round(self) -> Optional[GuessChartData]:
-        """随机选曲并渲染/命中猜铺面视频缓存（尽量含 BGM 段）。"""
+        """优先使用已预制的静音+BGM 缓存，避免开局现场渲染拖垮主功能。"""
         candidates = self._guess_music_pool()[:]
         random.shuffle(candidates)
-        set_chart_prepare_status('随机选曲中…')
-        for music in candidates[:10]:
-            kind = resolve_chart_kind(music.type)
-            diff = pick_chart_diff(len(music.ds))
-            set_chart_prepare_status('渲染铺面视频…')
+        by_id = {str(m.id): m for m in candidates}
+
+        # 1) 完整缓存（静音+BGM）
+        ready = [
+            item for item in list_ready_chart_rounds()
+            if item[0] in by_id
+        ]
+        random.shuffle(ready)
+        if ready:
+            mid, kind, diff = ready[0]
+            music = by_id[mid]
+            path = video_path_for(mid, kind, diff)
+            bgm = str(bgm_video_path_for(mid, kind, diff).resolve())
+            set_chart_prepare_status('命中预制完整缓存（含 BGM）')
+            return self.guesschartdata(
+                music,
+                video_path=str(path.resolve()),
+                chart_kind=kind,
+                chart_diff=diff,
+                video_path_bgm=bgm,
+            )
+
+        # 2) 热门池内尝试补齐/渲染（限少量候选，且走限流录制槽）
+        set_chart_prepare_status('完整缓存不足，尝试补渲染…')
+        for music in candidates[:6]:
             ok, _msg, path, entry = await ensure_chart_video_ready(
                 music.id,
                 music_type=music.type,
                 title=music.title,
                 level_count=len(music.ds),
+                render_bgm=True,
             )
-            if ok and path is not None:
-                kind = str(entry.get('kind') or kind)
-                diff = int(entry.get('diff') or diff)
+            if ok and path is not None and entry.get('has_bgm'):
+                kind = str(entry.get('kind') or resolve_chart_kind(music.type))
+                diff = int(entry.get('diff') or pick_chart_diff(len(music.ds)))
                 bgm = str(entry.get('path_bgm') or '')
                 if not bgm and is_chart_bgm_ready(music.id, kind, diff):
                     bgm = str(bgm_video_path_for(music.id, kind, diff).resolve())
-                set_chart_prepare_status('铺面视频已就绪')
+                set_chart_prepare_status('铺面视频已就绪（含 BGM）')
                 return self.guesschartdata(
                     music,
                     video_path=str(path.resolve()),
@@ -982,8 +1004,9 @@ class Guess:
                     video_path_bgm=bgm,
                     bgm_duration=int(entry.get('bgm_duration') or CHART_PHASE2_DURATION),
                 )
-        # 回退已缓存（含 kind 回退）
-        set_chart_prepare_status('新曲渲染失败，回退已有缓存…')
+
+        # 3) 回退仅静音缓存（仍可开局；后台会继续补 BGM）
+        set_chart_prepare_status('回退已有静音缓存…')
         for music in candidates:
             primary = resolve_chart_kind(music.type)
             diff = pick_chart_diff(len(music.ds))
@@ -993,7 +1016,6 @@ class Guess:
                     bgm = ''
                     if is_chart_bgm_ready(music.id, kind, diff):
                         bgm = str(bgm_video_path_for(music.id, kind, diff).resolve())
-                    set_chart_prepare_status('回退已有缓存…')
                     return self.guesschartdata(
                         music,
                         video_path=str(path.resolve()),

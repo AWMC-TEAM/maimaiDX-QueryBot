@@ -193,20 +193,32 @@ function ensureBridge(): GuessBridge {
   return window.__GUESS_CHART__;
 }
 
-function loadAudioElement(url: string): Promise<HTMLAudioElement> {
+function loadAudioElement(url: string, timeoutMs = 12000): Promise<HTMLAudioElement> {
   return new Promise((resolve, reject) => {
     const audio = new Audio();
     audio.crossOrigin = 'anonymous';
     audio.preload = 'auto';
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error('audio load timeout'));
+    }, timeoutMs);
     const onReady = () => {
+      if (settled) return;
+      settled = true;
       cleanup();
       resolve(audio);
     };
     const onErr = () => {
+      if (settled) return;
+      settled = true;
       cleanup();
       reject(new Error('audio load failed'));
     };
     const cleanup = () => {
+      window.clearTimeout(timer);
       audio.removeEventListener('canplaythrough', onReady);
       audio.removeEventListener('error', onErr);
     };
@@ -424,7 +436,8 @@ export default function RecordPage() {
 
       const musicStartSec = window.__GUESS_CHART__?.musicStartSec ?? 0;
       let hasEmbeddedAudio = false;
-      const tracks: MediaStreamTrack[] = [...canvas.captureStream(60).getVideoTracks()];
+      // 30fps：高负载下比 60fps 更不易掉帧，后段 ffmpeg 再统一 CFR
+      const tracks: MediaStreamTrack[] = [...canvas.captureStream(30).getVideoTracks()];
 
       if (params.withAudio && params.songId != null && params.kind != null) {
         try {

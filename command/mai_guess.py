@@ -59,6 +59,7 @@ from ..libraries.maimaidx_platform import (
     get_sender_display_name,
     is_at_all_message,
     is_group_message_event,
+    local_video_segment,
     parse_at_target_id,
     platform_user_id,
     resolve_event_bot,
@@ -446,7 +447,11 @@ async def _send_guess_answer_bundle(
         if bgm_path.is_file():
             chart_bgm = (
                 MessageSegment.text('\n[曲末带 BGM 谱面]\n')
-                + MessageSegment.video(bgm_path)
+                + local_video_segment(bgm_path)
+            )
+        else:
+            log.warning(
+                f'[GuessChart] 揭晓 BGM 视频缺失 path={bgm_path}'
             )
 
     if bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
@@ -986,6 +991,16 @@ async def _(event: MessageEvent):
 
         video_path = Path(data.video_path).resolve()
         has_bgm = bool(data.video_path_bgm and Path(data.video_path_bgm).is_file())
+        if data.video_path_bgm and not has_bgm:
+            log.warning(
+                f'[GuessChart] 开局声明有 BGM 但文件不存在 '
+                f'path={data.video_path_bgm}'
+            )
+        if not has_bgm:
+            log.warning(
+                f'[GuessChart] 本局无 BGM 视频，将只发静音谱面 '
+                f'music_id={data.music.id} kind={data.chart_kind}'
+            )
         log.info(
             f'[GuessChart] 猜铺面开始 gid={gid} music_id={data.music.id} '
             f'title={data.music.title} kind={data.chart_kind} '
@@ -1018,7 +1033,7 @@ async def _(event: MessageEvent):
         await _safe_matcher_send(
             guess_music_chart, event,
             MessageSegment.text(stage_text + '\n')
-            + MessageSegment.video(video_path),
+            + local_video_segment(video_path),
             gid,
             media=True,
             timeout=GUESS_SEND_TIMEOUT_VIDEO,
@@ -1036,19 +1051,28 @@ async def _(event: MessageEvent):
                 await guess_music_chart.finish()
 
             bgm_path = Path(data.video_path_bgm).resolve()
-            stage2 = (
-                f'【阶段2】曲末约 {data.bgm_duration or CHART_PHASE2_DURATION} 秒带 BGM 谱面：\n'
-                if not compact else
-                f'【阶段2】曲末带 BGM（约 {data.bgm_duration or CHART_PHASE2_DURATION}s）\n'
-            )
-            await _safe_matcher_send(
-                guess_music_chart, event,
-                MessageSegment.text(stage2)
-                + MessageSegment.video(bgm_path),
-                gid,
-                media=True,
-                timeout=GUESS_SEND_TIMEOUT_VIDEO,
-            )
+            if not bgm_path.is_file():
+                log.error(
+                    f'[GuessChart] 阶段2 BGM 文件丢失，跳过发送 path={bgm_path}'
+                )
+            else:
+                stage2 = (
+                    f'【阶段2】曲末约 {data.bgm_duration or CHART_PHASE2_DURATION} 秒带 BGM 谱面：\n'
+                    if not compact else
+                    f'【阶段2】曲末带 BGM（约 {data.bgm_duration or CHART_PHASE2_DURATION}s）\n'
+                )
+                log.info(
+                    f'[GuessChart] 发送阶段2 BGM gid={gid} '
+                    f'size={bgm_path.stat().st_size} file={bgm_path.name}'
+                )
+                await _safe_matcher_send(
+                    guess_music_chart, event,
+                    MessageSegment.text(stage2)
+                    + local_video_segment(bgm_path),
+                    gid,
+                    media=True,
+                    timeout=GUESS_SEND_TIMEOUT_VIDEO,
+                )
             cur = guess.Group.get(gid)
             if cur is None or cur.end:
                 await guess_music_chart.finish()
@@ -1141,7 +1165,8 @@ async def _(event: PrivateMessageEvent, match=RegexMatched()):
     await update_guess_chart.send(
         f'开始{hint}猜铺面视频（热门池）。\n'
         f'单首含静音段 + 曲末 BGM，通常 1.5～3 分钟；{limit_hint}\n'
-        '已有完整缓存会自动跳过。进度请看服务器日志，完成后私聊汇总。'
+        '会优先补齐「有静音缺 BGM」的空洞；已有完整缓存会跳过。\n'
+        '渲染低优先级限并发，不打满 CPU。进度看服务器日志，完成后私聊汇总。'
     )
     try:
         report = await build_hot_chart_cache(force=force, limit=limit)
