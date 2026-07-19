@@ -103,6 +103,8 @@ class LetterBoard:
     opened_order: List[str] = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
     starter: str = ""
+    # 标题字母已齐、等待下一回合抢开的曲目 id；下回合仍无人开歌则自动揭晓
+    pending_auto: Set[str] = field(default_factory=set)
 
     @property
     def solved_count(self) -> int:
@@ -112,14 +114,42 @@ class LetterBoard:
     def finished(self) -> bool:
         return all(s.solved for s in self.songs)
 
-    def mark_auto_solved(self) -> List[LetterSong]:
+    def flush_pending_auto(self) -> List[LetterSong]:
+        """揭晓上一回合留下的、仍无人开歌的标题已齐曲目。"""
         newly: List[LetterSong] = []
         for song in self.songs:
-            if not song.solved and song.is_fully_revealed(self.revealed):
-                song.solved = True
-                song.solved_by = "字母揭完"
-                newly.append(song)
+            if song.music_id not in self.pending_auto or song.solved:
+                continue
+            song.solved = True
+            song.solved_by = "字母揭完"
+            newly.append(song)
+        self.pending_auto.clear()
         return newly
+
+    def queue_fully_revealed(self) -> List[LetterSong]:
+        """本回合刚开齐的标题进入待抢开，不立刻自动揭晓。"""
+        queued: List[LetterSong] = []
+        for song in self.songs:
+            if song.solved or song.music_id in self.pending_auto:
+                continue
+            if song.is_fully_revealed(self.revealed):
+                self.pending_auto.add(song.music_id)
+                queued.append(song)
+        return queued
+
+
+def _format_auto_reveal(songs: List[LetterSong]) -> str:
+    if not songs:
+        return ""
+    names = "、".join(s.title for s in songs)
+    return f"\n✅ 自动揭晓：{names}"
+
+
+def _format_pending_claim(songs: List[LetterSong]) -> str:
+    if not songs:
+        return ""
+    names = "、".join(s.title for s in songs)
+    return f"\n⏳ 标题已齐，可抢开：{names}（下回合无人开则自动揭晓）"
 
 
 class LetterGuessManager:
@@ -217,8 +247,13 @@ class LetterGuessManager:
         if not _is_maskable(ch):
             return "只能开字母、数字或日文/汉字字符哦", board
         key = _norm_token(ch)
+
+        # 新回合：先揭晓上一回合待抢开且无人开歌的曲
+        flushed = board.flush_pending_auto()
         if key in board.revealed:
-            return f"字母「{key}」已经开过了", board
+            msg = f"字母「{key}」已经开过了"
+            msg += _format_auto_reveal(flushed)
+            return msg, board
 
         board.revealed.add(key)
         board.opened_order.append(key)
@@ -227,27 +262,29 @@ class LetterGuessManager:
             if song.solved:
                 continue
             hit += sum(1 for c in song.title if _norm_token(c) == key)
-        newly = board.mark_auto_solved()
+        queued = board.queue_fully_revealed()
         if hit <= 0:
             msg = f"没有「{key}」呢…"
         else:
             msg = f"开出「{key}」，揭示 {hit} 处"
-        if newly:
-            names = "、".join(s.title for s in newly)
-            msg += f"\n✅ 自动揭晓：{names}"
+        msg += _format_auto_reveal(flushed)
+        msg += _format_pending_claim(queued)
         return msg, board
 
-    def open_song(self, gid: GroupId, guess_text: str, *, solver: str = "") -> Tuple[str, LetterBoard, Optional[LetterSong]]:
+    def open_song(
+        self, gid: GroupId, guess_text: str, *, solver: str = ""
+    ) -> Tuple[str, LetterBoard, Optional[LetterSong], List[LetterSong]]:
         board = self.Group[gid]
         text = guess_text.strip()
         if not text:
-            return "请发送歌名或别名，例如：开歌 conflict", board, None
+            return "请发送歌名或别名，例如：开歌 conflict", board, None, []
         for song in board.songs:
             if song.solved:
                 continue
             if match_guess_answer(text, song.answers):
                 song.solved = True
                 song.solved_by = solver or "开歌"
+                board.pending_auto.discard(song.music_id)
                 # 猜中时把该曲剩余字母也记入已开集合，便于展示
                 for ch in song.title:
                     if _is_maskable(ch):
@@ -255,10 +292,19 @@ class LetterGuessManager:
                         if key not in board.revealed:
                             board.revealed.add(key)
                             board.opened_order.append(key)
-                return f"✅ 猜中：{song.title}", board, song
-        return "没有对上未解开的歌，再想想？", board, None
+                # 本回合开到了歌：其余待抢开曲目视为无人开，自动揭晓
+                flushed = board.flush_pending_auto()
+                msg = f"✅ 猜中：{song.title}"
+                msg += _format_auto_reveal(flushed)
+                return msg, board, song, flushed
+        # 未猜中也算一回合，揭晓上一回合遗留的待抢开
+        flushed = board.flush_pending_auto()
+        msg = "没有对上未解开的歌，再想想？"
+        msg += _format_auto_reveal(flushed)
+        return msg, board, None, flushed
 
     def reveal_all(self, board: LetterBoard) -> None:
+        board.pending_auto.clear()
         for song in board.songs:
             song.solved = True
             if not song.solved_by:
@@ -313,9 +359,13 @@ def render_letter_board(board: LetterBoard) -> Image.Image:
     for idx, song in enumerate(board.songs, 1):
         if idx > 1:
             dr.line((48, y, width - 48, y), fill=_LINE, width=1)
-        icon = "[OK]" if song.solved else "[??]"
+        if song.solved:
+            icon, color = "[OK]", _OK
+        elif song.music_id in board.pending_auto:
+            icon, color = "[抢]", _WAIT
+        else:
+            icon, color = "[??]", _WAIT
         shown = song.display(board.revealed)
-        color = _OK if song.solved else _WAIT
         title_font.draw(56, y + 14, 22, f"{idx}.", _MUTED, "lt")
         title_font.draw(96, y + 14, 22, icon, color, "lt")
         title_font.draw(170, y + 14, 24, shown, _TEXT, "lt")

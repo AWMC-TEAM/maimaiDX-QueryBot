@@ -77,6 +77,7 @@ _HELP = (
     f"· 发送「舞萌开字母」或「开字母」开局（{BOARD_SIZE} 首歌）\n"
     "· 对局中直接发字母（如 m）即可开字符\n"
     "· 直接发曲名/别名即可猜歌（也可「开歌 xxx」）\n"
+    "· 标题字母开齐后可抢开；下回合仍无人开才自动揭晓\n"
     "· 不玩了 — 结束并揭晓剩余\n"
     "与猜歌等模式同群互斥；需先「开启mai猜歌」。"
 )
@@ -210,10 +211,18 @@ async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool
     if board is None:
         return False
     hidden_map = {s.music_id: s.hidden_count(board.revealed) for s in board.songs}
-    msg, board, song = letter_guess.open_song(
+    msg, board, song, flushed = letter_guess.open_song(
         gid, text, solver=get_sender_display_name(event)
     )
     if song is None:
+        # 未猜中但可能触发了上一回合待抢开的自动揭晓，需要出图
+        if flushed:
+            parts = [msg]
+            if board.finished:
+                letter_guess.end(gid)
+                parts.append("🎉 全部解开，本局结束！")
+            await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
+            await matcher.finish()
         return False
     parts = [msg]
     pts = points_for_song_solve(hidden_map.get(song.music_id, 0))

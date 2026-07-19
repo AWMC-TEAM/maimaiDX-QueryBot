@@ -80,8 +80,22 @@ assert song.display(board.revealed) == "????y??"
 for ch in "halcon":
     board.revealed.add(ch)
 assert song.is_fully_revealed(board.revealed)
-newly = board.mark_auto_solved()
-assert newly and newly[0].solved
+queued = board.queue_fully_revealed()
+assert queued and not song.solved and song.music_id in board.pending_auto
+# 同回合不自动揭晓；下一回合 flush 才揭晓
+flushed = board.flush_pending_auto()
+assert flushed and flushed[0].solved and flushed[0].solved_by == "字母揭完"
+assert not board.pending_auto
+
+# 待抢开时可被手动开歌抢走
+song2 = LetterSong(music_id="2", title="ab", answers=["ab", "2"])
+board2 = LetterBoard(songs=[song2])
+board2.revealed.update({"a", "b"})
+assert board2.queue_fully_revealed() and not song2.solved
+song2.solved = True
+song2.solved_by = "手动"
+board2.pending_auto.discard(song2.music_id)
+assert not board2.flush_pending_auto()
 
 assert points_for_letter_hit(0) == 0
 assert points_for_letter_hit(3) == 2
