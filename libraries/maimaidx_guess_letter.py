@@ -116,10 +116,24 @@ def star_for_elapsed(
 
 
 def star_text(stars: int) -> str:
+    """聊天文案用星级（emoji，多数客户端可显示）。"""
     n = max(0, min(5, int(stars)))
     if n <= 0:
         return "☆（超时最低档）"
     return "⭐️" * n
+
+
+def star_text_draw(stars: int) -> str:
+    """PIL/CJK 出图用星级（★），避免 emoji 缺字变方框。"""
+    n = max(0, min(5, int(stars)))
+    if n <= 0:
+        return "☆（超时最低档）"
+    return "★" * n
+
+
+def stars_for_draw(text: str) -> str:
+    """把文案里的 emoji 星换成 CJK 字体可绘制的 ★。"""
+    return str(text).replace("⭐️", "★").replace("⭐", "★")
 
 
 def format_threshold_lines(

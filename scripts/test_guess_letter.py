@@ -32,6 +32,8 @@ names = {
     "default_star_limits",
     "star_for_elapsed",
     "star_text",
+    "star_text_draw",
+    "stars_for_draw",
     "format_threshold_lines",
     "distribute_pool",
     "LetterContribution",
@@ -158,6 +160,9 @@ assert star_for_elapsed(180.0) == 1
 assert star_for_elapsed(180.001) == 0
 assert "⭐️⭐️⭐️" == star_text(3)
 assert "超时" in star_text(0)
+assert "★★★" == ns["star_text_draw"](3)
+assert "☆" in ns["star_text_draw"](0)
+assert "★★★" == ns["stars_for_draw"]("⭐️⭐️⭐️")
 
 # 自定义自适应阈值：五星 20s → 四星 30s
 adaptive = {5: 20.0, 4: 30.0, 3: 40.0, 2: 60.0, 1: 120.0}

@@ -12,7 +12,12 @@ from PIL import Image, ImageDraw
 from ..config import SIYUAN, TBFONT
 from .image import DrawText, image_to_base64
 from .maimaidx_api_data import maiApi
-from .maimaidx_guess_letter import LetterSettlement, format_elapsed
+from .maimaidx_guess_letter import (
+    LetterSettlement,
+    format_elapsed,
+    star_text_draw,
+    stars_for_draw,
+)
 from .maimaidx_letter_stats import LetterMemberStats
 
 _BG = (42, 28, 22, 255)
@@ -110,7 +115,7 @@ def _draw_rank_panel(
     font = DrawText(dr, _board_font())
     dr.rounded_rectangle((20, 20, width - 20, height - 20), radius=20, fill=_CARD)
     font.draw(44, 40, 34, title, _TITLE, "lt", 2, (0, 0, 0, 120))
-    font.draw(44, 82, 16, subtitle, _MUTED, "lt")
+    font.draw(44, 82, 16, stars_for_draw(subtitle), _MUTED, "lt")
     y = header_h
     if not rows:
         font.draw(44, y + 10, 22, "暂无记录", _MUTED, "lt")
@@ -211,13 +216,13 @@ async def render_settlement_split(settlement: LetterSettlement) -> Image.Image:
         78,
         16,
         (
-            f"用时 {settlement.elapsed_text} · {settlement.stars_text}"
+            f"用时 {settlement.elapsed_text} · {star_text_draw(settlement.stars)}"
             f"  ·  奖池 {settlement.score_pool} 分 / {settlement.break_pool} BREAK"
         ),
         _MUTED,
         "lt",
     )
-    font.draw(44, 100, 14, settlement.thresholds_text, _MUTED, "lt")
+    font.draw(44, 100, 14, stars_for_draw(settlement.thresholds_text), _MUTED, "lt")
 
     if not rewards:
         font.draw(44, header_h + 12, 22, "本局无人有效贡献", _MUTED, "lt")

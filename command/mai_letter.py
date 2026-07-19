@@ -190,10 +190,8 @@ async def _maybe_finish_board(
     matcher, event: MessageEvent, gid, board: LetterBoard, parts: list[str]
 ) -> None:
     """
-    通关结算 UX（严格顺序）：
-    1) 文案：猜中/补齐行 + 全部解开用时星级 + 奖池
-    2) 本局榜单+分成图
-    3) 开字母看板图（全开）
+    通关结算：同一条消息内依次为
+    文案 → 本局榜单+分成图 → 开字母终局看板图。
     """
     if not board.finished:
         await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
@@ -219,19 +217,18 @@ async def _maybe_finish_board(
     )
     await _payout_settlement(event, gid, settlement)
 
-    # 1) 文案
     text = "\n".join([*parts, format_settlement_message(settlement)])
-    await _send_plain(matcher, event, text)
-
-    # 2) 本局榜单+分成图
+    msg = Message(text)
     try:
         split_im = await render_settlement_split(settlement)
-        await _send_image(matcher, event, split_im)
+        msg += MessageSegment.image(image_b64(split_im))
     except Exception as exc:
         log.warning(f"[LetterGuess] 结算分成图失败：{type(exc).__name__}: {exc}")
-
-    # 3) 最终看板
-    await _send_board(matcher, event, board)
+    msg += board_image_segment(board)
+    await matcher.send(
+        adapt_guess_outbound(msg, event=event),
+        reply_message=resolve_reply_message(event, reply_message=True),
+    )
     await matcher.finish()
 
 
