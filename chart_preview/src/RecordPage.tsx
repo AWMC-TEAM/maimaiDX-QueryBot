@@ -379,10 +379,14 @@ export default function RecordPage() {
       }
 
       const mime = pickRecorderMime();
-      const stream = canvas.captureStream(30);
+      // 60fps 采集，后端再 CFR 到 30，减轻掉帧感
+      const stream = canvas.captureStream(60);
       const recorder = mime
-        ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2_500_000 })
-        : new MediaRecorder(stream);
+        ? new MediaRecorder(stream, {
+            mimeType: mime,
+            videoBitsPerSecond: 5_000_000,
+          })
+        : new MediaRecorder(stream, { videoBitsPerSecond: 5_000_000 });
       const chunks: Blob[] = [];
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) chunks.push(e.data);
@@ -395,10 +399,23 @@ export default function RecordPage() {
         };
       });
 
+      // 强制触发布局/合成，帮助 headless 下 captureStream 稳定出帧
+      let paintRaf = 0;
+      const paintLoop = () => {
+        try {
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          ctx?.getImageData(0, 0, 1, 1);
+        } catch {
+          // ignore
+        }
+        paintRaf = window.requestAnimationFrame(paintLoop);
+      };
+
       try {
         // 先开录再 play：前置空白计入 recordLeadMs，后端据此对齐正解音
         const tRec = performance.now();
-        recorder.start(100);
+        recorder.start(200);
+        paintRaf = window.requestAnimationFrame(paintLoop);
         setBridge({
           state: 'playing',
           videoBase64: null,
@@ -440,6 +457,7 @@ export default function RecordPage() {
           });
         }
       } finally {
+        if (paintRaf) window.cancelAnimationFrame(paintRaf);
         stream.getTracks().forEach((t) => t.stop());
       }
     })();

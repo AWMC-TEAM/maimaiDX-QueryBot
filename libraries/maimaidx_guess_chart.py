@@ -23,8 +23,8 @@ from playwright.async_api import async_playwright
 
 _PKG_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHART_CDN = 'https://assets2.lxns.net/maimai/chart'
-# rev=5：阶段2 曲末 BGM 谱面
-CHART_VIDEO_REV = 5
+# rev=6：更高帧率录制 + CFR 转码，减轻卡顿
+CHART_VIDEO_REV = 6
 DEFAULT_DURATION = 40
 PHASE2_DURATION = 30
 STAGE_INTERVAL = 45
@@ -35,6 +35,8 @@ ANSWER_GRACE = STAGE_INTERVAL + STAGE_FINAL_GRACE
 # 末段作答倒计时提醒节点（秒）
 COUNTDOWN_MARKS = (50, 40, 30, 20, 10)
 MAX_HIT_SOUNDS = 2500
+DEFAULT_CHART_BATCH_LIMIT = 20
+CAPTURE_FPS = 30
 CHART_DIFF_NAMES = {
     2: '绿',
     3: '黄',
@@ -51,6 +53,28 @@ _BUILD_LOCKS: Dict[str, asyncio.Lock] = {}
 _static_server: Optional[ThreadingHTTPServer] = None
 _static_port: Optional[int] = None
 _static_lock = threading.Lock()
+_prepare_status = ''
+_prepare_status_lock = threading.Lock()
+_batch_cancel = threading.Event()
+
+
+def set_chart_prepare_status(msg: str) -> None:
+    global _prepare_status
+    with _prepare_status_lock:
+        _prepare_status = msg or ''
+
+
+def get_chart_prepare_status() -> str:
+    with _prepare_status_lock:
+        return _prepare_status
+
+
+def request_chart_batch_cancel() -> None:
+    _batch_cancel.set()
+
+
+def _reset_chart_batch_cancel() -> None:
+    _batch_cancel.clear()
 
 
 def chart_preview_dir() -> Path:
@@ -124,6 +148,11 @@ def is_chart_video_ready(music_id: str, kind: str, diff: int) -> bool:
 def is_chart_bgm_ready(music_id: str, kind: str, diff: int) -> bool:
     path = bgm_video_path_for(music_id, kind, diff)
     return path.is_file() and path.stat().st_size > 1024
+
+
+def is_chart_round_ready(music_id: str, kind: str, diff: int) -> bool:
+    """阶段1 + 阶段2 均就绪。"""
+    return is_chart_video_ready(music_id, kind, diff) and is_chart_bgm_ready(music_id, kind, diff)
 
 
 def _load_manifest() -> dict:
@@ -291,15 +320,18 @@ def _build_answer_track_wav(
 
 def _encode_silent_mp4(webm: Path, silent: Path) -> float:
     silent.parent.mkdir(parents=True, exist_ok=True)
+    # fps+CFR：抹平 MediaRecorder 时间戳抖动，减轻播放卡顿
     cmd_video = [
         'ffmpeg', '-y',
         '-i', str(webm),
         '-an',
         '-c:v', 'libx264',
-        '-preset', 'veryfast',
-        '-crf', '26',
+        '-preset', 'fast',
+        '-crf', '23',
         '-pix_fmt', 'yuv420p',
-        '-vf', f'scale={DEFAULT_VIEWPORT}:{DEFAULT_VIEWPORT}',
+        '-vf', f'scale={DEFAULT_VIEWPORT}:{DEFAULT_VIEWPORT},fps={CAPTURE_FPS}',
+        '-r', str(CAPTURE_FPS),
+        '-vsync', 'cfr',
         '-movflags', '+faststart',
         str(silent),
     ]
@@ -510,7 +542,15 @@ async def _capture_record_page(
 
     meta: dict = {}
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-background-timer-throttling',
+                '--disable-renderer-backgrounding',
+                '--disable-backgrounding-occluded-windows',
+                '--autoplay-policy=no-user-gesture-required',
+            ],
+        )
         context = await browser.new_context(
             viewport={'width': DEFAULT_VIEWPORT, 'height': DEFAULT_VIEWPORT},
             device_scale_factor=1,
@@ -686,6 +726,7 @@ async def ensure_chart_video_ready(
     kind_candidates.append(alt)
 
     last_err = ''
+    set_chart_prepare_status(f'探测谱面 CDN（{title or music_id}）…')
     for kind in kind_candidates:
         key = cache_key(music_id, kind, diff)
         out = video_path_for(music_id, kind, diff)
@@ -697,6 +738,9 @@ async def ensure_chart_video_ready(
                 async with _lock_for(key + '_bgm'):
                     if not is_chart_bgm_ready(music_id, kind, diff):
                         try:
+                            set_chart_prepare_status(
+                                f'补渲染曲末 BGM 谱面（{title or music_id}）…'
+                            )
                             log.info(
                                 f'[GuessChart] 补渲染 BGM music={music_id} '
                                 f'kind={kind} diff={diff}'
@@ -729,10 +773,12 @@ async def ensure_chart_video_ready(
                 entry = dict(entry)
                 entry.setdefault('path_bgm', str(out_bgm.resolve()))
                 entry['has_bgm'] = True
+            set_chart_prepare_status(f'命中缓存（{title or music_id}）')
             return True, 'cache', out, entry
 
         async with _lock_for(key):
             if is_chart_video_ready(music_id, kind, diff):
+                set_chart_prepare_status(f'命中缓存（{title or music_id}）')
                 return True, 'cache', out, get_chart_manifest_entry(music_id, kind, diff)
 
             if not await chart_simai_exists(song_id, kind):
@@ -745,6 +791,9 @@ async def ensure_chart_video_ready(
             )
             started = time.time()
             try:
+                set_chart_prepare_status(
+                    f'录制静音谱面（{title or music_id}，约 {duration}s）…'
+                )
                 meta = await _render_chart_video(
                     song_id=song_id,
                     kind=kind,
@@ -760,6 +809,9 @@ async def ensure_chart_video_ready(
             meta_bgm: Optional[dict] = None
             bgm_ok: Optional[Path] = None
             try:
+                set_chart_prepare_status(
+                    f'录制曲末 BGM 谱面（{title or music_id}，约 {PHASE2_DURATION}s）…'
+                )
                 log.info(
                     f'[GuessChart] 开始渲染 BGM music={music_id} '
                     f'tail={PHASE2_DURATION}s'
@@ -794,12 +846,14 @@ async def ensure_chart_video_ready(
             manifest = _load_manifest()
             manifest.setdefault('entries', {})[key] = entry
             _save_manifest(manifest)
+            set_chart_prepare_status(f'渲染完成（{title or music_id}）')
             log.info(
                 f'[GuessChart] 渲染完成 music={music_id} size={entry["size"]} '
                 f'bgm={entry["has_bgm"]} elapsed={elapsed}s'
             )
             return True, 'built', out, entry
 
+    set_chart_prepare_status(last_err or '无可用谱面')
     return False, last_err or '无可用谱面', None, {}
 
 
@@ -812,3 +866,106 @@ def list_ready_chart_music_ids() -> List[str]:
         if mid and path.is_file():
             ids.append(mid)
     return ids
+
+
+async def build_hot_chart_cache(
+    *,
+    force: bool = False,
+    limit: Optional[int] = None,
+) -> str:
+    """烘焙热门池猜铺面视频（含曲末 BGM）。limit 限制本次新建/重建数量。"""
+    from .maimaidx_music import guess, mai
+
+    _reset_chart_batch_cancel()
+    if not mai.total_list:
+        return '曲库未加载，请等待 bot 初始化完成后再试。'
+    pool = guess._guess_music_pool()
+    if not pool:
+        return '热门池为空，无法烘焙。'
+
+    build_limit = DEFAULT_CHART_BATCH_LIMIT if limit is None else max(1, int(limit))
+    if force and limit is None:
+        build_limit = len(pool)
+
+    ok_ids: List[str] = []
+    skip_ids: List[str] = []
+    fail_lines: List[str] = []
+    cancelled = False
+    built = 0
+    t0 = time.time()
+    set_chart_prepare_status(f'热门池预制开始（上限 {build_limit} 首）…')
+
+    for idx, music in enumerate(pool, 1):
+        if _batch_cancel.is_set():
+            cancelled = True
+            break
+        await asyncio.sleep(0)
+        mid = str(music.id)
+        kind = chart_kind(music.type)
+        diff = pick_chart_diff(len(music.ds))
+        alt = 'standard' if kind == 'dx' else 'dx'
+        # 任一 kind 完整就绪则跳过（force 除外）
+        if not force and (
+            is_chart_round_ready(mid, kind, diff) or is_chart_round_ready(mid, alt, diff)
+        ):
+            skip_ids.append(mid)
+            continue
+
+        if built >= build_limit:
+            break
+
+        set_chart_prepare_status(
+            f'预制 [{idx}/{len(pool)}] {music.title}（已新建 {built}/{build_limit}）…'
+        )
+        log.info(
+            f'[GuessChart] 热门池预制 [{idx}/{len(pool)}] {mid} {music.title} '
+            f'force={force}'
+        )
+        try:
+            if force:
+                for k in (kind, alt):
+                    for p in (
+                        video_path_for(mid, k, diff),
+                        bgm_video_path_for(mid, k, diff),
+                    ):
+                        if p.is_file():
+                            p.unlink()
+            ok, msg, _path, entry = await ensure_chart_video_ready(
+                mid,
+                music_type=music.type,
+                title=music.title,
+                level_count=len(music.ds),
+            )
+        except asyncio.CancelledError:
+            request_chart_batch_cancel()
+            cancelled = True
+            break
+        except Exception as e:
+            ok, msg, entry = False, str(e), {}
+
+        if ok:
+            ok_ids.append(mid)
+            built += 1
+            bgm = '有BGM' if entry.get('has_bgm') else '无BGM'
+            log.info(f'[GuessChart] 预制成功 {mid} {msg} {bgm}')
+        else:
+            fail_lines.append(f'{mid} {music.title}: {msg}')
+            log.warning(f'[GuessChart] 预制失败 {mid}: {msg}')
+
+    elapsed = int(time.time() - t0)
+    set_chart_prepare_status('预制结束')
+    lines = [
+        f'猜铺面热门池预制完成（rev={CHART_VIDEO_REV}）',
+        f'扫描 {len(pool)} 首，本次新建/重建 {len(ok_ids)}，跳过 {len(skip_ids)}，'
+        f'失败 {len(fail_lines)}，耗时 {elapsed}s',
+        f'上限 {build_limit}；增量默认每次最多 {DEFAULT_CHART_BATCH_LIMIT} 首，'
+        f'可用「更新猜铺面 50」或「更新猜铺面 -full」调整。',
+    ]
+    if cancelled:
+        lines.append('（任务已取消）')
+    if ok_ids[:15]:
+        lines.append('成功：' + ', '.join(ok_ids[:15]) + ('…' if len(ok_ids) > 15 else ''))
+    if fail_lines[:8]:
+        lines.append('失败示例：')
+        lines.extend(fail_lines[:8])
+    return '\n'.join(lines)

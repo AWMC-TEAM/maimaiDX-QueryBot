@@ -27,6 +27,7 @@ from ..libraries.maimaidx_guess_audio import (
     STAGE_LABELS,
     build_hot_audio_cache,
     get_audio_manifest_entry,
+    get_audio_prepare_status,
     request_hot_batch_cancel,
 )
 from ..libraries.maimaidx_guess_chart import (
@@ -34,6 +35,9 @@ from ..libraries.maimaidx_guess_chart import (
     PHASE2_DURATION as CHART_PHASE2_DURATION,
     STAGE_FINAL_GRACE as CHART_STAGE_FINAL_GRACE,
     STAGE_INTERVAL as CHART_STAGE_INTERVAL,
+    build_hot_chart_cache,
+    get_chart_prepare_status,
+    request_chart_batch_cancel,
 )
 from ..libraries.maimaidx_music import guess
 from ..libraries.maimaidx_model import (
@@ -84,6 +88,10 @@ guess_music_pic     = on_regex(
 guess_music_audio   = on_command('猜曲子', rule=GROUP_MESSAGE)
 guess_music_chart   = on_command('猜铺面', aliases={'猜谱面'}, rule=GROUP_MESSAGE)
 update_guess_audio  = on_regex(r'^更新猜曲音频(?:\s+(-full))?\s*$', permission=PLUGIN_ADMIN_ONLY)
+update_guess_chart  = on_regex(
+    r'^(?:更新|预制)猜(?:铺|谱)面(?:\s+(-full))?(?:\s+(\d+))?\s*$',
+    permission=PLUGIN_ADMIN_ONLY,
+)
 guess_boost_grant   = on_command('发加倍卡', permission=GUESS_GROUP_MANAGER, rule=GROUP_MESSAGE)
 guess_boost_query   = on_command('查加倍卡', rule=GROUP_MESSAGE)
 guess_music_solve   = on_message(
@@ -196,10 +204,12 @@ _GUESS_SEND_FAIL_MSG = '游戏数据获取失败，本游戏已结束。'
 GUESS_SEND_TIMEOUT_TEXT = 15
 GUESS_SEND_TIMEOUT_MEDIA = 60
 GUESS_SEND_TIMEOUT_VIDEO = 90
-GUESS_AUDIO_PREPARE_FIRST_UPDATE = 30
-GUESS_AUDIO_PREPARE_UPDATE_INTERVAL = 60
-GUESS_CHART_PREPARE_FIRST_UPDATE = 40
-GUESS_CHART_PREPARE_UPDATE_INTERVAL = 45
+GUESS_AUDIO_PREPARE_FIRST_UPDATE = 20
+GUESS_AUDIO_PREPARE_UPDATE_INTERVAL = 25
+GUESS_CHART_PREPARE_FIRST_UPDATE = 25
+GUESS_CHART_PREPARE_UPDATE_INTERVAL = 30
+GUESS_GENERIC_PREPARE_FIRST_UPDATE = 8
+GUESS_GENERIC_PREPARE_UPDATE_INTERVAL = 15
 
 
 def _guess_loop_should_stop(gid: GroupId) -> bool:
@@ -290,45 +300,74 @@ async def _safe_matcher_send(
         raise GuessSendAborted() from e
 
 
+async def _wait_prepare_with_progress(
+    matcher: Matcher,
+    event: MessageEvent,
+    task: asyncio.Task,
+    *,
+    intro: str,
+    title: str,
+    status_fn,
+    first_wait: int,
+    interval: int,
+    tip_fn=None,
+):
+    """通用准备等待：定时推送已等待秒数 + 当前步骤。"""
+    await _guess_notify(matcher, event, intro, reply=True)
+    started = asyncio.get_running_loop().time()
+    wait_seconds = first_wait
+    try:
+        while True:
+            try:
+                return await asyncio.wait_for(asyncio.shield(task), timeout=wait_seconds)
+            except asyncio.TimeoutError:
+                elapsed = int(asyncio.get_running_loop().time() - started)
+                detail = ''
+                try:
+                    detail = (status_fn() or '').strip()
+                except Exception:
+                    detail = ''
+                tip = ''
+                if tip_fn is not None:
+                    try:
+                        tip = (tip_fn(elapsed) or '').strip()
+                    except Exception:
+                        tip = ''
+                lines = [f'{title}（已等待 {elapsed} 秒）']
+                if detail:
+                    lines.append(f'当前：{detail}')
+                if tip:
+                    lines.append(tip)
+                await _guess_notify(matcher, event, '\n'.join(lines))
+                wait_seconds = interval
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+
+
 async def _prepare_guess_audio_with_progress(
     matcher: Matcher,
     event: MessageEvent,
     gid: GroupId,
 ) -> Optional[GuessAudioData]:
-    """准备音频时持续告知用户进度，避免耗时分轨被误认为卡死。"""
-    await _guess_notify(
-        matcher,
-        event,
-        '正在随机选曲并准备音频…\n'
-        '命中缓存通常 5 秒内开始；首次生成新曲预计 1～3 分钟，'
-        '期间会定时报告进度，请稍候。',
-        reply=True,
-    )
     task = asyncio.create_task(guess.prepare_audio_round())
-    started = asyncio.get_running_loop().time()
-    wait_seconds = GUESS_AUDIO_PREPARE_FIRST_UPDATE
-    try:
-        while True:
-            try:
-                return await asyncio.wait_for(
-                    asyncio.shield(task), timeout=wait_seconds,
-                )
-            except asyncio.TimeoutError:
-                elapsed = int(asyncio.get_running_loop().time() - started)
-                if elapsed < 180:
-                    eta = '新曲通常会在总计 1～3 分钟内完成。'
-                else:
-                    eta = '已超过常见耗时，可能正在跳过无资源曲目并尝试下一首。'
-                await _guess_notify(
-                    matcher,
-                    event,
-                    f'猜曲音频仍在准备中（已等待 {elapsed} 秒）。\n'
-                    f'正在下载或进行 AI 分轨，{eta}',
-                )
-                wait_seconds = GUESS_AUDIO_PREPARE_UPDATE_INTERVAL
-    except asyncio.CancelledError:
-        task.cancel()
-        raise
+    return await _wait_prepare_with_progress(
+        matcher, event, task,
+        intro=(
+            '正在随机选曲并准备音频…\n'
+            '命中缓存通常数秒内开始；首次生成新曲预计 1～3 分钟，'
+            '期间会报告具体步骤，请稍候。'
+        ),
+        title='猜曲音频仍在准备中',
+        status_fn=get_audio_prepare_status,
+        first_wait=GUESS_AUDIO_PREPARE_FIRST_UPDATE,
+        interval=GUESS_AUDIO_PREPARE_UPDATE_INTERVAL,
+        tip_fn=lambda elapsed: (
+            '新曲通常会在总计 1～3 分钟内完成。'
+            if elapsed < 180
+            else '已超过常见耗时，可能正在跳过无资源曲目并尝试下一首。'
+        ),
+    )
 
 
 async def _prepare_guess_chart_with_progress(
@@ -336,35 +375,24 @@ async def _prepare_guess_chart_with_progress(
     event: MessageEvent,
     gid: GroupId,
 ) -> Optional[GuessChartData]:
-    """准备铺面视频时持续告知进度（首次 Playwright 录制较慢）。"""
-    await _guess_notify(
-        matcher,
-        event,
-        '正在随机选曲并渲染铺面视频…\n'
-        '命中缓存通常数秒内开始；首次渲染约 40～90 秒（无音乐、无背景），请稍候。',
-        reply=True,
-    )
     task = asyncio.create_task(guess.prepare_chart_round())
-    started = asyncio.get_running_loop().time()
-    wait_seconds = GUESS_CHART_PREPARE_FIRST_UPDATE
-    try:
-        while True:
-            try:
-                return await asyncio.wait_for(
-                    asyncio.shield(task), timeout=wait_seconds,
-                )
-            except asyncio.TimeoutError:
-                elapsed = int(asyncio.get_running_loop().time() - started)
-                await _guess_notify(
-                    matcher,
-                    event,
-                    f'猜铺面视频仍在渲染中（已等待 {elapsed} 秒）。\n'
-                    '正在用谱面预览引擎录制静音动画，请再稍候。',
-                )
-                wait_seconds = GUESS_CHART_PREPARE_UPDATE_INTERVAL
-    except asyncio.CancelledError:
-        task.cancel()
-        raise
+    return await _wait_prepare_with_progress(
+        matcher, event, task,
+        intro=(
+            '正在随机选曲并渲染铺面视频…\n'
+            '命中缓存通常数秒内开始；首次需录制静音谱面 + 曲末 BGM，'
+            '约 1.5～3 分钟，期间会报告具体步骤，请稍候。'
+        ),
+        title='猜铺面视频仍在渲染中',
+        status_fn=get_chart_prepare_status,
+        first_wait=GUESS_CHART_PREPARE_FIRST_UPDATE,
+        interval=GUESS_CHART_PREPARE_UPDATE_INTERVAL,
+        tip_fn=lambda elapsed: (
+            '正在用谱面预览引擎录制并混音，请再稍候。'
+            if elapsed < 240
+            else '已超过常见耗时，可能正在换曲重试。'
+        ),
+    )
 
 
 async def _send_guess_answer_bundle(
@@ -655,6 +683,7 @@ async def _(event: MessageEvent):
         await guess_music_start.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌')
     if guess.is_busy(gid):
         await guess_music_start.finish(_GUESS_BUSY_HINT)
+    await _guess_notify(guess_music_start, event, '正在准备猜歌（选曲与提示）…', reply=True)
     guess.start(gid)
     try:
         await _safe_matcher_send(
@@ -716,6 +745,11 @@ async def _(event: MessageEvent, matched=RegexMatched()):
         await guess_music_pic.finish(_GUESS_BUSY_HINT, reply_message=True)
     diff_raw = matched.group(1)
     difficulty = int(diff_raw) if diff_raw else None
+    await _guess_notify(
+        guess_music_pic, event,
+        '正在生成猜曲绘（裁剪封面与干扰）…',
+        reply=True,
+    )
     guess.startpic(gid, difficulty)
     data = guess.Group[gid]
     try:
@@ -1063,16 +1097,76 @@ async def _(event: PrivateMessageEvent, match=RegexMatched()):
     hint = '强制重建' if force else '增量烘焙'
     await update_guess_audio.send(
         f'开始{hint}猜曲音频（热门池）。单首通常需要 1～3 分钟，'
-        '完整热门池可能耗时数小时；已有缓存会自动跳过，完成后会发送汇总。'
+        '完整热门池可能耗时数小时；已有缓存会自动跳过，期间会定时报告进度。'
     )
+    task = asyncio.create_task(build_hot_audio_cache(force=force))
+    started = asyncio.get_running_loop().time()
+    wait = 45
     try:
-        report = await build_hot_audio_cache(force=force)
+        while True:
+            try:
+                report = await asyncio.wait_for(asyncio.shield(task), timeout=wait)
+                break
+            except asyncio.TimeoutError:
+                elapsed = int(asyncio.get_running_loop().time() - started)
+                detail = get_audio_prepare_status() or '烘焙中…'
+                await update_guess_audio.send(
+                    f'猜曲音频烘焙进行中（已 {elapsed} 秒）\n当前：{detail}'
+                )
+                wait = 60
     except asyncio.CancelledError:
         request_hot_batch_cancel()
         log.warning(f'[GuessAudio] 「更新猜曲音频」被取消 qq={event.user_id}')
         raise
     log.info(f'[GuessAudio] 「更新猜曲音频」完成 qq={event.user_id} force={force}')
     await update_guess_audio.finish(report)
+
+
+@update_guess_chart.handle()
+async def _(event: PrivateMessageEvent, match=RegexMatched()):
+    force = match.group(1) is not None
+    limit_raw = match.group(2)
+    limit = int(limit_raw) if limit_raw else None
+    log.info(
+        f'[GuessChart] 收到「更新猜铺面」qq={event.user_id} '
+        f'force={force} limit={limit}'
+    )
+    hint = '强制重建' if force else '增量预制'
+    limit_hint = (
+        f'本次最多处理 {limit} 首。'
+        if limit is not None
+        else ('将尽量扫完整热门池。' if force else '默认每次最多新建约 20 首。')
+    )
+    await update_guess_chart.send(
+        f'开始{hint}猜铺面视频（热门池）。\n'
+        f'单首含静音段 + 曲末 BGM，通常 1.5～3 分钟；{limit_hint}\n'
+        '已有完整缓存会自动跳过；期间可私聊查看日志，完成后发送汇总。'
+    )
+
+    async def _batch() -> str:
+        return await build_hot_chart_cache(force=force, limit=limit)
+
+    task = asyncio.create_task(_batch())
+    started = asyncio.get_running_loop().time()
+    wait = 45
+    try:
+        while True:
+            try:
+                report = await asyncio.wait_for(asyncio.shield(task), timeout=wait)
+                break
+            except asyncio.TimeoutError:
+                elapsed = int(asyncio.get_running_loop().time() - started)
+                detail = get_chart_prepare_status() or '预制中…'
+                await update_guess_chart.send(
+                    f'猜铺面预制进行中（已 {elapsed} 秒）\n当前：{detail}'
+                )
+                wait = 60
+    except asyncio.CancelledError:
+        request_chart_batch_cancel()
+        log.warning(f'[GuessChart] 「更新猜铺面」被取消 qq={event.user_id}')
+        raise
+    log.info(f'[GuessChart] 「更新猜铺面」完成 qq={event.user_id}')
+    await update_guess_chart.finish(report)
 
 
 @guess_music_solve.handle()
