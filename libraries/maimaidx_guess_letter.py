@@ -63,7 +63,7 @@ LETTER_TRIPLE_START = 1784475000
 LETTER_TRIPLE_DURATION = 7 * 86400
 LETTER_TRIPLE_MULTIPLIER = 3
 
-# 人多/突发负载 → 文字模式（本局粘性，直到结束；跳过看板/结算图）
+# 人多/突发负载 → 文字模式（本局粘性；局中看板可走文字，通关结算仍强制出图）
 TEXT_MODE_MIN_CONTRIBUTORS = 3  # 本局有贡献的 uid 数 ≥ 此值
 TEXT_MODE_BURST_WINDOW = 2.0  # 秒：统计窗口
 TEXT_MODE_BURST_COUNT = 4  # 窗口内开字母相关处理次数 ≥ 此值
@@ -310,9 +310,10 @@ class LetterBoard:
     revealed: Set[str] = field(default_factory=set)
     opened_order: List[str] = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
+    ended_at: Optional[float] = None
     starter: str = ""
     contributions: Dict[str, LetterContribution] = field(default_factory=dict)
-    # 人多/突发时粘性降级为纯文字，本局内不再出图
+    # 人多/突发时粘性降级：局中看板可走文字；通关结算仍强制出图
     text_mode: bool = False
     process_times: List[float] = field(default_factory=list)
     # 非高峰：每人上次有效答题时间；冷却提示只发一次避免刷屏
@@ -333,8 +334,20 @@ class LetterBoard:
         return sum(1 for c in self.contributions.values() if c.weight > 0)
 
     def elapsed(self, now: Optional[float] = None) -> float:
-        t = time.time() if now is None else float(now)
-        return max(0.0, t - float(self.started_at))
+        """已用时；通关定格后固定为 ended_at - started_at，不含后续渲染。"""
+        if self.ended_at is not None:
+            end = float(self.ended_at)
+        else:
+            end = time.time() if now is None else float(now)
+        return max(0.0, end - float(self.started_at))
+
+    def freeze_end(self, now: Optional[float] = None) -> Optional[float]:
+        """通关成功后立刻定格结束时间；未通关或已定格则不动。返回定格后的用时。"""
+        if not self.finished:
+            return None
+        if self.ended_at is None:
+            self.ended_at = time.time() if now is None else float(now)
+        return self.elapsed()
 
     def try_consume_answer(
         self, uid: str, *, now: Optional[float] = None
@@ -418,6 +431,8 @@ class LetterBoard:
             song.solved = True
             song.solved_by = solver or "字母补齐"
             newly.append(song)
+        if newly:
+            self.freeze_end()
         return newly
 
     def settle(
@@ -432,8 +447,10 @@ class LetterBoard:
         """全部解开后的通关结算（不玩了勿调用）。
 
         event_now：活动倍率判定用墙钟（默认 time.time()）；测试可传入固定值。
+        用时以 freeze_end 定格值为准，不含后续渲染/发奖耗时。
         """
-        elapsed = self.elapsed(now)
+        self.freeze_end(now)
+        elapsed = self.elapsed()
         caps = limits or default_star_limits()
         stars = star_for_elapsed(elapsed, caps)
         mult = letter_reward_multiplier(now=event_now)
@@ -707,6 +724,7 @@ class LetterGuessManager:
                             board.opened_order.append(key)
                 # 附带补齐的其它曲归当前开歌者
                 completed = board.claim_fully_revealed(solver)
+                board.freeze_end()
                 if uid:
                     c = board.ensure_contribution(uid, billing_id, solver)
                     c.song_opens += 1

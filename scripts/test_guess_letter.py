@@ -247,6 +247,25 @@ assert "限时×" in letter_triple_banner(now=LETTER_TRIPLE_START + 1)
 assert letter_triple_banner(now=LETTER_TRIPLE_START - 1) == ""
 assert letter_reward_multiplier(now=LETTER_TRIPLE_START - 1) == 1
 
+# 停表：通关后 freeze_end 定格，后续墙钟不再计入用时
+freeze_board = LetterBoard(
+    songs=[
+        LetterSong("1", "AA", ["AA"], solved=True, solved_by="甲"),
+        LetterSong("2", "BB", ["BB"], solved=True, solved_by="乙"),
+    ],
+    started_at=1000.0,
+)
+assert freeze_board.freeze_end(now=1025.5) == 25.5
+assert freeze_board.ended_at == 1025.5
+# 再次 freeze / 更晚的 now 不影响已定格用时
+assert freeze_board.freeze_end(now=9999.0) == 25.5
+assert abs(freeze_board.elapsed(now=9999.0) - 25.5) < 1e-9
+freeze_board.ensure_contribution("1", 11, "甲").letter_hits = 1
+frozen = freeze_board.settle(now=9999.0, event_now=LETTER_TRIPLE_START - 1)
+assert abs(frozen.elapsed - 25.5) < 1e-9
+assert frozen.stars == 5
+assert "25.500秒" in frozen.elapsed_text
+
 # 文字看板 / 文字结算榜
 board_txt = format_board_text(settle_board)
 assert "【舞萌开字母】进度 2/2" in board_txt

@@ -19,7 +19,6 @@ from ..libraries.maimaidx_guess_letter import (
     format_board_text,
     format_elapsed,
     format_settlement_message,
-    format_settlement_text,
     letter_guess,
     letter_triple_banner,
 )
@@ -196,10 +195,12 @@ async def _maybe_finish_board(
     matcher, event: MessageEvent, gid, board: LetterBoard, parts: list[str]
 ) -> None:
     """
-    通关结算：同一条消息。
-    人少：文案 → 本局榜单+分成图 → 开字母终局看板图。
-    人多/突发文字模式：文案 + 文字分成榜 + 文字终局看板（不出图）。
+    通关结算：同一条消息（文案 + 分成榜图 + 终局看板图）。
+    人多文字模式只影响局中看板更新；通关结算始终强制出图。
     """
+    if board.finished:
+        # 通关判定成功后立刻停表，不含后续落库/渲染耗时
+        board.freeze_end()
     board.note_process()
     if not board.finished:
         await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
@@ -225,16 +226,7 @@ async def _maybe_finish_board(
     )
     await _payout_settlement(event, gid, settlement)
 
-    # 文字模式：一条纯文字，跳过结算图/看板图/头像
-    if board.prefer_text():
-        text = "\n".join([*parts, format_settlement_text(settlement, board)])
-        await matcher.send(
-            adapt_guess_outbound(text, event=event),
-            reply_message=False,
-        )
-        await matcher.finish()
-        return
-
+    # 通关结算始终出图（bypass prefer_text）；一条消息：文案 + 分成图 + 看板图
     text = "\n".join([*parts, format_settlement_message(settlement)])
     msg = Message(text)
     try:
