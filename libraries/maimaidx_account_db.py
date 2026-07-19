@@ -536,23 +536,28 @@ class AccountDatabase:
         return dt.replace(minute=dt.minute - discard, second=0, microsecond=0)
 
     def ticket_is_failure(self, status: str, detail: str = "") -> bool:
-        """发票是否计为失败：非 success，或详情含 returnCode=0 / null/未返回。"""
+        """兼容旧名：同 ``account_op_is_failure``。"""
+        return self.account_op_is_failure(status, detail)
+
+    def account_op_is_failure(self, status: str, detail: str = "") -> bool:
+        """账号相关操作是否计为失败：非 success，或详情含 returnCode=0 / null。"""
         if str(status or "") != "success":
             return True
         is_zero, is_null = self._ticket_detail_flags(detail)
         return is_zero or is_null
 
-    def get_ticket_failure_buckets(
+    def get_account_failure_buckets(
         self,
         *,
         hours: int = 48,
         minutes: int = 30,
         now: Optional[datetime] = None,
-    ) -> list[tuple[datetime, Optional[float], int, int]]:
-        """按半小时聚合近 ``hours`` 小时发票失败率（全量日志，无条数上限）。
+    ) -> list[tuple[datetime, float, int, int]]:
+        """按半小时聚合近 ``hours`` 小时账号操作失败率（全量，无条数上限）。
 
-        返回 [(bucket_start, failure_rate_pct|None, fail_count, total), ...]。
-        无发票的时间桶 rate=None。
+        统计 ``account_operation_log`` 全部操作（发票 / maiu 上传 / 绑定等）。
+        **仅返回有数据的时间桶**（无操作的时段省略）。
+        返回 [(bucket_start, failure_rate_pct, fail_count, total), ...]。
         """
         hours = max(1, int(hours))
         minutes = max(1, int(minutes))
@@ -563,7 +568,7 @@ class AccountDatabase:
             rows = self._conn.execute(
                 """SELECT status, detail, created_at
                    FROM account_operation_log
-                   WHERE operation = 'ticket' AND created_at >= ?
+                   WHERE created_at >= ?
                    ORDER BY created_at ASC""",
                 (since_ts,),
             ).fetchall()
@@ -579,17 +584,26 @@ class AccountDatabase:
             if key < start or key > end:
                 continue
             buckets[key][1] += 1
-            if self.ticket_is_failure(str(row["status"] or ""), str(row["detail"] or "")):
+            if self.account_op_is_failure(str(row["status"] or ""), str(row["detail"] or "")):
                 buckets[key][0] += 1
 
-        count = hours * 60 // minutes
-        result: list[tuple[datetime, Optional[float], int, int]] = []
-        for i in range(count):
-            key = start + timedelta(minutes=minutes * i)
-            fail, total = buckets.get(key, [0, 0])
-            rate = (100.0 * fail / total) if total > 0 else None
-            result.append((key, rate, fail, total))
+        result: list[tuple[datetime, float, int, int]] = []
+        for key in sorted(buckets):
+            fail, total = buckets[key]
+            if total <= 0:
+                continue
+            result.append((key, 100.0 * fail / total, fail, total))
         return result
+
+    def get_ticket_failure_buckets(
+        self,
+        *,
+        hours: int = 48,
+        minutes: int = 30,
+        now: Optional[datetime] = None,
+    ) -> list[tuple[datetime, float, int, int]]:
+        """兼容旧名：现为全量账号操作失败率（有数据桶）。"""
+        return self.get_account_failure_buckets(hours=hours, minutes=minutes, now=now)
 
 
 account_db = AccountDatabase()

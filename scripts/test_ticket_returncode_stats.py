@@ -91,16 +91,19 @@ class TicketReturnCodeStatsTest(unittest.TestCase):
         self.assertIn("失败：2（50.0%）", text)
         self.assertIn("returnCode=0：1", text)
 
-    def test_failure_buckets_count_all_errors(self) -> None:
+    def test_failure_buckets_count_all_account_ops(self) -> None:
         now = datetime(2026, 7, 19, 17, 10, 0)
         base = now.timestamp()
         rows = [
             ("B1", "u1", "ticket", "success", "ok", base - 600),
             ("B2", "u1", "ticket", "error", "上游 returnCode=0，票券未发放", base - 500),
-            ("B3", "u1", "ticket", "error", "队列失败", base - 400),
-            ("B4", "u1", "ticket", "success", "returnCode=0 误标成功也应算失败", base - 300),
+            ("B3", "u1", "upload_lx", "error", "maiu 上传失败", base - 400),
+            ("B4", "u1", "bind", "success", "绑定成功", base - 300),
+            ("B5", "u1", "bind", "error", "绑定失败", base - 200),
+            # 另一半小时桶
+            ("B6", "u1", "status", "success", "ok", base - 2000),
             # 窗口外，不应计入
-            ("B5", "u1", "ticket", "error", "old", base - 50 * 3600),
+            ("B7", "u1", "ticket", "error", "old", base - 50 * 3600),
         ]
         with self.db._lock:
             self.db._conn.executemany(
@@ -111,16 +114,16 @@ class TicketReturnCodeStatsTest(unittest.TestCase):
             )
             self.db._conn.commit()
 
-        series = self.db.get_ticket_failure_buckets(hours=48, minutes=30, now=now)
-        self.assertEqual(len(series), 96)
-        filled = [row for row in series if row[1] is not None]
-        self.assertEqual(len(filled), 1)
-        _bucket, rate, fail, total = filled[0]
-        self.assertEqual(total, 4)
-        self.assertEqual(fail, 3)
-        self.assertAlmostEqual(rate, 75.0, places=3)
+        series = self.db.get_account_failure_buckets(hours=48, minutes=30, now=now)
+        # 无数据时段省略，只剩有操作的桶
+        self.assertEqual(len(series), 2)
+        # 较新的桶：5 条（ticket×2 + upload + bind×2）
+        newest = series[-1]
+        self.assertEqual(newest[3], 5)
+        self.assertEqual(newest[2], 3)
+        self.assertAlmostEqual(newest[1], 60.0, places=3)
         self.assertTrue(
-            self.db.ticket_is_failure(
+            self.db.account_op_is_failure(
                 "error",
                 "发票队列任务执行失败（上游 returnCode=0，票券未发放）；本次不扣 BREAK",
             )

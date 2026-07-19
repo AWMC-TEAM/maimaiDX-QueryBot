@@ -348,10 +348,10 @@ def latest_sampled_bucket(
 def draw_failure_rate_chart(
     series: list[tuple[datetime, Optional[float], int, int]],
     *,
-    title: str = "游玩情况 · 失败率",
-    subtitle: str = "半小时切分 · 近 48 小时",
+    title: str = "服务器失败率",
+    subtitle: str = "半小时切分 · 近 48 小时 · 无数据时段已省略",
 ) -> Image.Image:
-    """绘制近 48 小时失败率折线图。"""
+    """绘制失败率折线图；无样本的时间桶直接省略，不留空白断层。"""
     width, height = 1280, 640
     im = Image.new("RGBA", (width, height), _BG)
     dr = ImageDraw.Draw(im)
@@ -371,68 +371,55 @@ def draw_failure_rate_chart(
         dr.line((left, yy, right, yy), fill=_GRID, width=1)
         dt.draw(left - 12, yy, 16, f"{pct}%", _MUTED, "rm")
 
-    if not series:
-        dt.draw((left + right) // 2, (top + bottom) // 2, 24, "暂无心跳数据", _MUTED, "mm")
+    # 无数据时段省略：只画有样本的点，横轴按点序均分
+    points = [
+        (bucket, float(rate), int(fail), int(total))
+        for bucket, rate, fail, total in series
+        if rate is not None and int(total) > 0
+    ]
+    if not points:
+        dt.draw((left + right) // 2, (top + bottom) // 2, 24, "暂无账号操作样本", _MUTED, "mm")
+        dt.draw(56, height - 58, 17, f"近 {HISTORY_HOURS} 小时暂无记录", _TEXT, "lt")
         return im
 
-    n = len(series)
-    coords: list[Optional[tuple[int, int]]] = []
-    for i, (_bucket, value, _fail, total) in enumerate(series):
+    n = len(points)
+    coords: list[tuple[int, int]] = []
+    for i, (_bucket, value, _fail, _total) in enumerate(points):
         px = left if n == 1 else int(left + (right - left) * i / (n - 1))
-        if value is None or total <= 0:
-            coords.append(None)
-            continue
         py = int(bottom - max(0.0, min(100.0, float(value))) / 100.0 * (bottom - top))
         coords.append((px, py))
 
-    # 分段连线，跳过无样本桶
-    segment: list[tuple[int, int]] = []
-    for point in coords + [None]:
-        if point is None:
-            if len(segment) >= 2:
-                area = segment + [(segment[-1][0], bottom), (segment[0][0], bottom)]
-                dr.polygon(area, fill=(255, 123, 134, 40))
-                dr.line(segment, fill=_FAIL, width=3)
-            elif len(segment) == 1:
-                px, py = segment[0]
-                dr.ellipse((px - 4, py - 4, px + 4, py + 4), fill=_FAIL)
-            segment = []
-            continue
-        segment.append(point)
+    if len(coords) >= 2:
+        area = coords + [(coords[-1][0], bottom), (coords[0][0], bottom)]
+        dr.polygon(area, fill=(255, 123, 134, 40))
+        dr.line(coords, fill=_FAIL, width=3)
+    mark_step = max(1, n // 12)
+    for i, (px, py) in enumerate(coords):
+        if i % mark_step == 0 or i == n - 1:
+            dr.ellipse(
+                (px - 4, py - 4, px + 4, py + 4),
+                fill=_FAIL,
+                outline=(255, 255, 255, 220),
+                width=1,
+            )
 
-    # 点太密时只标最近有数据的点
-    sampled = [p for p in coords if p is not None]
-    mark_step = max(1, len(sampled) // 12)
-    marked = 0
-    for point in coords:
-        if point is None:
-            continue
-        if marked % mark_step == 0 or point is sampled[-1]:
-            px, py = point
-            dr.ellipse((px - 4, py - 4, px + 4, py + 4), fill=_FAIL, outline=(255, 255, 255, 220), width=1)
-        marked += 1
-
-    label_idx = {0, n - 1, n // 4, n // 2, 3 * n // 4}
+    label_idx = {0, n - 1}
+    if n >= 4:
+        label_idx.update({n // 4, n // 2, 3 * n // 4})
     for i in sorted(label_idx):
-        if i < 0 or i >= n:
-            continue
-        bucket, rate, _fail, total = series[i]
-        px = left if n == 1 else int(left + (right - left) * i / (n - 1))
-        label = bucket.strftime("%m-%d %H:%M")
-        dt.draw(px, bottom + 12, 14, label, _MUTED, "mt")
-        if rate is not None and total > 0 and i in (0, n - 1):
-            py = int(bottom - max(0.0, min(100.0, float(rate))) / 100.0 * (bottom - top))
+        bucket, rate, _fail, _total = points[i]
+        px, py = coords[i]
+        dt.draw(px, bottom + 12, 14, bucket.strftime("%m-%d %H:%M"), _MUTED, "mt")
+        if i in (0, n - 1):
             dt.draw(px, py - 12, 15, f"{rate:.0f}%", _TEXT, "mb")
 
-    latest = latest_sampled_bucket(series)
-    filled = sum(1 for _b, rate, _f, total in series if rate is not None and total > 0)
-    if latest:
-        summary = (
-            f"最近半小时失败率 {latest[1]:.1f}%（{latest[2]}/{latest[3]}）"
-            f"  ·  近 {HISTORY_HOURS}h / {BUCKET_MINUTES}min 桶 {filled}/{len(series)}"
-        )
-    else:
-        summary = f"近 {HISTORY_HOURS} 小时暂无发票样本（有发票记录后将自动进入曲线）"
+    latest = points[-1]
+    total_ops = sum(total for _b, _r, _f, total in points)
+    total_fail = sum(fail for _b, _r, fail, _t in points)
+    summary = (
+        f"最近样本失败率 {latest[1]:.1f}%（{latest[2]}/{latest[3]}）"
+        f"  ·  近 {HISTORY_HOURS}h 共 {n} 个时段 · 失败 {total_fail}/{total_ops}"
+    )
     dt.draw(56, height - 58, 17, summary, _TEXT, "lt")
     return im
 
@@ -591,31 +578,33 @@ async def fetch_status_bundle(*, force: bool = False) -> tuple[dict, dict]:
 
 
 async def build_live_status_payload(*, force: bool = False) -> dict[str, Any]:
-    """组装舞萌状态：近 48h 发票失败率图 + 服务器文本段。
+    """组装舞萌状态：近 48h 服务器失败率图 + 服务器文本段。
 
-    失败率按 ``account_operation_log`` 全量发票记录统计（含 returnCode=0 /
-    上游返回失败），不做抽样上限；服务器列表仍来自 Status API。
+    失败率按 ``account_operation_log`` 全量账号操作统计（发票 / maiu 上传 /
+    绑定等；含 returnCode=0），无数据时段省略；服务器列表仍来自 Status API。
     """
     from .maimaidx_account_db import account_db
 
     page, heartbeat = await fetch_status_bundle(force=force)
-    # 顺带落盘心跳，供其它用途；曲线以发票全量日志为准。
     ingest_heartbeat_history(heartbeat)
     series = await asyncio.to_thread(
-        account_db.get_ticket_failure_buckets,
+        account_db.get_account_failure_buckets,
         hours=HISTORY_HOURS,
         minutes=BUCKET_MINUTES,
     )
     chart = draw_failure_rate_chart(
         series,
-        title="发票情况 · 失败率",
-        subtitle=f"半小时切分 · 近 {HISTORY_HOURS} 小时 · 全量采集（含 returnCode=0）",
+        title="服务器失败率",
+        subtitle=(
+            f"半小时切分 · 近 {HISTORY_HOURS} 小时 · 账号全量"
+            f"（发票/maiu/绑定等 · 无数据已省略）"
+        ),
     )
     return {
         "chart": chart,
         "chart_b64": image_to_base64(chart),
         "series": series,
-        "series_source": "ticket",
+        "series_source": "account",
         "server_sections": build_server_status_sections(page, heartbeat),
     }
 
