@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -23,23 +24,68 @@ from playwright.async_api import async_playwright
 
 _PKG_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHART_CDN = 'https://assets2.lxns.net/maimai/chart'
-# rev=7：浏览器内嵌 BGM 同轨录制 + 高质量 CFR；进度文案不剧透
-CHART_VIDEO_REV = 7
+# rev=8：多核并行录制/转码（同曲两阶段并行 + 预制并发）
+CHART_VIDEO_REV = 8
 DEFAULT_DURATION = 40
+# 整局 120 秒：前 90 秒静音，最后 30 秒曲末带 BGM
 PHASE2_DURATION = 30
-STAGE_INTERVAL = 45
-STAGE_FINAL_GRACE = 60
+STAGE_INTERVAL = 90
+STAGE_FINAL_GRACE = 30
 DEFAULT_VIEWPORT = 720
-# 兼容旧引用：整局最长作答观感（阶段间隔 + 末段 grace）
-ANSWER_GRACE = STAGE_INTERVAL + STAGE_FINAL_GRACE
-# 末段作答倒计时提醒节点（秒）
-COUNTDOWN_MARKS = (50, 40, 30, 20, 10)
+ANSWER_GRACE = STAGE_INTERVAL + STAGE_FINAL_GRACE  # 120
+# 作答倒计时提醒节点（秒）
+COUNTDOWN_MARKS = (60, 30, 20, 10)
 MAX_HIT_SOUNDS = 2500
 DEFAULT_CHART_BATCH_LIMIT = 20
 CAPTURE_FPS = 60
 VIDEO_CRF = 18
-VIDEO_PRESET = 'medium'
+# faster：在 40 核上明显快于 medium，画质仍可接受
+VIDEO_PRESET = 'faster'
 AUDIO_BITRATE = '192k'
+
+
+def _cpu_count() -> int:
+    return max(1, int(os.cpu_count() or 4))
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
+
+
+def _default_render_workers() -> int:
+    """同时进行的 Playwright 录制数（Chromium 吃内存，不宜 = 核心数）。"""
+    n = _cpu_count()
+    # 32+ 核：约 10～12 路录制；40 核默认 10
+    if n >= 32:
+        return min(12, max(8, n // 4))
+    return max(2, min(8, n // 5))
+
+
+def _default_batch_song_workers() -> int:
+    """预制时并发曲目数；每曲最多占 2 个录制槽（静音+BGM）。"""
+    rw = _default_render_workers()
+    # 录制槽约一半用于同时开多曲，避免只串行一首
+    return max(1, min(6, rw // 2))
+
+
+def _default_ffmpeg_threads() -> int:
+    n = _cpu_count()
+    # 多路 ffmpeg 并行时不宜每进程吃满全核
+    return max(2, min(20, n // 2))
+
+
+# 可用环境变量覆盖：MAIMAIDX_CHART_RENDER_WORKERS / BATCH_SONGS / FFMPEG_THREADS
+RENDER_WORKERS = _env_int('MAIMAIDX_CHART_RENDER_WORKERS', _default_render_workers())
+BATCH_SONG_WORKERS = _env_int(
+    'MAIMAIDX_CHART_BATCH_SONGS', _default_batch_song_workers(),
+)
+FFMPEG_THREADS = _env_int('MAIMAIDX_CHART_FFMPEG_THREADS', _default_ffmpeg_threads())
 CHART_DIFF_NAMES = {
     2: '绿',
     3: '黄',
@@ -59,6 +105,30 @@ _static_lock = threading.Lock()
 _prepare_status = ''
 _prepare_status_lock = threading.Lock()
 _batch_cancel = threading.Event()
+_render_sem: Optional[asyncio.Semaphore] = None
+
+
+def _get_render_sem() -> asyncio.Semaphore:
+    global _render_sem
+    if _render_sem is None:
+        _render_sem = asyncio.Semaphore(RENDER_WORKERS)
+        log.info(
+            f'[GuessChart] 并行度 cpu={_cpu_count()} '
+            f'render_workers={RENDER_WORKERS} batch_songs={BATCH_SONG_WORKERS} '
+            f'ffmpeg_threads={FFMPEG_THREADS}'
+        )
+    return _render_sem
+
+
+def _ffmpeg_x264_args() -> List[str]:
+    return [
+        '-threads', str(FFMPEG_THREADS),
+        '-c:v', 'libx264',
+        '-preset', VIDEO_PRESET,
+        '-crf', str(VIDEO_CRF),
+        '-pix_fmt', 'yuv420p',
+        '-x264-params', f'threads={FFMPEG_THREADS}:sliced-threads=1',
+    ]
 
 
 def set_chart_prepare_status(msg: str) -> None:
@@ -327,10 +397,7 @@ def _encode_silent_mp4(webm: Path, silent: Path) -> float:
         'ffmpeg', '-y',
         '-i', str(webm),
         '-an',
-        '-c:v', 'libx264',
-        '-preset', VIDEO_PRESET,
-        '-crf', str(VIDEO_CRF),
-        '-pix_fmt', 'yuv420p',
+        *_ffmpeg_x264_args(),
         '-vf', f'scale={DEFAULT_VIEWPORT}:{DEFAULT_VIEWPORT},fps={CAPTURE_FPS}',
         '-r', str(CAPTURE_FPS),
         '-vsync', 'cfr',
@@ -350,16 +417,14 @@ def _ffmpeg_remux_embedded(webm: Path, mp4: Path) -> None:
     cmd = [
         'ffmpeg', '-y',
         '-i', str(webm),
-        '-c:v', 'libx264',
-        '-preset', VIDEO_PRESET,
-        '-crf', str(VIDEO_CRF),
-        '-pix_fmt', 'yuv420p',
+        *_ffmpeg_x264_args(),
         '-vf', f'scale={DEFAULT_VIEWPORT}:{DEFAULT_VIEWPORT},fps={CAPTURE_FPS}',
         '-r', str(CAPTURE_FPS),
         '-vsync', 'cfr',
         '-c:a', 'aac',
         '-b:a', AUDIO_BITRATE,
         '-ar', '48000',
+        '-threads', str(FFMPEG_THREADS),
         '-movflags', '+faststart',
         str(tmp),
     ]
@@ -384,10 +449,7 @@ def _mux_video_audio(silent: Path, audio: Path, mp4: Path) -> None:
             '-filter_complex', f'{vf};[1:a]anull[a]',
             '-map', '[v]',
             '-map', '[a]',
-            '-c:v', 'libx264',
-            '-preset', VIDEO_PRESET,
-            '-crf', str(VIDEO_CRF),
-            '-pix_fmt', 'yuv420p',
+            *_ffmpeg_x264_args(),
             '-c:a', 'aac',
             '-b:a', AUDIO_BITRATE,
             '-shortest',
@@ -404,6 +466,7 @@ def _mux_video_audio(silent: Path, audio: Path, mp4: Path) -> None:
             '-c:v', 'copy',
             '-c:a', 'aac',
             '-b:a', AUDIO_BITRATE,
+            '-threads', str(FFMPEG_THREADS),
             '-shortest',
             '-movflags', '+faststart',
             str(tmp),
@@ -657,72 +720,95 @@ async def _render_chart_video(
     music_id: Optional[str] = None,
     mix_bgm: bool = False,
 ) -> dict:
-    work = out_mp4.parent / ('_work_bgm' if mix_bgm else '_work')
-    if work.exists():
-        shutil.rmtree(work, ignore_errors=True)
-    work.mkdir(parents=True, exist_ok=True)
+    async with _get_render_sem():
+        work = out_mp4.parent / ('_work_bgm' if mix_bgm else '_work')
+        if work.exists():
+            shutil.rmtree(work, ignore_errors=True)
+        work.mkdir(parents=True, exist_ok=True)
 
-    meta = await _capture_record_page(
-        song_id=song_id,
-        kind=kind,
-        diff=diff,
-        duration=duration,
-        tail=tail,
-        with_audio=mix_bgm,
-    )
-    webm = work / 'capture.webm'
-    webm.write_bytes(base64.b64decode(meta.get('videoBase64') or ''))
-    hits = meta.get('hitOffsetsMs') or []
-    if not isinstance(hits, list):
-        hits = []
-    try:
-        lead_ms = float(meta.get('recordLeadMs') or 0)
-    except (TypeError, ValueError):
-        lead_ms = 0.0
-    try:
-        start_sec = float(meta.get('startSec') or 0)
-    except (TypeError, ValueError):
-        start_sec = 0.0
-    try:
-        music_start_sec = float(meta.get('musicStartSec') or start_sec)
-    except (TypeError, ValueError):
-        music_start_sec = start_sec
-    embedded = bool(meta.get('hasEmbeddedAudio'))
-
-    if mix_bgm and embedded:
-        await asyncio.to_thread(_ffmpeg_remux_embedded, webm, out_mp4)
-    elif mix_bgm:
-        if not music_id:
-            raise RuntimeError('BGM 混流需要 music_id')
+        # BGM 回退混流时与录制并行下载原曲，吃满网络+CPU 空隙
+        dl_task: Optional[asyncio.Task] = None
         src = work / 'source.mp3'
-        await asyncio.to_thread(_download_music_mp3, music_id, src)
-        await asyncio.to_thread(
-            _ffmpeg_mux_bgm,
-            webm,
-            out_mp4,
-            source_mp3=src,
-            music_start_sec=music_start_sec,
-            duration_sec=float(tail or duration),
-            record_lead_ms=lead_ms,
-        )
-    else:
-        await asyncio.to_thread(
-            _ffmpeg_mux,
-            webm,
-            out_mp4,
-            hit_offsets_ms=hits,
-            record_lead_ms=lead_ms,
-            nominal_duration=float(duration),
-        )
+        if mix_bgm and music_id:
+            dl_task = asyncio.create_task(
+                asyncio.to_thread(_download_music_mp3, music_id, src)
+            )
 
-    shutil.rmtree(work, ignore_errors=True)
-    meta.pop('videoBase64', None)
-    meta['hit_count'] = len(hits)
-    meta['recordLeadMs'] = lead_ms
-    meta['startSec'] = start_sec
-    meta['musicStartSec'] = music_start_sec
-    meta['hasEmbeddedAudio'] = embedded
-    return meta
+        meta = await _capture_record_page(
+            song_id=song_id,
+            kind=kind,
+            diff=diff,
+            duration=duration,
+            tail=tail,
+            with_audio=mix_bgm,
+        )
+        webm = work / 'capture.webm'
+        webm.write_bytes(base64.b64decode(meta.get('videoBase64') or ''))
+        hits = meta.get('hitOffsetsMs') or []
+        if not isinstance(hits, list):
+            hits = []
+        try:
+            lead_ms = float(meta.get('recordLeadMs') or 0)
+        except (TypeError, ValueError):
+            lead_ms = 0.0
+        try:
+            start_sec = float(meta.get('startSec') or 0)
+        except (TypeError, ValueError):
+            start_sec = 0.0
+        try:
+            music_start_sec = float(meta.get('musicStartSec') or start_sec)
+        except (TypeError, ValueError):
+            music_start_sec = start_sec
+        embedded = bool(meta.get('hasEmbeddedAudio'))
+
+        if mix_bgm and embedded:
+            if dl_task is not None:
+                dl_task.cancel()
+                try:
+                    await dl_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            await asyncio.to_thread(_ffmpeg_remux_embedded, webm, out_mp4)
+        elif mix_bgm:
+            if not music_id:
+                raise RuntimeError('BGM 混流需要 music_id')
+            if dl_task is not None:
+                await dl_task
+            elif not src.is_file():
+                await asyncio.to_thread(_download_music_mp3, music_id, src)
+            await asyncio.to_thread(
+                _ffmpeg_mux_bgm,
+                webm,
+                out_mp4,
+                source_mp3=src,
+                music_start_sec=music_start_sec,
+                duration_sec=float(tail or duration),
+                record_lead_ms=lead_ms,
+            )
+        else:
+            if dl_task is not None:
+                dl_task.cancel()
+                try:
+                    await dl_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            await asyncio.to_thread(
+                _ffmpeg_mux,
+                webm,
+                out_mp4,
+                hit_offsets_ms=hits,
+                record_lead_ms=lead_ms,
+                nominal_duration=float(duration),
+            )
+
+        shutil.rmtree(work, ignore_errors=True)
+        meta.pop('videoBase64', None)
+        meta['hit_count'] = len(hits)
+        meta['recordLeadMs'] = lead_ms
+        meta['startSec'] = start_sec
+        meta['musicStartSec'] = music_start_sec
+        meta['hasEmbeddedAudio'] = embedded
+        return meta
 
 
 def _entry_with_paths(
@@ -837,33 +923,26 @@ async def ensure_chart_video_ready(
                 continue
 
             log.info(
-                f'[GuessChart] 开始渲染 music={music_id} title={title!r} '
-                f'song={song_id} kind={kind} diff={diff} duration={duration}s'
+                f'[GuessChart] 开始并行渲染 music={music_id} title={title!r} '
+                f'song={song_id} kind={kind} diff={diff} '
+                f'duration={duration}s+{PHASE2_DURATION}s '
+                f'workers={RENDER_WORKERS}'
             )
             started = time.time()
-            try:
-                set_chart_prepare_status(f'录制静音谱面（约 {duration}s）…')
-                meta = await _render_chart_video(
+            set_chart_prepare_status(
+                f'并行录制静音谱面与曲末 BGM（约 {max(duration, PHASE2_DURATION)}s）…'
+            )
+            mute_task = asyncio.create_task(
+                _render_chart_video(
                     song_id=song_id,
                     kind=kind,
                     diff=diff,
                     out_mp4=out,
                     duration=duration,
                 )
-            except Exception as e:
-                last_err = str(e)
-                log.warning(f'[GuessChart] 渲染失败 music={music_id} kind={kind}: {e}')
-                continue
-
-            meta_bgm: Optional[dict] = None
-            bgm_ok: Optional[Path] = None
-            try:
-                set_chart_prepare_status(f'录制曲末 BGM 谱面（约 {PHASE2_DURATION}s）…')
-                log.info(
-                    f'[GuessChart] 开始渲染 BGM music={music_id} '
-                    f'tail={PHASE2_DURATION}s'
-                )
-                meta_bgm = await _render_chart_video(
+            )
+            bgm_task = asyncio.create_task(
+                _render_chart_video(
                     song_id=song_id,
                     kind=kind,
                     diff=diff,
@@ -873,10 +952,26 @@ async def ensure_chart_video_ready(
                     music_id=str(music_id),
                     mix_bgm=True,
                 )
+            )
+            mute_res, bgm_res = await asyncio.gather(
+                mute_task, bgm_task, return_exceptions=True,
+            )
+            if not isinstance(mute_res, dict):
+                last_err = str(mute_res)
+                log.warning(f'[GuessChart] 渲染失败 music={music_id} kind={kind}: {mute_res}')
+                if isinstance(bgm_res, dict) and out_bgm.is_file():
+                    out_bgm.unlink(missing_ok=True)
+                continue
+
+            meta = mute_res
+            meta_bgm: Optional[dict] = None
+            bgm_ok: Optional[Path] = None
+            if not isinstance(bgm_res, dict):
+                log.warning(f'[GuessChart] BGM 渲染失败 music={music_id}: {bgm_res}')
+            else:
+                meta_bgm = bgm_res
                 if out_bgm.is_file():
                     bgm_ok = out_bgm
-            except Exception as e:
-                log.warning(f'[GuessChart] BGM 渲染失败 music={music_id}: {e}')
 
             elapsed = int(time.time() - started)
             entry = _entry_with_paths(
@@ -896,7 +991,8 @@ async def ensure_chart_video_ready(
             set_chart_prepare_status('渲染完成')
             log.info(
                 f'[GuessChart] 渲染完成 music={music_id} size={entry["size"]} '
-                f'bgm={entry["has_bgm"]} elapsed={elapsed}s'
+                f'bgm={entry["has_bgm"]} elapsed={elapsed}s '
+                f'(parallel mute+bgm)'
             )
             return True, 'built', out, entry
 
@@ -938,63 +1034,99 @@ async def build_hot_chart_cache(
     skip_ids: List[str] = []
     fail_lines: List[str] = []
     cancelled = False
-    built = 0
     t0 = time.time()
-    set_chart_prepare_status(f'热门池预制开始（上限 {build_limit} 首）…')
 
-    for idx, music in enumerate(pool, 1):
-        if _batch_cancel.is_set():
-            cancelled = True
-            break
-        await asyncio.sleep(0)
+    # 先收集待建列表，再并发处理
+    todo: List = []
+    for music in pool:
         mid = str(music.id)
         kind = chart_kind(music.type)
         diff = pick_chart_diff(len(music.ds))
         alt = 'standard' if kind == 'dx' else 'dx'
-        # 任一 kind 完整就绪则跳过（force 除外）
         if not force and (
             is_chart_round_ready(mid, kind, diff) or is_chart_round_ready(mid, alt, diff)
         ):
             skip_ids.append(mid)
             continue
-
-        if built >= build_limit:
+        todo.append(music)
+        if len(todo) >= build_limit:
             break
 
-        set_chart_prepare_status(
-            f'预制进度 {idx}/{len(pool)}（已新建 {built}/{build_limit}）…'
-        )
-        log.info(
-            f'[GuessChart] 热门池预制 [{idx}/{len(pool)}] {mid} {music.title} '
-            f'force={force}'
-        )
-        try:
-            if force:
-                for k in (kind, alt):
-                    for p in (
-                        video_path_for(mid, k, diff),
-                        bgm_video_path_for(mid, k, diff),
-                    ):
-                        if p.is_file():
-                            p.unlink()
-            ok, msg, _path, entry = await ensure_chart_video_ready(
-                mid,
-                music_type=music.type,
-                title=music.title,
-                level_count=len(music.ds),
+    song_sem = asyncio.Semaphore(BATCH_SONG_WORKERS)
+    done_count = 0
+    done_lock = asyncio.Lock()
+
+    set_chart_prepare_status(
+        f'热门池预制开始（待建 {len(todo)}，并发曲目 {BATCH_SONG_WORKERS}，'
+        f'录制槽 {RENDER_WORKERS}）…'
+    )
+    log.info(
+        f'[GuessChart] 热门池并行预制 todo={len(todo)} skip={len(skip_ids)} '
+        f'batch_songs={BATCH_SONG_WORKERS} render_workers={RENDER_WORKERS} '
+        f'ffmpeg_threads={FFMPEG_THREADS} cpu={_cpu_count()}'
+    )
+
+    async def _build_one(music, idx: int) -> Tuple[str, bool, str, dict]:
+        nonlocal cancelled, done_count
+        mid = str(music.id)
+        kind = chart_kind(music.type)
+        diff = pick_chart_diff(len(music.ds))
+        alt = 'standard' if kind == 'dx' else 'dx'
+        async with song_sem:
+            if _batch_cancel.is_set():
+                cancelled = True
+                return mid, False, '烘焙任务已取消', {}
+            async with done_lock:
+                set_chart_prepare_status(
+                    f'预制并发中 {done_count}/{len(todo)} '
+                    f'（槽位 {BATCH_SONG_WORKERS} 曲 × 录制 {RENDER_WORKERS}）…'
+                )
+            log.info(
+                f'[GuessChart] 热门池预制 [{idx}/{len(todo)}] {mid} {music.title} '
+                f'force={force}'
             )
-        except asyncio.CancelledError:
-            request_chart_batch_cancel()
-            cancelled = True
-            break
-        except Exception as e:
-            ok, msg, entry = False, str(e), {}
+            try:
+                if force:
+                    for k in (kind, alt):
+                        for p in (
+                            video_path_for(mid, k, diff),
+                            bgm_video_path_for(mid, k, diff),
+                        ):
+                            if p.is_file():
+                                p.unlink()
+                ok, msg, _path, entry = await ensure_chart_video_ready(
+                    mid,
+                    music_type=music.type,
+                    title=music.title,
+                    level_count=len(music.ds),
+                )
+            except asyncio.CancelledError:
+                request_chart_batch_cancel()
+                cancelled = True
+                raise
+            except Exception as e:
+                ok, msg, entry = False, str(e), {}
+            async with done_lock:
+                done_count += 1
+            return mid, ok, msg, entry if isinstance(entry, dict) else {}
 
+    results = await asyncio.gather(
+        *[_build_one(m, i) for i, m in enumerate(todo, 1)],
+        return_exceptions=True,
+    )
+    for item, music in zip(results, todo):
+        if isinstance(item, BaseException):
+            if isinstance(item, asyncio.CancelledError):
+                cancelled = True
+            fail_lines.append(f'{music.id} {music.title}: {item}')
+            continue
+        mid, ok, msg, entry = item
         if ok:
             ok_ids.append(mid)
-            built += 1
             bgm = '有BGM' if entry.get('has_bgm') else '无BGM'
             log.info(f'[GuessChart] 预制成功 {mid} {msg} {bgm}')
+        elif msg == '烘焙任务已取消':
+            cancelled = True
         else:
             fail_lines.append(f'{mid} {music.title}: {msg}')
             log.warning(f'[GuessChart] 预制失败 {mid}: {msg}')
@@ -1005,6 +1137,8 @@ async def build_hot_chart_cache(
         f'猜铺面热门池预制完成（rev={CHART_VIDEO_REV}）',
         f'扫描 {len(pool)} 首，本次新建/重建 {len(ok_ids)}，跳过 {len(skip_ids)}，'
         f'失败 {len(fail_lines)}，耗时 {elapsed}s',
+        f'并发：曲目×{BATCH_SONG_WORKERS} / 录制槽×{RENDER_WORKERS} / '
+        f'ffmpeg线程×{FFMPEG_THREADS}（CPU {_cpu_count()}）',
         f'上限 {build_limit}；增量默认每次最多 {DEFAULT_CHART_BATCH_LIMIT} 首，'
         f'可用「更新猜铺面 50」或「更新猜铺面 -full」调整。',
     ]

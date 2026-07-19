@@ -984,18 +984,19 @@ async def _(event: MessageEvent):
         if guess_score.chart_season_double_active():
             end = guess_score.CHART_SEASON_DOUBLE_END.strftime('%Y-%m-%d')
             season_line = f'\n【限时双倍】猜铺面积分 ×2（截至 {end}）'
+        total_sec = CHART_STAGE_INTERVAL + CHART_STAGE_FINAL_GRACE
         if has_bgm:
             intro = dedent(f'''\
-                猜铺面开始！共 2 个阶段：
-                ① 约 {data.duration} 秒静音谱面（带正解音，难度倾向 {data.chart_diff_name}）
-                ② 约 {CHART_STAGE_INTERVAL} 秒后放出曲末约 {data.bgm_duration or CHART_PHASE2_DURATION} 秒带 BGM 谱面
+                猜铺面开始！整局约 {total_sec} 秒，共 2 个阶段：
+                ① 前 {CHART_STAGE_INTERVAL} 秒：静音谱面约 {data.duration} 秒（带正解音，难度倾向 {data.chart_diff_name}）
+                ② 最后 {CHART_STAGE_FINAL_GRACE} 秒：放出曲末约 {data.bgm_duration or CHART_PHASE2_DURATION} 秒带 BGM 谱面
                 越早答分越高；BGM 放出后继续扣分，最低 1 分。
                 请输入歌曲 id、标题或别名作答。发送 重置猜歌 可结束本局。{season_line}
             ''')
         else:
             intro = dedent(f'''\
                 猜铺面开始！将发送一段约 {data.duration} 秒的静音谱面视频
-                （无 BGM；难度倾向 {data.chart_diff_name} 谱）。
+                （无 BGM；难度倾向 {data.chart_diff_name} 谱），作答约 {total_sec} 秒。
                 请根据铺面输入歌曲 id、标题或别名作答。
                 发送 重置猜歌 可结束本局。{season_line}
             ''')
@@ -1060,12 +1061,13 @@ async def _(event: MessageEvent):
                         f'⏳ 还剩 {remaining}秒 作答时间哟！',
                     )
         else:
-            remaining = CHART_STAGE_FINAL_GRACE
+            # 无 BGM 时仍给满整局时长（90+30=120）
+            remaining = total_sec
             await _guess_notify(
                 guess_music_chart, event,
                 f'⏳ 还剩 {remaining}秒 作答时间哟！',
             )
-            for _ in range(CHART_STAGE_FINAL_GRACE):
+            for _ in range(total_sec):
                 await _guess_sleep(gid, 1)
                 if _guess_loop_should_stop(gid):
                     await guess_music_chart.finish()
