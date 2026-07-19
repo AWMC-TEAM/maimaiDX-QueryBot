@@ -30,6 +30,7 @@ from PIL import Image, ImageDraw
 from ..config import SIYUAN, TBFONT, log
 from .image import DrawText, image_to_base64
 from .maimaidx_guess_match import match_guess_answer
+from .maimaidx_guess_rate_limit import format_guess_answer_rate_limit
 from .maimaidx_music import guess, mai
 from .maimaidx_model import Music
 
@@ -375,7 +376,7 @@ class LetterBoard:
                 if key in self.cooldown_notified:
                     return ""
                 self.cooldown_notified.add(key)
-                return f"稍慢一点，{remain:.1f}秒后再试"
+                return format_guess_answer_rate_limit(remain)
         self.last_answer_at[key] = t
         self.cooldown_notified.discard(key)
         return None

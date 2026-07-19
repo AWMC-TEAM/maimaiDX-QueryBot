@@ -87,6 +87,9 @@ ns = {
     "match_guess_answer": lambda text, answers: any(
         str(text).strip().lower() == str(a).strip().lower() for a in answers
     ),
+    "format_guess_answer_rate_limit": lambda remain: (
+        f"嘿嘿，你的答案被我吃掉啦！({remain:.1f}秒后才能发送新的答案）"
+    ),
 }
 exec(compile(ast.Module(body=selected, type_ignores=[]), str(SRC), "exec"), ns)
 
@@ -309,7 +312,7 @@ assert LETTER_ANSWER_COOLDOWN_SECONDS == 2.5
 cd_board = LetterBoard(songs=[LetterSong("1", "AA", ["AA"])], started_at=t0)
 assert cd_board.try_consume_answer("u1", now=t0) is None
 tip = cd_board.try_consume_answer("u1", now=t0 + 0.5)
-assert tip and "稍慢一点" in tip
+assert tip == "嘿嘿，你的答案被我吃掉啦！(2.0秒后才能发送新的答案）"
 assert cd_board.try_consume_answer("u1", now=t0 + 1.0) == ""  # 静默
 assert cd_board.try_consume_answer("u1", now=t0 + LETTER_ANSWER_COOLDOWN_SECONDS) is None
 # 高峰文字模式不检查
