@@ -11,7 +11,9 @@ import json
 import re
 import sqlite3
 import time
+from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from typing import Optional
@@ -475,29 +477,25 @@ class AccountDatabase:
             params.append(time.time() - int(days) * 86400)
         where = " AND ".join(clauses)
         with self._lock:
-            summary = self._conn.execute(
-                f"""SELECT
-                        COUNT(*) AS total,
-                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
-                        SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS error
-                    FROM account_operation_log WHERE {where}""",
-                params,
-            ).fetchone()
-            details = self._conn.execute(
-                f"SELECT detail FROM account_operation_log WHERE {where}",
+            rows = self._conn.execute(
+                f"SELECT status, detail FROM account_operation_log WHERE {where}",
                 params,
             ).fetchall()
-        total = int((summary["total"] if summary else 0) or 0)
-        success = int((summary["success"] if summary else 0) or 0)
-        error = int((summary["error"] if summary else 0) or 0)
+        total = len(rows)
         return_code_0 = 0
         return_code_null = 0
-        for row in details:
-            is_zero, is_null = self._ticket_detail_flags(row["detail"])
+        error = 0
+        for row in rows:
+            detail = str(row["detail"] or "")
+            status = str(row["status"] or "")
+            is_zero, is_null = self._ticket_detail_flags(detail)
             if is_zero:
                 return_code_0 += 1
             if is_null:
                 return_code_null += 1
+            if self.ticket_is_failure(status, detail):
+                error += 1
+        success = max(0, total - error)
         success_rate = round(100.0 * success / total, 1) if total else 0.0
         error_rate = round(100.0 * error / total, 1) if total else 0.0
         return_code_0_rate = (
@@ -530,6 +528,68 @@ class AccountDatabase:
             f"（占全部 {stats.get('return_code_0_rate', 0)}%）\n"
             f"returnCode 为 null/未返回：{int(stats.get('return_code_null') or 0)}"
         )
+
+    @staticmethod
+    def _bucket_floor(dt: datetime, minutes: int = 30) -> datetime:
+        minutes = max(1, int(minutes))
+        discard = dt.minute % minutes
+        return dt.replace(minute=dt.minute - discard, second=0, microsecond=0)
+
+    def ticket_is_failure(self, status: str, detail: str = "") -> bool:
+        """发票是否计为失败：非 success，或详情含 returnCode=0 / null/未返回。"""
+        if str(status or "") != "success":
+            return True
+        is_zero, is_null = self._ticket_detail_flags(detail)
+        return is_zero or is_null
+
+    def get_ticket_failure_buckets(
+        self,
+        *,
+        hours: int = 48,
+        minutes: int = 30,
+        now: Optional[datetime] = None,
+    ) -> list[tuple[datetime, Optional[float], int, int]]:
+        """按半小时聚合近 ``hours`` 小时发票失败率（全量日志，无条数上限）。
+
+        返回 [(bucket_start, failure_rate_pct|None, fail_count, total), ...]。
+        无发票的时间桶 rate=None。
+        """
+        hours = max(1, int(hours))
+        minutes = max(1, int(minutes))
+        end = self._bucket_floor(now or datetime.now(), minutes)
+        start = end - timedelta(hours=hours) + timedelta(minutes=minutes)
+        since_ts = start.timestamp()
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT status, detail, created_at
+                   FROM account_operation_log
+                   WHERE operation = 'ticket' AND created_at >= ?
+                   ORDER BY created_at ASC""",
+                (since_ts,),
+            ).fetchall()
+
+        buckets: dict[datetime, list[int]] = defaultdict(lambda: [0, 0])
+        for row in rows:
+            try:
+                created = float(row["created_at"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            dt = datetime.fromtimestamp(created)
+            key = self._bucket_floor(dt, minutes)
+            if key < start or key > end:
+                continue
+            buckets[key][1] += 1
+            if self.ticket_is_failure(str(row["status"] or ""), str(row["detail"] or "")):
+                buckets[key][0] += 1
+
+        count = hours * 60 // minutes
+        result: list[tuple[datetime, Optional[float], int, int]] = []
+        for i in range(count):
+            key = start + timedelta(minutes=minutes * i)
+            fail, total = buckets.get(key, [0, 0])
+            rate = (100.0 * fail / total) if total > 0 else None
+            result.append((key, rate, fail, total))
+        return result
 
 
 account_db = AccountDatabase()

@@ -937,14 +937,20 @@ async def _deliver_live_status_forward(bot: Bot, event: MessageEvent, payload: d
     series = payload.get("series") or []
     latest = latest_sampled_bucket(series)
     filled = sum(1 for _b, rate, _f, total in series if rate is not None and total > 0)
+    total_ops = sum(int(total) for _b, _r, _f, total in series)
+    total_fail = sum(int(fail) for _b, _r, fail, total in series if total > 0)
     if latest:
         caption = (
-            f"🎮 游玩情况\n"
-            f"最近半小时失败率 {latest[1]:.1f}%（{latest[2]}/{latest[3]}）\n"
-            f"近 48 小时 · 半小时切分 · 已采样 {filled}/{len(series)} 桶"
+            f"🎫 发票失败率（全量）\n"
+            f"最近半小时 {latest[1]:.1f}%（{latest[2]}/{latest[3]}）\n"
+            f"近 48h：失败 {total_fail}/{total_ops} · 有数据桶 {filled}/{len(series)}\n"
+            f"returnCode=0 / 上游返回失败均计入"
         )
     else:
-        caption = "🎮 游玩情况\n近 48 小时暂无足够心跳样本（持续调用后会自动补齐）"
+        caption = (
+            "🎫 发票失败率（全量）\n"
+            "近 48 小时暂无发票记录；有发票成功/失败后会自动进入曲线"
+        )
     nodes = [
         _forward_image_node(str(event.self_id), nickname, payload["chart_b64"], caption)
     ]
@@ -1289,7 +1295,7 @@ async def _():
         "AWMC 账号功能（已合并到 QueryBot）\n"
         "mai绑定 / maibind：绑定或认领舞萌账号\n"
         "mai状态 / mymai：查看账号详细状态，缓存失效时引导刷新二维码\n"
-        "舞萌状态 / mais：失败率折线图 + 全部服务器实时状态（合并转发）\n"
+        "舞萌状态 / mais：发票失败率折线图（全量，含 returnCode=0）+ 服务器实时状态\n"
         "mai绑定水鱼 [Token] / maibindfish：无参数时交互引导，最多重试 3 次\n"
         "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
         "maiu：仅水鱼；maiul：仅落雪；maiua：水鱼和落雪全部上传\n"
@@ -1511,7 +1517,7 @@ async def _(
 
 @maimai_live_status.handle()
 async def _(bot: Bot, event: MessageEvent):
-    """舞萌状态 / mais：失败率折线图 + 全部服务器实时状态。"""
+    """舞萌状态 / mais：发票失败率折线图 + 全部服务器实时状态。"""
     try:
         payload = await build_live_status_payload()
     except Exception as exc:

@@ -432,7 +432,7 @@ def draw_failure_rate_chart(
             f"  ·  近 {HISTORY_HOURS}h / {BUCKET_MINUTES}min 桶 {filled}/{len(series)}"
         )
     else:
-        summary = f"近 {HISTORY_HOURS} 小时暂无可用心跳样本（持续调用后将自动补齐）"
+        summary = f"近 {HISTORY_HOURS} 小时暂无发票样本（有发票记录后将自动进入曲线）"
     dt.draw(56, height - 58, 17, summary, _TEXT, "lt")
     return im
 
@@ -591,37 +591,31 @@ async def fetch_status_bundle(*, force: bool = False) -> tuple[dict, dict]:
 
 
 async def build_live_status_payload(*, force: bool = False) -> dict[str, Any]:
-    """组装舞萌状态：近 48h 失败率图 + 服务器文本段。"""
+    """组装舞萌状态：近 48h 发票失败率图 + 服务器文本段。
+
+    失败率按 ``account_operation_log`` 全量发票记录统计（含 returnCode=0 /
+    上游返回失败），不做抽样上限；服务器列表仍来自 Status API。
+    """
+    from .maimaidx_account_db import account_db
+
     page, heartbeat = await fetch_status_bundle(force=force)
-    history = ingest_heartbeat_history(heartbeat)
-    series = bucket_failure_rates(
-        page,
-        heartbeat,
-        minutes=BUCKET_MINUTES,
+    # 顺带落盘心跳，供其它用途；曲线以发票全量日志为准。
+    ingest_heartbeat_history(heartbeat)
+    series = await asyncio.to_thread(
+        account_db.get_ticket_failure_buckets,
         hours=HISTORY_HOURS,
-        overall_only=True,
-        history=history,
+        minutes=BUCKET_MINUTES,
     )
-    source = "舞萌DX状态"
-    if latest_sampled_bucket(series) is None:
-        series = bucket_failure_rates(
-            page,
-            heartbeat,
-            minutes=BUCKET_MINUTES,
-            hours=HISTORY_HOURS,
-            overall_only=False,
-            history=history,
-        )
-        source = "全部监控聚合"
     chart = draw_failure_rate_chart(
         series,
-        title="游玩情况 · 失败率",
-        subtitle=f"半小时切分 · 近 {HISTORY_HOURS} 小时 · {source}",
+        title="发票情况 · 失败率",
+        subtitle=f"半小时切分 · 近 {HISTORY_HOURS} 小时 · 全量采集（含 returnCode=0）",
     )
     return {
         "chart": chart,
         "chart_b64": image_to_base64(chart),
         "series": series,
+        "series_source": "ticket",
         "server_sections": build_server_status_sections(page, heartbeat),
     }
 

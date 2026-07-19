@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +90,41 @@ class TicketReturnCodeStatsTest(unittest.TestCase):
         self.assertIn("成功：2（50.0%）", text)
         self.assertIn("失败：2（50.0%）", text)
         self.assertIn("returnCode=0：1", text)
+
+    def test_failure_buckets_count_all_errors(self) -> None:
+        now = datetime(2026, 7, 19, 17, 10, 0)
+        base = now.timestamp()
+        rows = [
+            ("B1", "u1", "ticket", "success", "ok", base - 600),
+            ("B2", "u1", "ticket", "error", "上游 returnCode=0，票券未发放", base - 500),
+            ("B3", "u1", "ticket", "error", "队列失败", base - 400),
+            ("B4", "u1", "ticket", "success", "returnCode=0 误标成功也应算失败", base - 300),
+            # 窗口外，不应计入
+            ("B5", "u1", "ticket", "error", "old", base - 50 * 3600),
+        ]
+        with self.db._lock:
+            self.db._conn.executemany(
+                """INSERT INTO account_operation_log
+                   (ref_id, user_key, operation, status, detail, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
+            self.db._conn.commit()
+
+        series = self.db.get_ticket_failure_buckets(hours=48, minutes=30, now=now)
+        self.assertEqual(len(series), 96)
+        filled = [row for row in series if row[1] is not None]
+        self.assertEqual(len(filled), 1)
+        _bucket, rate, fail, total = filled[0]
+        self.assertEqual(total, 4)
+        self.assertEqual(fail, 3)
+        self.assertAlmostEqual(rate, 75.0, places=3)
+        self.assertTrue(
+            self.db.ticket_is_failure(
+                "error",
+                "发票队列任务执行失败（上游 returnCode=0，票券未发放）；本次不扣 BREAK",
+            )
+        )
 
 
 if __name__ == "__main__":
