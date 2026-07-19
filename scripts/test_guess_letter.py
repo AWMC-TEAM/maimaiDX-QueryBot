@@ -22,13 +22,24 @@ names = {
     "_norm_token",
     "_title_maskable_count",
     "_latin_letter_count",
+    "WEIGHT_LETTER_HIT",
+    "WEIGHT_LETTER_COMPLETE",
+    "WEIGHT_SONG_OPEN",
+    "STAR_THRESHOLDS",
+    "SCORE_POOL_BY_STAR",
+    "BREAK_POOL_BY_STAR",
+    "format_elapsed",
+    "star_for_elapsed",
+    "star_text",
+    "distribute_pool",
+    "LetterContribution",
+    "LetterPlayerReward",
+    "LetterSettlement",
     "LetterSong",
     "LetterBoard",
     "LetterGuessManager",
     "_format_letter_complete",
-    "points_for_song_solve",
-    "points_for_letter_hit",
-    "points_for_letter_complete",
+    "format_settlement_message",
 }
 selected = []
 for node in tree.body:
@@ -65,12 +76,17 @@ exec(compile(ast.Module(body=selected, type_ignores=[]), str(SRC), "exec"), ns)
 LetterSong = ns["LetterSong"]
 LetterBoard = ns["LetterBoard"]
 LetterGuessManager = ns["LetterGuessManager"]
+LetterContribution = ns["LetterContribution"]
 _format_letter_complete = ns["_format_letter_complete"]
 _is_maskable = ns["_is_maskable"]
 _norm_token = ns["_norm_token"]
-points_for_letter_hit = ns["points_for_letter_hit"]
-points_for_song_solve = ns["points_for_song_solve"]
-points_for_letter_complete = ns["points_for_letter_complete"]
+format_elapsed = ns["format_elapsed"]
+star_for_elapsed = ns["star_for_elapsed"]
+star_text = ns["star_text"]
+distribute_pool = ns["distribute_pool"]
+format_settlement_message = ns["format_settlement_message"]
+SCORE_POOL_BY_STAR = ns["SCORE_POOL_BY_STAR"]
+BREAK_POOL_BY_STAR = ns["BREAK_POOL_BY_STAR"]
 
 song = LetterSong(
     music_id="1",
@@ -89,12 +105,6 @@ assert song.is_fully_revealed(board.revealed)
 newly = board.claim_fully_revealed("补齐侠")
 assert newly and newly[0].solved and newly[0].solved_by == "补齐侠"
 
-assert points_for_letter_hit(0) == 0
-assert points_for_letter_hit(1) == 1
-assert points_for_letter_hit(3) == 2
-assert points_for_song_solve(10) == 8
-assert points_for_letter_complete(1) == 2
-assert points_for_letter_complete(9) == 4
 assert _is_maskable("あ") or _is_maskable("雨") or True  # CJK may vary by font range
 assert _is_maskable("m")
 assert not _is_maskable(" ")
@@ -113,7 +123,7 @@ stuck_board = LetterBoard(
 )
 mgr.Group[1] = stuck_board
 msg, out_board, hit, completed, hidden_before = mgr.open_song(
-    1, "MIRROR", solver="开歌侠"
+    1, "MIRROR", solver="开歌侠", uid="u1", billing_id=10001
 )
 assert hit is song_a and hit.solved and hit.solved_by == "开歌侠"
 assert completed and completed[0] is song_b
@@ -122,6 +132,8 @@ assert "字母补齐：HOT LIMIT" in msg
 assert hidden_before["b"] == 1
 assert "m" in out_board.revealed
 assert out_board.finished
+assert out_board.contributions["u1"].song_opens == 1
+assert out_board.contributions["u1"].letter_completes == 1
 
 # 字母已开过的路径也应能认领历史卡死的全开曲
 mgr2 = LetterGuessManager()
@@ -129,8 +141,65 @@ stuck = LetterSong(music_id="c", title="AB", answers=["AB"])
 hist = LetterBoard(songs=[stuck], revealed={"a", "b"})
 assert stuck.is_fully_revealed(hist.revealed) and not stuck.solved
 mgr2.Group[2] = hist
-msg2, _, completed2, _ = mgr2.open_letter(2, "a", solver="补洞侠")
+msg2, _, completed2, _ = mgr2.open_letter(
+    2, "a", solver="补洞侠", uid="u2", billing_id=10002
+)
 assert completed2 and completed2[0].solved_by == "补洞侠"
 assert "字母补齐：AB" in msg2
+assert hist.contributions["u2"].letter_completes == 1
+
+# 用时三位小数 + 浮点星级阈值
+assert format_elapsed(12.3456) == "12.346秒"
+assert format_elapsed(0) == "0.000秒"
+assert star_for_elapsed(30.0) == 5
+assert star_for_elapsed(30.001) == 4
+assert star_for_elapsed(45.0) == 4
+assert star_for_elapsed(60.0) == 3
+assert star_for_elapsed(90.0) == 2
+assert star_for_elapsed(180.0) == 1
+assert star_for_elapsed(180.001) == 0
+assert "⭐️⭐️⭐️" == star_text(3)
+assert "超时" in star_text(0)
+
+# 贡献分配：奖池按权重分完，无贡献为 0
+dist = distribute_pool({"a": 3, "b": 1, "c": 0}, 10)
+assert dist["a"] + dist["b"] + dist["c"] == 10
+assert dist["a"] == 8 and dist["b"] == 2 and dist["c"] == 0
+assert distribute_pool({"a": 0}, 5) == {"a": 0}
+
+# 通关结算文案与奖池
+settle_board = LetterBoard(
+    songs=[
+        LetterSong("1", "AA", ["AA"], solved=True, solved_by="甲"),
+        LetterSong("2", "BB", ["BB"], solved=True, solved_by="乙"),
+    ],
+    started_at=1000.0,
+)
+settle_board.ensure_contribution("1", 11, "甲").letter_hits = 2
+settle_board.ensure_contribution("1", 11, "甲").song_opens = 1
+settle_board.ensure_contribution("2", 22, "乙").letter_completes = 1
+# 权重：甲 2*1+1*4=6，乙 3 → 合计 9；五星池 40/8
+result = settle_board.settle(now=1025.5)
+assert abs(result.elapsed - 25.5) < 1e-9
+assert result.stars == 5
+assert result.score_pool == SCORE_POOL_BY_STAR[5]
+assert result.break_pool == BREAK_POOL_BY_STAR[5]
+assert sum(r.score for r in result.rewards) == result.score_pool
+assert sum(r.break_points for r in result.rewards) == result.break_pool
+text = format_settlement_message(result)
+assert "25.500秒" in text
+assert "⭐️⭐️⭐️⭐️⭐️" in text
+assert "甲" in text and "乙" in text
+
+# >180s 最低档仍结算
+slow = LetterBoard(
+    songs=[LetterSong("1", "AA", ["AA"], solved=True, solved_by="甲")],
+    started_at=0.0,
+)
+slow.ensure_contribution("1", 11, "甲").letter_hits = 1
+slow_result = slow.settle(now=200.0)
+assert slow_result.stars == 0
+assert slow_result.score_pool == SCORE_POOL_BY_STAR[0]
+assert slow_result.break_pool == BREAK_POOL_BY_STAR[0]
 
 print("test_guess_letter ok")

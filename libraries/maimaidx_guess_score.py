@@ -562,6 +562,30 @@ class GuessScoreManager:
             period_snapshot,
         )
 
+    async def award_fixed_points(
+        self,
+        gid: GroupId,
+        uid: UserId,
+        name: str,
+        points: int,
+    ) -> Tuple[int, int, int]:
+        """发放固定积分（不计连击/倍率，不改 streak）。"""
+        added = max(0, int(points))
+        if added <= 0:
+            member = self._get_member(gid, uid)
+            if name:
+                member.name = name
+            return 0, member.score, self.get_rank(gid, uid)
+        winner = self._get_member(gid, uid)
+        self._ensure_all_periods(winner)
+        winner.score += added
+        for period, spec in self.PERIODS.items():
+            setattr(winner, spec.score_attr, getattr(winner, spec.score_attr) + added)
+        if name:
+            winner.name = name
+        await self._save()
+        return added, winner.score, self.get_rank(gid, uid)
+
     @staticmethod
     def format_settlement_lines(
         added: int,

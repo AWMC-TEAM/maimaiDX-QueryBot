@@ -10,16 +10,15 @@ from nonebot.params import CommandArg
 from nonebot.rule import Rule
 
 from ..config import log
-from ..libraries.maimaidx_guess_boost_card import guess_boost_card
 from ..libraries.maimaidx_guess_letter import (
     BOARD_SIZE,
+    LetterBoard,
+    LetterSettlement,
     _is_maskable,
-    _norm_token,
     board_image_segment,
+    format_elapsed,
+    format_settlement_message,
     letter_guess,
-    points_for_letter_complete,
-    points_for_letter_hit,
-    points_for_song_solve,
 )
 from ..libraries.maimaidx_guess_rate_limit import consume_guess_answer_slot
 from ..libraries.maimaidx_guess_score import guess_score
@@ -78,59 +77,48 @@ _HELP = (
     f"· 发送「舞萌开字母」或「开字母」开局（{BOARD_SIZE} 首歌）\n"
     "· 对局中直接发字母（如 m）即可开字符\n"
     "· 直接发曲名/别名即可猜歌（也可「开歌 xxx」）\n"
-    "· 字母补齐标题时，得分记在补齐者身上\n"
-    "· 不玩了 — 结束并揭晓剩余\n"
+    "· 局内不计分；全部解开后按用时星级 + 贡献结算积分/BREAK\n"
+    "· 用时星级：≤30s⭐️×5 / ≤45s×4 / ≤60s×3 / ≤90s×2 / ≤180s×1；更慢为最低档\n"
+    "· 贡献：有效开字母×1、补齐曲×3、开歌×4；无贡献不得分\n"
+    "· 不玩了 — 结束并揭晓剩余（不发奖）\n"
     "与猜歌等模式同群互斥；需先「开启mai猜歌」。"
 )
 
 
-async def _award_points(event: MessageEvent, gid, raw_base: int, *, tag: str) -> str:
-    if raw_base <= 0:
-        return ""
-    multiplier, tags = guess_score.get_score_multiplier(
-        first_stage=False, first_guess=False
-    )
-    uid = platform_user_id(event)
-    if await guess_boost_card.consume_one(gid, uid):
-        multiplier *= 2
-        tags.append("限时加倍卡×2")
-    tags.append(tag)
-    (
-        added,
-        raw_base,
-        combo,
-        streak,
-        total,
-        rank,
-        period_snapshot,
-    ) = await guess_score.award_correct_guess(
-        gid,
-        uid,
-        get_sender_display_name(event),
-        raw_base,
-        multiplier,
-    )
-    settlement = guess_score.format_settlement_lines(
-        added,
-        raw_base,
-        combo,
-        multiplier,
-        streak,
-        total,
-        rank,
-        period_snapshot,
-        tags,
-    )
+async def _payout_settlement(event: MessageEvent, gid, settlement: LetterSettlement) -> str:
+    """通关结算发奖：固定积分 + 自定义 BREAK。"""
     from ..libraries.maimaidx_break import break_db
 
-    reward = break_db.award_guess_points(
-        billing_user_id(event), added, group_id=str(gid)
-    )
-    if reward.break_added > 0:
-        settlement += (
-            f"\n💳 猜对奖励 +{reward.break_added} BREAK（余额 {reward.balance}）"
-        )
-    return settlement
+    text = format_settlement_message(settlement)
+    if not settlement.rewards:
+        return text
+    detail_lines: list[str] = []
+    for reward in settlement.rewards:
+        if reward.score > 0:
+            added, total, rank = await guess_score.award_fixed_points(
+                gid, reward.uid, reward.name, reward.score
+            )
+            detail_lines.append(
+                f"· {reward.name} 积分 +{added}（总分 {total}，总榜第 {rank}）"
+            )
+        if reward.break_points > 0:
+            balance = break_db.add_balance(
+                reward.billing_id,
+                reward.break_points,
+                "letter_settlement",
+                meta={
+                    "group_id": str(gid),
+                    "elapsed": settlement.elapsed,
+                    "stars": settlement.stars,
+                    "weight": reward.weight,
+                },
+            )
+            detail_lines.append(
+                f"· {reward.name} BREAK +{reward.break_points}（余额 {balance}）"
+            )
+    if detail_lines:
+        text += "\n" + "\n".join(detail_lines)
+    return text
 
 
 async def _send_board(matcher, event: MessageEvent, board, *, text: str = "") -> None:
@@ -176,6 +164,20 @@ async def _finish_rate_limited(matcher, event: MessageEvent) -> None:
         )
 
 
+async def _maybe_finish_board(
+    matcher, event: MessageEvent, gid, board: LetterBoard, parts: list[str]
+) -> None:
+    if not board.finished:
+        await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
+        await matcher.finish()
+        return
+    settlement = board.settle()
+    letter_guess.end(gid)
+    parts.append(await _payout_settlement(event, gid, settlement))
+    await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
+    await matcher.finish()
+
+
 async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> None:
     await _finish_rate_limited(matcher, event)
     board = letter_guess.get(gid)
@@ -183,32 +185,15 @@ async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> Non
     key = raw.strip()[0]
     if not _is_maskable(key):
         await matcher.finish("只能开字母、数字或日文/汉字字符哦", reply_message=True)
-    norm = _norm_token(key)
-    already = norm in board.revealed
-    hit = 0
-    if not already:
-        for song in board.songs:
-            if song.solved:
-                continue
-            hit += sum(1 for c in song.title if _norm_token(c) == norm)
     solver = get_sender_display_name(event)
-    msg, board, completed, hidden_before = letter_guess.open_letter(
-        gid, raw, solver=solver
+    msg, board, _completed, _hidden_before = letter_guess.open_letter(
+        gid,
+        raw,
+        solver=solver,
+        uid=platform_user_id(event),
+        billing_id=billing_user_id(event),
     )
-    parts = [msg]
-    pts = 0 if already else points_for_letter_hit(hit)
-    for song in completed:
-        pts += points_for_letter_complete(hidden_before.get(song.music_id, 0))
-    if pts > 0:
-        tag = "字母补齐" if completed else "开字母"
-        settlement = await _award_points(event, gid, pts, tag=tag)
-        if settlement:
-            parts.append(settlement)
-    if board.finished:
-        letter_guess.end(gid)
-        parts.append("🎉 全部解开，本局结束！")
-    await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
-    await matcher.finish()
+    await _maybe_finish_board(matcher, event, gid, board, [msg])
 
 
 async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool:
@@ -217,24 +202,16 @@ async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool
     board = letter_guess.get(gid)
     if board is None:
         return False
-    msg, board, song, completed, hidden_before = letter_guess.open_song(
-        gid, text, solver=get_sender_display_name(event)
+    msg, board, song, _completed, _hidden_before = letter_guess.open_song(
+        gid,
+        text,
+        solver=get_sender_display_name(event),
+        uid=platform_user_id(event),
+        billing_id=billing_user_id(event),
     )
     if song is None:
         return False
-    parts = [msg]
-    pts = points_for_song_solve(hidden_before.get(song.music_id, 0))
-    for done in completed:
-        pts += points_for_letter_complete(hidden_before.get(done.music_id, 0))
-    tag = "开歌+字母补齐" if completed else "开歌"
-    settlement = await _award_points(event, gid, pts, tag=tag)
-    if settlement:
-        parts.append(settlement)
-    if board.finished:
-        letter_guess.end(gid)
-        parts.append("🎉 全部解开，本局结束！")
-    await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
-    await matcher.finish()
+    await _maybe_finish_board(matcher, event, gid, board, [msg])
     return True
 
 
@@ -295,6 +272,7 @@ async def _(event: MessageEvent, args: Message = CommandArg()):
         text=(
             f"🎮 舞萌开字母开始！共 {len(board.songs)} 首歌。\n"
             "直接发字母开字符，直接发别名/曲名猜歌。\n"
+            "全部解开后按用时与贡献结算；局内不计分。\n"
         ),
     )
     await letter_open.finish()
@@ -336,13 +314,17 @@ async def _(event: MessageEvent):
     board = letter_guess.get(gid)
     if board is None:
         await letter_quit.finish()
+    elapsed_text = format_elapsed(board.elapsed())
     letter_guess.reveal_all(board)
     letter_guess.end(gid)
     await _send_board(
         letter_quit,
         event,
         board,
-        text="🔚 本局结束，剩余歌曲已揭晓。\n",
+        text=(
+            f"🔚 本局结束（用时 {elapsed_text}），剩余歌曲已揭晓。\n"
+            "中途结束不发放速度奖与贡献奖。\n"
+        ),
     )
     await letter_quit.finish()
 
