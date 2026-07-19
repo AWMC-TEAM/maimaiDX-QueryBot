@@ -128,7 +128,16 @@ def register_admin_web() -> bool:
     async def summary(request: Request):
         authorize(request)
         data = admin_audit.summary()
-        data.update({"break_users": break_db.count_users(), "bound_accounts": account_db.count_accounts()})
+        ticket = account_db.get_ticket_stats(days=7)
+        data.update({
+            "break_users": break_db.count_users(),
+            "bound_accounts": account_db.count_accounts(),
+            "ticket_7d_total": ticket["total"],
+            "ticket_7d_success_rate": f'{ticket["success_rate"]}%',
+            "ticket_7d_error_rate": f'{ticket["error_rate"]}%',
+            "ticket_7d_returnCode_0": ticket["return_code_0"],
+            "ticket_7d_returnCode_null": ticket["return_code_null"],
+        })
         return data
 
     async def users(request: Request, search: str = "", limit: int = 100, offset: int = 0):

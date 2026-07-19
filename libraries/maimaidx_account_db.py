@@ -8,12 +8,23 @@ QueryBot 只保存调用 AWMC/sw-api 所需的最小状态：二维码、街机 
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 from typing import Optional
+
+# 发票失败详情里标记上游返回码：returnCode=0 / "returnCode": null 等。
+_RETURN_CODE_ZERO_RE = re.compile(
+    r"""returnCode\s*[=:]\s*0\b|"returnCode"\s*:\s*0\b""",
+    re.IGNORECASE,
+)
+_RETURN_CODE_NULL_RE = re.compile(
+    r"""returnCode\s*[=:]\s*(?:null|none)\b|"returnCode"\s*:\s*null\b|未返回\s*returnCode""",
+    re.IGNORECASE,
+)
 
 
 DB_DIR = Path(__file__).resolve().parent.parent / "data" / "account"
@@ -434,7 +445,91 @@ class AccountDatabase:
             )},
             'operations': {str(item['operation']): int(item['count']) for item in operations},
             'recent': [dict(item) for item in recent],
+            'ticket': self.get_ticket_stats(user_key=key),
         }
+
+    @staticmethod
+    def _ticket_detail_flags(detail: str) -> tuple[bool, bool]:
+        text = str(detail or "")
+        return (
+            bool(_RETURN_CODE_ZERO_RE.search(text)),
+            bool(_RETURN_CODE_NULL_RE.search(text)),
+        )
+
+    def get_ticket_stats(
+        self, *, user_key: Optional[str] = None, days: Optional[int] = None
+    ) -> dict:
+        """汇总发票成功/失败率，并单独统计 returnCode=0 与 null/未返回。
+
+        判定规则：操作日志 ``operation='ticket'``；详情中一旦出现
+        ``returnCode=0`` / ``"returnCode": 0``，或 ``null/None/未返回 returnCode``，
+        分别计入对应计数（同一条可同时命中）。
+        """
+        clauses = ["operation = 'ticket'"]
+        params: list = []
+        if user_key is not None:
+            clauses.append("user_key = ?")
+            params.append(str(user_key))
+        if days is not None and int(days) > 0:
+            clauses.append("created_at >= ?")
+            params.append(time.time() - int(days) * 86400)
+        where = " AND ".join(clauses)
+        with self._lock:
+            summary = self._conn.execute(
+                f"""SELECT
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
+                        SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END) AS error
+                    FROM account_operation_log WHERE {where}""",
+                params,
+            ).fetchone()
+            details = self._conn.execute(
+                f"SELECT detail FROM account_operation_log WHERE {where}",
+                params,
+            ).fetchall()
+        total = int((summary["total"] if summary else 0) or 0)
+        success = int((summary["success"] if summary else 0) or 0)
+        error = int((summary["error"] if summary else 0) or 0)
+        return_code_0 = 0
+        return_code_null = 0
+        for row in details:
+            is_zero, is_null = self._ticket_detail_flags(row["detail"])
+            if is_zero:
+                return_code_0 += 1
+            if is_null:
+                return_code_null += 1
+        success_rate = round(100.0 * success / total, 1) if total else 0.0
+        error_rate = round(100.0 * error / total, 1) if total else 0.0
+        return_code_0_rate = (
+            round(100.0 * return_code_0 / total, 1) if total else 0.0
+        )
+        return {
+            "total": total,
+            "success": success,
+            "error": error,
+            "success_rate": success_rate,
+            "error_rate": error_rate,
+            "return_code_0": return_code_0,
+            "return_code_null": return_code_null,
+            "return_code_0_rate": return_code_0_rate,
+        }
+
+    @staticmethod
+    def format_ticket_stats(stats: dict, *, title: str = "发票统计") -> str:
+        total = int(stats.get("total") or 0)
+        success = int(stats.get("success") or 0)
+        error = int(stats.get("error") or 0)
+        if total <= 0:
+            return f"🎫 {title}\n暂无发票记录"
+        return (
+            f"🎫 {title}\n"
+            f"总次数：{total}\n"
+            f"成功：{success}（{stats.get('success_rate', 0)}%）\n"
+            f"失败：{error}（{stats.get('error_rate', 0)}%）\n"
+            f"returnCode=0：{int(stats.get('return_code_0') or 0)}"
+            f"（占全部 {stats.get('return_code_0_rate', 0)}%）\n"
+            f"returnCode 为 null/未返回：{int(stats.get('return_code_null') or 0)}"
+        )
 
 
 account_db = AccountDatabase()

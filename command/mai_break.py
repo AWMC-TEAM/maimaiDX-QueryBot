@@ -34,6 +34,9 @@ awmc_admin_set = on_command('设置BREAK', permission=SUPERUSER)
 awmc_admin_add = on_command('增减BREAK', permission=SUPERUSER)
 awmc_admin_config = on_command('BREAK配置', permission=SUPERUSER)
 awmc_admin_view = on_command('查看AWMC', permission=SUPERUSER)
+ticket_stats_admin = on_command(
+    '发票统计', aliases={'ticket统计', 'returnCode统计'}, permission=SUPERUSER
+)
 awmc_help = on_command('AWMC帮助', aliases={'BREAK帮助'})
 break_transfer = on_command('转账BREAK', aliases={'BREAK转账'})
 break_lottery = on_command('BREAK抽奖', aliases={'抽奖BREAK'})
@@ -376,6 +379,29 @@ async def _(
     profile = get_account_profile(target)
     await awmc_admin_view.finish(
         format_account_profile(profile, title=f'AWMC 账号 {target}'),
+        reply_message=True,
+    )
+
+
+@ticket_stats_admin.handle()
+async def _(message: Message = CommandArg()):
+    from ..libraries.maimaidx_account_db import account_db
+
+    raw = message.extract_plain_text().strip()
+    days: Optional[int] = None
+    if raw:
+        try:
+            days = max(1, int(raw))
+        except ValueError:
+            await ticket_stats_admin.finish(
+                '用法：发票统计 [天数]，例如「发票统计 7」；不填为全部历史',
+                reply_message=True,
+            )
+            return
+    stats = account_db.get_ticket_stats(days=days)
+    title = f'全局发票统计（近 {days} 天）' if days else '全局发票统计（全部）'
+    await ticket_stats_admin.finish(
+        account_db.format_ticket_stats(stats, title=title),
         reply_message=True,
     )
 

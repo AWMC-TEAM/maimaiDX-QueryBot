@@ -74,6 +74,11 @@ class Config(BaseModel):
     awmc_qrcode_cache_seconds: int = 0
     # mymai/成绩上传复用最近一次已验证 SGID 的时长；0 表示每次重新询问。
     awmc_sgid_cache_seconds: int = 600
+    # 舞萌状态附带的 Uptime Kuma 公开状态页（https://wiki.awmc.team/dev/status-api）。
+    awmc_status_page_base: str = 'https://status.awmc.cc'
+    awmc_status_page_slug: str = 'maimai'
+    awmc_status_cache_seconds: float = 30.0
+    awmc_status_timeout_seconds: float = 8.0
     # 自动识别消息图片中的舞萌二维码；普通图片静默忽略。
     awmc_image_qrcode_enabled: bool = True
     # 单张待识别图片最大下载字节数，默认 8 MiB。

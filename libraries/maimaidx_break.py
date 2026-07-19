@@ -46,7 +46,7 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'bonus_group_first': '0.5',
     # 猜对每次固定奖励，不设每日上限，避免被分数倍率放大。
     'guess_break_per_correct': '1',
-    # 上传/发票仅在外部操作成功后结算，各自每日首次免费。
+    # 上传/发票仅在外部操作成功后结算；上传每日首次免费，发票每次扣费。
     'upload_fish_cost': '2',
     'upload_lx_cost': '2',
     'upload_all_cost': '3',
@@ -73,6 +73,8 @@ BONUS_GROUP_IDS = {int(BOT_QQ_GROUP), 993795066}
 DOUBLE_CHECKIN_GROUP_IDS = {669800745}
 LOTTERY_PRIZES = (0, 1, 2, 5, 10)
 LOTTERY_WEIGHTS = (35, 30, 20, 12, 3)
+# 仅这些业务享受「每日首次成功免费」；发票等不在此列，每次成功均扣费。
+DAILY_FREE_SERVICES = frozenset({'upload'})
 
 _CREATE_SQL = """\
 CREATE TABLE IF NOT EXISTS break_users (
@@ -203,6 +205,7 @@ class AccountProfile(BaseModel):
     account_total_success: int = 0
     account_total_error: int = 0
     account_operation_counts: Dict[str, int] = Field(default_factory=dict)
+    account_ticket_stats: Dict[str, float | int] = Field(default_factory=dict)
     recent_account_logs: List[dict] = Field(default_factory=list)
     recent_logs: List[BreakLogEntry] = Field(default_factory=list)
 
@@ -654,6 +657,8 @@ class BreakDatabase:
         return self.get_balance(qqid)
 
     def service_is_free(self, qqid: int, service: str) -> bool:
+        if service not in DAILY_FREE_SERVICES:
+            return False
         row = self._conn.execute(
             """SELECT free_used FROM break_service_daily
                WHERE qqid=? AND date=? AND service=?""",
@@ -677,7 +682,7 @@ class BreakDatabase:
         *,
         meta: Optional[dict] = None,
     ) -> ServiceChargeResult:
-        """成功业务原子结算：每项服务每日首次免费，后续按配置扣费。"""
+        """成功业务原子结算：DAILY_FREE_SERVICES 每日首次免费，其余每次按配置扣费。"""
         cost = max(0, int(cost))
         self._ensure_user(qqid)
         self._ensure_daily(qqid)
@@ -694,7 +699,10 @@ class BreakDatabase:
                    WHERE qqid=? AND date=? AND service=?""",
                 (qqid, today, service),
             ).fetchone()
-            free = not row or int(row['free_used']) == 0
+            free = (
+                service in DAILY_FREE_SERVICES
+                and (not row or int(row['free_used']) == 0)
+            )
             charged = 0 if free else cost
             balance = self.get_balance(qqid)
             if charged and balance < charged:
@@ -1718,6 +1726,7 @@ def get_account_profile(qqid: int) -> AccountProfile:
         account_total_success=account_usage['success'],
         account_total_error=account_usage['error'],
         account_operation_counts=account_usage['operations'],
+        account_ticket_stats=account_usage.get('ticket') or {},
         recent_account_logs=account_usage['recent'],
         recent_logs=break_db.get_recent_logs(qqid, 5),
     )
@@ -1779,6 +1788,20 @@ def format_account_profile_sections(
             for name, count in profile.account_operation_counts.items()
         )
         total_lines.append(f'  · 功能分布：{detail}')
+    ticket = profile.account_ticket_stats or {}
+    ticket_total = int(ticket.get('total') or 0)
+    if ticket_total > 0:
+        total_lines.append(
+            f'  · 发票：成功 {int(ticket.get("success") or 0)}'
+            f'（{ticket.get("success_rate", 0)}%）'
+            f' / 失败 {int(ticket.get("error") or 0)}'
+            f'（{ticket.get("error_rate", 0)}%）'
+        )
+        total_lines.append(
+            f'  · 发票 returnCode=0：{int(ticket.get("return_code_0") or 0)} 次'
+            f'（占全部 {ticket.get("return_code_0_rate", 0)}%）；'
+            f'null/未返回 {int(ticket.get("return_code_null") or 0)} 次'
+        )
     preference_lines = [
         '⚙️ 插件偏好',
         f'  · 查分数据源：{src}',

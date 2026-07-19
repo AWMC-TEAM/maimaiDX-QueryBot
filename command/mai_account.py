@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 import httpx
 from nonebot import on_command
-from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment
 from nonebot.matcher import Matcher
 from nonebot.params import Arg, CommandArg
 
@@ -23,6 +23,7 @@ from ..config import log, maiconfig
 from ..libraries.maimaidx_account_db import AccountBinding, account_db
 from ..libraries.maimaidx_admin_audit import admin_audit, redact
 from ..libraries.maimaidx_break import break_db
+from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_lxns_client import (
     LxnsApiError,
     convert_pc_records_to_lxns_scores,
@@ -45,6 +46,7 @@ from ..libraries.maimaidx_processing_time import (
     upload_workflow_key,
 )
 from ..libraries.maimaidx_reaction import react_processing
+from ..libraries.maimaidx_status_api import build_live_status_payload
 from ..libraries.maimaidx_sw_api import format_user_region_block, sw_api
 from .mai_agreement import agreement_prompt, has_user_agreed
 from ..libraries.maimaidx_data_scheduler import fetch_and_store_user_scores
@@ -53,7 +55,8 @@ from ..libraries.maimaidx_data_scheduler import fetch_and_store_user_scores
 account_help = on_command("mai账号", aliases={"账号帮助", "mai账户"})
 account_bind = on_command("mai绑定", aliases={"绑定舞萌", "舞萌绑定", "maibind"})
 account_unbind = on_command("mai解绑", aliases={"解绑舞萌", "舞萌解绑"})
-account_status = on_command("mai状态", aliases={"mymai", "舞萌状态"})
+account_status = on_command("mai状态", aliases={"mymai"})
+maimai_live_status = on_command("舞萌状态", aliases={"mais"})
 fish_bind = on_command(
     "mai绑定水鱼", aliases={"dfbind", "绑定水鱼token", "maibindfish"}
 )
@@ -96,6 +99,7 @@ for _serial_account_matcher in (
     account_queue,
 ):
     setattr(_serial_account_matcher, '_maimaidx_serial_user_operation', True)
+# 舞萌状态只读公开 Uptime，不占用机台串行锁。
 
 _RECALL_FAILED_NOTICE = "⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。\n"
 _QRCODE_RECALL_TIMEOUT_SECONDS = 3.0
@@ -910,6 +914,65 @@ async def _render_account_status(
     return "\n".join(lines)
 
 
+def _forward_image_node(user_id: str, nickname: str, image_b64: str, caption: str = "") -> dict:
+    """合并转发节点：图片 + 可选说明。"""
+    content: list[dict] = [{"type": "image", "data": {"file": image_b64}}]
+    if caption.strip():
+        content.append({"type": "text", "data": {"text": "\n" + caption.strip()}})
+    return {
+        "type": "node",
+        "data": {
+            "name": str(nickname),
+            "uin": str(user_id),
+            "content": content,
+        },
+    }
+
+
+async def _deliver_live_status_forward(bot: Bot, event: MessageEvent, payload: dict) -> None:
+    """发送「失败率图 + 服务器状态」合并转发。"""
+    from ..libraries.maimaidx_status_api import latest_sampled_bucket
+
+    nickname = str(getattr(maiconfig, "botName", None) or "AWMC Bot")
+    series = payload.get("series") or []
+    latest = latest_sampled_bucket(series)
+    filled = sum(1 for _b, rate, _f, total in series if rate is not None and total > 0)
+    if latest:
+        caption = (
+            f"🎮 游玩情况\n"
+            f"最近半小时失败率 {latest[1]:.1f}%（{latest[2]}/{latest[3]}）\n"
+            f"近 48 小时 · 半小时切分 · 已采样 {filled}/{len(series)} 桶"
+        )
+    else:
+        caption = "🎮 游玩情况\n近 48 小时暂无足够心跳样本（持续调用后会自动补齐）"
+    nodes = [
+        _forward_image_node(str(event.self_id), nickname, payload["chart_b64"], caption)
+    ]
+    for section in payload.get("server_sections") or []:
+        if str(section).strip():
+            nodes.append(build_forward_node(str(event.self_id), nickname, section))
+    try:
+        messages = json.loads(json.dumps(nodes, ensure_ascii=False))
+        if isinstance(event, GroupMessageEvent):
+            await bot.call_api(
+                "send_group_forward_msg", group_id=event.group_id, messages=messages
+            )
+        else:
+            await bot.call_api(
+                "send_private_forward_msg", user_id=event.user_id, messages=messages
+            )
+    except Exception as exc:
+        log.warning(
+            f"[LiveStatus] 合并转发失败，回退普通消息：{type(exc).__name__}: {exc}"
+        )
+        await maimai_live_status.send(
+            MessageSegment.image(payload["chart_b64"]) + "\n" + caption,
+            reply_message=True,
+        )
+        for section in payload.get("server_sections") or []:
+            await maimai_live_status.send(section, reply_message=False)
+
+
 def _result_text(result: dict) -> str:
     if not result:
         return "操作已完成"
@@ -1225,7 +1288,8 @@ async def _():
     await account_help.finish(
         "AWMC 账号功能（已合并到 QueryBot）\n"
         "mai绑定 / maibind：绑定或认领舞萌账号\n"
-        "mai状态 / mymai：查看详细状态，缓存失效时引导刷新二维码\n"
+        "mai状态 / mymai：查看账号详细状态，缓存失效时引导刷新二维码\n"
+        "舞萌状态 / mais：失败率折线图 + 全部服务器实时状态（合并转发）\n"
         "mai绑定水鱼 [Token] / maibindfish：无参数时交互引导，最多重试 3 次\n"
         "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
         "maiu：仅水鱼；maiul：仅落雪；maiua：水鱼和落雪全部上传\n"
@@ -1233,7 +1297,7 @@ async def _():
         f"当前上传价格：水鱼 {fish_cost} / 落雪 {lx_cost} / 同时 {all_cost} BREAK\n"
         f"发票价格：倍率 × {ticket_unit} BREAK（例：2倍=6，3倍=9）\n"
         "已有 2/3/5 倍票未使用时重复发票，将拦截并扣除 20 BREAK。\n"
-        "成绩上传与发票各自每日首次成功免费，失败不扣费。\n"
+        "成绩上传每日首次成功免费；发票每次按价扣费，失败不扣费。\n"
         "发送“用户协议”阅读和确认服务条款。"
     )
 
@@ -1443,6 +1507,22 @@ async def _(
     await account_status.finish(
         recall_notice + text + f"\nRef_ID: {ref}", reply_message=True
     )
+
+
+@maimai_live_status.handle()
+async def _(bot: Bot, event: MessageEvent):
+    """舞萌状态 / mais：失败率折线图 + 全部服务器实时状态。"""
+    try:
+        payload = await build_live_status_payload()
+    except Exception as exc:
+        log.warning(f"[LiveStatus] 拉取失败：{type(exc).__name__}: {exc}")
+        await maimai_live_status.finish(
+            f"暂时无法获取舞萌状态：{type(exc).__name__}\n"
+            "可稍后重试，或打开 https://status.awmc.cc/status/maimai",
+            reply_message=True,
+        )
+    await _deliver_live_status_forward(bot, event, payload)
+    await maimai_live_status.finish()
 
 
 def _save_upload_token(event: MessageEvent, token: str, kind: str) -> str:
