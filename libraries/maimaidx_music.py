@@ -20,6 +20,15 @@ from .maimaidx_guess_audio import (
     is_audio_ready,
     list_stage_files,
 )
+from .maimaidx_guess_chart import (
+    DEFAULT_DURATION as CHART_DEFAULT_DURATION,
+    CHART_DIFF_NAMES,
+    ensure_chart_video_ready,
+    is_chart_video_ready,
+    pick_chart_diff,
+    chart_kind as resolve_chart_kind,
+    video_path_for,
+)
 from .tool import openfile, writefile
 
 
@@ -412,7 +421,10 @@ mai = MaiMusic()
 
 class Guess:
     
-    Group: Dict[Union[int, str], Union[GuessDefaultData, GuessPicData, GuessAudioData]] = {}
+    Group: Dict[
+        Union[int, str],
+        Union[GuessDefaultData, GuessPicData, GuessAudioData, GuessChartData],
+    ] = {}
     Preparing: Set[Union[int, str]] = set()
     _gid_locks: Dict[Union[int, str], asyncio.Lock] = {}
     switch: GuessSwitch
@@ -899,6 +911,69 @@ class Guess:
     def startaudio(self, gid: Union[int, str], data: GuessAudioData) -> None:
         self.Group[gid] = data
         self._log_guess_start('猜曲子', gid)
+
+    def guesschartdata(
+        self,
+        music: Music,
+        *,
+        video_path: str,
+        chart_kind: str,
+        chart_diff: int,
+        duration: int = CHART_DEFAULT_DURATION,
+    ) -> GuessChartData:
+        answer = mai.total_alias_list.by_id(music.id)[0].Alias
+        answer.append(music.id)
+        return GuessChartData(
+            music=music,
+            img='',
+            answer=answer,
+            end=False,
+            video_path=video_path,
+            chart_kind=chart_kind,
+            chart_diff=chart_diff,
+            chart_diff_name=CHART_DIFF_NAMES.get(chart_diff, str(chart_diff)),
+            duration=duration,
+        )
+
+    async def prepare_chart_round(self) -> Optional[GuessChartData]:
+        """随机选曲并渲染/命中猜铺面视频缓存。"""
+        candidates = self._guess_music_pool()[:]
+        random.shuffle(candidates)
+        for music in candidates[:10]:
+            kind = resolve_chart_kind(music.type)
+            diff = pick_chart_diff(len(music.ds))
+            ok, _msg, path, entry = await ensure_chart_video_ready(
+                music.id,
+                music_type=music.type,
+                title=music.title,
+                level_count=len(music.ds),
+            )
+            if ok and path is not None:
+                return self.guesschartdata(
+                    music,
+                    video_path=str(path.resolve()),
+                    chart_kind=kind,
+                    chart_diff=int(entry.get('diff') or diff),
+                    duration=int(entry.get('duration') or CHART_DEFAULT_DURATION),
+                )
+        # 回退已缓存（含 kind 回退）
+        for music in candidates:
+            primary = resolve_chart_kind(music.type)
+            diff = pick_chart_diff(len(music.ds))
+            for kind in (primary, 'standard' if primary == 'dx' else 'dx'):
+                if is_chart_video_ready(music.id, kind, diff):
+                    path = video_path_for(music.id, kind, diff)
+                    return self.guesschartdata(
+                        music,
+                        video_path=str(path.resolve()),
+                        chart_kind=kind,
+                        chart_diff=diff,
+                    )
+        return None
+
+    def startchart(self, gid: Union[int, str], data: GuessChartData) -> None:
+        self.Group[gid] = data
+        self._log_guess_start('猜铺面', gid)
 
     def guesspicdata(self, difficulty: Optional[int] = None) -> GuessPicData:
         """猜曲绘数据；difficulty 为 1～4，省略则随机。"""

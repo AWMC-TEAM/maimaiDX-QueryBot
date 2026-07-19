@@ -485,6 +485,8 @@ async def _(bot: Bot, event: MessageEvent, match=RegexMatched()):
 async def _(event: MessageEvent, match=RegexMatched()):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'query'):
         raise IgnoredException('功能已禁用')
+    if isinstance(event, GroupMessageEvent) and str(event.group_id) in guess.Group:
+        await chart_preview.finish('本群正在猜歌，不要作弊哦~', reply_message=True)
     song_id = match.group(1)
     diff_name = match.group(2)
     diff_map = {'绿': 2, '黄': 3, '红': 4, '紫': 5, '白': 6}

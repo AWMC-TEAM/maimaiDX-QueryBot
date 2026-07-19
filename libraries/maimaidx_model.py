@@ -150,6 +150,15 @@ class GuessAudioData(GuessData):
     stage_count: int = 4
 
 
+class GuessChartData(GuessData):
+
+    video_path: str
+    chart_kind: str = 'dx'
+    chart_diff: int = 5
+    chart_diff_name: str = '紫'
+    duration: int = 25
+
+
 class Switch(BaseModel):
 
     enable: List[Union[int, str]] = []

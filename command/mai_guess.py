@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from textwrap import dedent
 from typing import Literal, Optional, Union
 
 from loguru import logger as log
@@ -27,8 +28,15 @@ from ..libraries.maimaidx_guess_audio import (
     get_audio_manifest_entry,
     request_hot_batch_cancel,
 )
+from ..libraries.maimaidx_guess_chart import ANSWER_GRACE as CHART_ANSWER_GRACE
 from ..libraries.maimaidx_music import guess
-from ..libraries.maimaidx_model import GuessAudioData, GuessData, GuessDefaultData, GuessPicData
+from ..libraries.maimaidx_model import (
+    GuessAudioData,
+    GuessChartData,
+    GuessData,
+    GuessDefaultData,
+    GuessPicData,
+)
 from ..libraries.maimaidx_music_info import *
 from ..libraries.maimaidx_platform import (
     GroupId,
@@ -68,6 +76,7 @@ guess_music_pic     = on_regex(
     rule=GROUP_MESSAGE,
 )
 guess_music_audio   = on_command('猜曲子', rule=GROUP_MESSAGE)
+guess_music_chart   = on_command('猜铺面', aliases={'猜谱面'}, rule=GROUP_MESSAGE)
 update_guess_audio  = on_regex(r'^更新猜曲音频(?:\s+(-full))?\s*$', permission=PLUGIN_ADMIN_ONLY)
 guess_boost_grant   = on_command('发加倍卡', permission=GUESS_GROUP_MANAGER, rule=GROUP_MESSAGE)
 guess_boost_query   = on_command('查加倍卡', rule=GROUP_MESSAGE)
@@ -97,9 +106,11 @@ def _sender_name(event: MessageEvent) -> str:
 
 
 def _guess_first_stage(data: GuessData) -> bool:
-    """猜曲子：第二段发出前（仅听过第一段）仍算首阶段。"""
+    """猜曲子：第二段发出前（仅听过第一段）仍算首阶段。猜铺面单段视频始终算首阶段。"""
     if isinstance(data, GuessAudioData):
         return data.hint_step < 2
+    if isinstance(data, GuessChartData):
+        return True
     return data.hint_step == 0
 
 
@@ -115,6 +126,8 @@ async def _award_guess_points(
         raw_base = guess_score.pic_points_for(data)
     elif isinstance(data, GuessAudioData):
         raw_base = guess_score.audio_points_for(data.hint_step)
+    elif isinstance(data, GuessChartData):
+        raw_base = guess_score.chart_points_for()
     elif isinstance(data, GuessDefaultData):
         raw_base = guess_score.song_points_for(data.hint_step)
     else:
@@ -156,12 +169,15 @@ async def _award_guess_points(
     return settlement
 
 
-_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘或猜曲子'
+_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘、猜曲子或猜铺面'
 _GUESS_SEND_FAIL_MSG = '游戏数据获取失败，本游戏已结束。'
 GUESS_SEND_TIMEOUT_TEXT = 15
 GUESS_SEND_TIMEOUT_MEDIA = 60
+GUESS_SEND_TIMEOUT_VIDEO = 90
 GUESS_AUDIO_PREPARE_FIRST_UPDATE = 30
 GUESS_AUDIO_PREPARE_UPDATE_INTERVAL = 60
+GUESS_CHART_PREPARE_FIRST_UPDATE = 40
+GUESS_CHART_PREPARE_UPDATE_INTERVAL = 45
 
 
 def _guess_loop_should_stop(gid: GroupId) -> bool:
@@ -288,6 +304,42 @@ async def _prepare_guess_audio_with_progress(
                     f'正在下载或进行 AI 分轨，{eta}',
                 )
                 wait_seconds = GUESS_AUDIO_PREPARE_UPDATE_INTERVAL
+    except asyncio.CancelledError:
+        task.cancel()
+        raise
+
+
+async def _prepare_guess_chart_with_progress(
+    matcher: Matcher,
+    event: MessageEvent,
+    gid: GroupId,
+) -> Optional[GuessChartData]:
+    """准备铺面视频时持续告知进度（首次 Playwright 录制较慢）。"""
+    await _guess_notify(
+        matcher,
+        event,
+        '正在随机选曲并渲染铺面视频…\n'
+        '命中缓存通常数秒内开始；首次渲染约 40～90 秒（无音乐、无背景），请稍候。',
+        reply=True,
+    )
+    task = asyncio.create_task(guess.prepare_chart_round())
+    started = asyncio.get_running_loop().time()
+    wait_seconds = GUESS_CHART_PREPARE_FIRST_UPDATE
+    try:
+        while True:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(task), timeout=wait_seconds,
+                )
+            except asyncio.TimeoutError:
+                elapsed = int(asyncio.get_running_loop().time() - started)
+                await _guess_notify(
+                    matcher,
+                    event,
+                    f'猜铺面视频仍在渲染中（已等待 {elapsed} 秒）。\n'
+                    '正在用谱面预览引擎录制静音动画，请再稍候。',
+                )
+                wait_seconds = GUESS_CHART_PREPARE_UPDATE_INTERVAL
     except asyncio.CancelledError:
         task.cancel()
         raise
@@ -817,6 +869,81 @@ async def _(event: MessageEvent):
         await guess_music_audio.finish()
 
 
+@guess_music_chart.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid not in guess.switch.enable:
+        await guess_music_chart.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
+    if not await guess.try_begin_prepare(gid):
+        await guess_music_chart.finish(_GUESS_BUSY_HINT, reply_message=True)
+
+    data = None
+    compact = bool(getattr(maiconfig, 'maimaidx_compact_messages', True))
+    try:
+        try:
+            log.info(f'[GuessChart] 猜铺面开局 gid={gid}')
+            data = await _prepare_guess_chart_with_progress(
+                guess_music_chart, event, gid,
+            )
+            if data is None:
+                log.warning(f'[GuessChart] 猜铺面无可用视频 gid={gid}')
+                await guess_music_chart.finish(
+                    '暂无可用猜铺面视频（谱面 CDN 无资源或渲染失败）。\n'
+                    '请确认已构建 chart_preview（npm run build），'
+                    '并已安装 Chromium（playwright install chromium）与 ffmpeg。',
+                    reply_message=True,
+                )
+
+            guess.startchart(gid, data)
+        finally:
+            guess.end_prepare(gid)
+
+        video_path = Path(data.video_path).resolve()
+        log.info(
+            f'[GuessChart] 猜铺面开始 gid={gid} music_id={data.music.id} '
+            f'title={data.music.title} kind={data.chart_kind} '
+            f'diff={data.chart_diff_name} file={video_path.name}'
+        )
+        intro = dedent(f'''\
+            猜铺面开始！将发送一段约 {data.duration} 秒的静音谱面视频
+            （无音乐、无背景 PV，难度倾向 {data.chart_diff_name} 谱）。
+            请根据铺面输入歌曲 id、标题或别名作答。
+            视频发出后有 {CHART_ANSWER_GRACE} 秒作答时间。
+            发送 重置猜歌 可结束本局。
+        ''')
+        stage_text = intro if compact else '谱面视频：'
+        if not compact:
+            await _safe_matcher_send(guess_music_chart, event, intro, gid)
+
+        await _safe_matcher_send(
+            guess_music_chart, event,
+            MessageSegment.text(stage_text + '\n')
+            + MessageSegment.video(str(video_path)),
+            gid,
+            media=True,
+            timeout=GUESS_SEND_TIMEOUT_VIDEO,
+        )
+        data.hint_step = 1
+
+        for _ in range(CHART_ANSWER_GRACE):
+            await _guess_sleep(gid, 1)
+            if _guess_loop_should_stop(gid):
+                await guess_music_chart.finish()
+
+        if _guess_loop_should_stop(gid):
+            await guess_music_chart.finish()
+        cur = guess.Group[gid]
+        cur.end = True
+        await guess_score.reset_all_streaks(gid)
+        guess.end(gid)
+        await _send_guess_answer_bundle(
+            guess_music_chart, event, data, gid, header='答案是：',
+        )
+        await guess_music_chart.finish()
+    except GuessSendAborted:
+        await guess_music_chart.finish()
+
+
 @update_guess_audio.handle()
 async def _(event: PrivateMessageEvent, match=RegexMatched()):
     force = match.group(1) is not None
@@ -876,7 +1003,7 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid in guess.Preparing:
         guess.end_prepare(gid)
-        await guess_music_reset.finish('已取消猜曲子准备，本局未开始。', reply_message=True)
+        await guess_music_reset.finish('已取消猜歌准备，本局未开始。', reply_message=True)
         return
     if gid not in guess.Group:
         await guess_music_reset.finish('该群未处在猜歌状态', reply_message=True)

@@ -272,6 +272,19 @@ def _onebot_record_path(seg: MessageSegment) -> Optional[Path]:
     return p if p.is_file() else None
 
 
+def _onebot_video_path(seg: MessageSegment) -> Optional[Path]:
+    if seg.type != 'video':
+        return None
+    raw = seg.data.get('file') or seg.data.get('url') or ''
+    if not raw:
+        return None
+    s = str(raw)
+    if s.startswith('file://'):
+        return Path(s[7:])
+    p = Path(s)
+    return p if p.is_file() else None
+
+
 def _onebot_image_bytes(seg: MessageSegment) -> Optional[bytes]:
     if seg.type != 'image':
         return None
@@ -372,8 +385,8 @@ async def finish_with_image(matcher, image_msg, *, footer: str = '', reply: bool
 
 def adapt_guess_outbound(message: Any, *, event=None) -> Any:
     """
-    猜歌出站消息：OneBot 图/音/文 → 当前平台可发送形态。
-    官方 QQ 将 image/record 转为 file_image/file_audio。
+    猜歌出站消息：OneBot 图/音/视频/文 → 当前平台可发送形态。
+    官方 QQ 将 image/record/video 转为 file_image/file_audio/file_video。
     """
     if not use_qq_mode(event):
         return message
@@ -410,6 +423,10 @@ def adapt_guess_outbound(message: Any, *, event=None) -> Any:
             audio_path = _onebot_record_path(seg)
             if audio_path:
                 parts.append(QQSeg.file_audio(audio_path))
+        elif seg.type == 'video':
+            video_path = _onebot_video_path(seg)
+            if video_path:
+                parts.append(QQSeg.file_video(video_path))
         elif seg.type == 'at':
             qq = seg.data.get('qq')
             if str(qq) == 'all':

@@ -25,10 +25,17 @@
 pip install nonebot-plugin-maimaidx
 ```
 
-开发版可将本仓库文件覆盖到 bot 的插件目录。另需安装 Playwright Chromium：
+开发版可将本仓库文件覆盖到 bot 的插件目录。另需安装 Playwright Chromium 与 ffmpeg（猜铺面录视频）：
 
 ```bash
 playwright install --with-deps chromium
+# macOS: brew install ffmpeg
+```
+
+猜铺面依赖本地谱面预览页（基于 [Maimai-Chart-Preview](https://github.com/Pimeng/Maimai-Chart-Preview)，已去掉音乐与背景）。若缺少 `static/chart_preview/`，执行：
+
+```bash
+./scripts/build_chart_preview.sh
 ```
 
 ## 静态资源
@@ -40,6 +47,7 @@ playwright install --with-deps chromium
 |-------------|------|
 | `static/` | 插件静态资源根目录（**必须**） |
 | `static/font/` | 字体（`ResourceHanRoundedCN-Bold.ttf` 等） |
+| `static/chart_preview/` | 猜铺面录制页（可由 `scripts/build_chart_preview.sh` 生成） |
 | `dxdata.json` | 本地曲库数据源（可选，见下方配置） |
 
 首次部署后，若 `rating` / `plate` 目录为空，需**私聊 Bot（超级用户）**执行：

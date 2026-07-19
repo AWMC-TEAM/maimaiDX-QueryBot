@@ -105,7 +105,7 @@ async def collect_cleanup_targets() -> List[PendingTarget]:
     targets: List[PendingTarget] = list(_pending.values())
     _pending.clear()
 
-    # 猜歌 / 猜曲绘 / 猜曲子
+    # 猜歌 / 猜曲绘 / 猜曲子 / 猜铺面
     try:
         from .maimaidx_guess_audio import request_hot_batch_cancel
         from .maimaidx_guess_score import guess_score

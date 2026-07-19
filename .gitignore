@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# 猜铺面前端依赖
+chart_preview/node_modules/
+chart_preview/dist/
+
 # 用户数据（服务器部署会被覆盖，禁止提交）
 data/
 
