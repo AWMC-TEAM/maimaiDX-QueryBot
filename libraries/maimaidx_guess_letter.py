@@ -10,8 +10,9 @@
 - 局内开字母 / 补齐 / 开歌只记贡献，不即时发积分或 BREAK
 - 全部解开后按用时星级给全员奖池，再按贡献权重分配
 - 「不玩了」只揭晓，不发速度奖与贡献奖
-- 星级：≤30s 五星 / ≤45s 四星 / ≤60s 三星 / ≤90s 二星 / ≤180s 一星
-  >180s 仍结算，但为 0 星最低奖池；无贡献者不得分
+- 默认星级：≤30/45/60/90/180 秒；样本足够后按群历史 P35 自适应收紧
+  （五星上限夹在 15–30 秒，其它星按 1:1.5:2:3:6 缩放）
+- 超出一星上限仍结算，为 0 星最低奖池；无贡献者不得分
 - 用时按浮点秒计算，展示统一为三位小数（如 42.318秒）
 """
 
@@ -97,11 +98,19 @@ def format_elapsed(seconds: float) -> str:
     return f"{max(0.0, float(seconds)):.3f}秒"
 
 
-def star_for_elapsed(elapsed: float) -> int:
-    """按浮点用时取星级；>180s 为 0 星。"""
+def default_star_limits() -> Dict[int, float]:
+    """默认五档上限（秒）：30 / 45 / 60 / 90 / 180。"""
+    return {5: 30.0, 4: 45.0, 3: 60.0, 2: 90.0, 1: 180.0}
+
+
+def star_for_elapsed(
+    elapsed: float, limits: Optional[Dict[int, float]] = None
+) -> int:
+    """按浮点用时取星级；超出一星上限为 0 星。"""
     t = max(0.0, float(elapsed))
-    for limit, stars in STAR_THRESHOLDS:
-        if t <= limit:
+    caps = limits or default_star_limits()
+    for stars in (5, 4, 3, 2, 1):
+        if t <= float(caps[stars]):
             return stars
     return 0
 
@@ -111,6 +120,14 @@ def star_text(stars: int) -> str:
     if n <= 0:
         return "☆（超时最低档）"
     return "⭐️" * n
+
+
+def format_threshold_lines(
+    limits: Dict[int, float], *, adaptive: bool = False, sample_count: int = 0
+) -> str:
+    mode = "自适应" if adaptive else "默认"
+    parts = [f"⭐️×{s}≤{float(limits[s]):.3f}秒" for s in (5, 4, 3, 2, 1)]
+    return f"本局阈值（{mode}，样本 {sample_count}）：" + " / ".join(parts)
 
 
 def distribute_pool(weights: Dict[str, int], pool: int) -> Dict[str, int]:
@@ -181,6 +198,9 @@ class LetterSettlement:
     score_pool: int
     break_pool: int
     rewards: List[LetterPlayerReward]
+    limits: Dict[int, float] = field(default_factory=default_star_limits)
+    adaptive: bool = False
+    sample_count: int = 0
 
     @property
     def elapsed_text(self) -> str:
@@ -189,6 +209,12 @@ class LetterSettlement:
     @property
     def stars_text(self) -> str:
         return star_text(self.stars)
+
+    @property
+    def thresholds_text(self) -> str:
+        return format_threshold_lines(
+            self.limits, adaptive=self.adaptive, sample_count=self.sample_count
+        )
 
 
 @dataclass
@@ -269,10 +295,18 @@ class LetterBoard:
             newly.append(song)
         return newly
 
-    def settle(self, *, now: Optional[float] = None) -> LetterSettlement:
+    def settle(
+        self,
+        *,
+        now: Optional[float] = None,
+        limits: Optional[Dict[int, float]] = None,
+        adaptive: bool = False,
+        sample_count: int = 0,
+    ) -> LetterSettlement:
         """全部解开后的通关结算（不玩了勿调用）。"""
         elapsed = self.elapsed(now)
-        stars = star_for_elapsed(elapsed)
+        caps = limits or default_star_limits()
+        stars = star_for_elapsed(elapsed, caps)
         score_pool = SCORE_POOL_BY_STAR.get(stars, SCORE_POOL_BY_STAR[0])
         break_pool = BREAK_POOL_BY_STAR.get(stars, BREAK_POOL_BY_STAR[0])
         weights = {
@@ -304,12 +338,16 @@ class LetterBoard:
             score_pool=score_pool,
             break_pool=break_pool,
             rewards=rewards,
+            limits=dict(caps),
+            adaptive=adaptive,
+            sample_count=sample_count,
         )
 
 
 def format_settlement_message(settlement: LetterSettlement) -> str:
     lines = [
         f"🎉 全部解开！用时 {settlement.elapsed_text} · {settlement.stars_text}",
+        settlement.thresholds_text,
         (
             f"本局奖池：{settlement.score_pool} 分 / {settlement.break_pool} BREAK"
             "（按贡献分配；无贡献不得分）"

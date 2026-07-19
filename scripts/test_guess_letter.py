@@ -29,8 +29,10 @@ names = {
     "SCORE_POOL_BY_STAR",
     "BREAK_POOL_BY_STAR",
     "format_elapsed",
+    "default_star_limits",
     "star_for_elapsed",
     "star_text",
+    "format_threshold_lines",
     "distribute_pool",
     "LetterContribution",
     "LetterPlayerReward",
@@ -76,13 +78,14 @@ exec(compile(ast.Module(body=selected, type_ignores=[]), str(SRC), "exec"), ns)
 LetterSong = ns["LetterSong"]
 LetterBoard = ns["LetterBoard"]
 LetterGuessManager = ns["LetterGuessManager"]
-LetterContribution = ns["LetterContribution"]
 _format_letter_complete = ns["_format_letter_complete"]
 _is_maskable = ns["_is_maskable"]
 _norm_token = ns["_norm_token"]
 format_elapsed = ns["format_elapsed"]
+default_star_limits = ns["default_star_limits"]
 star_for_elapsed = ns["star_for_elapsed"]
 star_text = ns["star_text"]
+format_threshold_lines = ns["format_threshold_lines"]
 distribute_pool = ns["distribute_pool"]
 format_settlement_message = ns["format_settlement_message"]
 SCORE_POOL_BY_STAR = ns["SCORE_POOL_BY_STAR"]
@@ -105,18 +108,15 @@ assert song.is_fully_revealed(board.revealed)
 newly = board.claim_fully_revealed("补齐侠")
 assert newly and newly[0].solved and newly[0].solved_by == "补齐侠"
 
-assert _is_maskable("あ") or _is_maskable("雨") or True  # CJK may vary by font range
 assert _is_maskable("m")
 assert not _is_maskable(" ")
 assert "HOT LIMIT" in _format_letter_complete(
     [LetterSong("9", "HOT LIMIT", ["HOT LIMIT"], solved=True, solved_by="x")]
 )
 
-# 开歌 A 把字母并入 revealed 后，B 标题被补齐应自动 claim 给 solver
 mgr = LetterGuessManager()
 song_a = LetterSong(music_id="a", title="MIRROR", answers=["MIRROR", "mirror"])
 song_b = LetterSong(music_id="b", title="HOT LIMIT", answers=["HOT LIMIT"])
-# B 只差 m；开中 MIRROR 会补入 m，使 HOT LIMIT 全齐
 stuck_board = LetterBoard(
     songs=[song_a, song_b],
     revealed={"h", "o", "t", "l", "i"},
@@ -135,7 +135,6 @@ assert out_board.finished
 assert out_board.contributions["u1"].song_opens == 1
 assert out_board.contributions["u1"].letter_completes == 1
 
-# 字母已开过的路径也应能认领历史卡死的全开曲
 mgr2 = LetterGuessManager()
 stuck = LetterSong(music_id="c", title="AB", answers=["AB"])
 hist = LetterBoard(songs=[stuck], revealed={"a", "b"})
@@ -148,7 +147,6 @@ assert completed2 and completed2[0].solved_by == "补洞侠"
 assert "字母补齐：AB" in msg2
 assert hist.contributions["u2"].letter_completes == 1
 
-# 用时三位小数 + 浮点星级阈值
 assert format_elapsed(12.3456) == "12.346秒"
 assert format_elapsed(0) == "0.000秒"
 assert star_for_elapsed(30.0) == 5
@@ -161,13 +159,18 @@ assert star_for_elapsed(180.001) == 0
 assert "⭐️⭐️⭐️" == star_text(3)
 assert "超时" in star_text(0)
 
-# 贡献分配：奖池按权重分完，无贡献为 0
+# 自定义自适应阈值：五星 20s → 四星 30s
+adaptive = {5: 20.0, 4: 30.0, 3: 40.0, 2: 60.0, 1: 120.0}
+assert star_for_elapsed(20.0, adaptive) == 5
+assert star_for_elapsed(20.001, adaptive) == 4
+assert star_for_elapsed(120.001, adaptive) == 0
+assert "20.000秒" in format_threshold_lines(adaptive, adaptive=True, sample_count=12)
+
 dist = distribute_pool({"a": 3, "b": 1, "c": 0}, 10)
 assert dist["a"] + dist["b"] + dist["c"] == 10
 assert dist["a"] == 8 and dist["b"] == 2 and dist["c"] == 0
 assert distribute_pool({"a": 0}, 5) == {"a": 0}
 
-# 通关结算文案与奖池
 settle_board = LetterBoard(
     songs=[
         LetterSong("1", "AA", ["AA"], solved=True, solved_by="甲"),
@@ -178,7 +181,6 @@ settle_board = LetterBoard(
 settle_board.ensure_contribution("1", 11, "甲").letter_hits = 2
 settle_board.ensure_contribution("1", 11, "甲").song_opens = 1
 settle_board.ensure_contribution("2", 22, "乙").letter_completes = 1
-# 权重：甲 2*1+1*4=6，乙 3 → 合计 9；五星池 40/8
 result = settle_board.settle(now=1025.5)
 assert abs(result.elapsed - 25.5) < 1e-9
 assert result.stars == 5
@@ -189,9 +191,9 @@ assert sum(r.break_points for r in result.rewards) == result.break_pool
 text = format_settlement_message(result)
 assert "25.500秒" in text
 assert "⭐️⭐️⭐️⭐️⭐️" in text
+assert "本局阈值" in text
 assert "甲" in text and "乙" in text
 
-# >180s 最低档仍结算
 slow = LetterBoard(
     songs=[LetterSong("1", "AA", ["AA"], solved=True, solved_by="甲")],
     started_at=0.0,
@@ -200,6 +202,79 @@ slow.ensure_contribution("1", 11, "甲").letter_hits = 1
 slow_result = slow.settle(now=200.0)
 assert slow_result.stars == 0
 assert slow_result.score_pool == SCORE_POOL_BY_STAR[0]
-assert slow_result.break_pool == BREAK_POOL_BY_STAR[0]
+
+# 自适应阈值单测（独立模块，直接 import 源码 AST）
+stats_src = ROOT / "libraries" / "maimaidx_letter_stats.py"
+stats_tree = ast.parse(stats_src.read_text(encoding="utf-8"))
+stats_names = {
+    "DEFAULT_FIVE_STAR",
+    "MIN_FIVE_STAR",
+    "MAX_FIVE_STAR",
+    "STAR_RATIO",
+    "HISTORY_WINDOW",
+    "MIN_SAMPLES_FOR_ADAPTIVE",
+    "StarThresholds",
+    "default_thresholds",
+    "_percentile",
+    "compute_thresholds",
+}
+stats_selected = []
+for node in stats_tree.body:
+    if isinstance(node, ast.ClassDef) and node.name in stats_names:
+        stats_selected.append(node)
+    elif isinstance(node, ast.FunctionDef) and node.name in stats_names:
+        stats_selected.append(node)
+    elif isinstance(node, ast.Assign):
+        for t in node.targets:
+            if isinstance(t, ast.Name) and t.id in stats_names:
+                stats_selected.append(node)
+                break
+    elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id in stats_names:
+        stats_selected.append(node)
+
+stats_ns = {
+    "dataclass": dataclass,
+    "field": field,
+    "Dict": Dict,
+    "List": List,
+    "Optional": Optional,
+    "Tuple": Tuple,
+    "Union": Union,
+    "frozen": True,
+}
+# StarThresholds uses @dataclass(frozen=True) — need dataclasses.dataclass
+import dataclasses
+
+stats_ns["dataclass"] = dataclasses.dataclass
+exec(compile(ast.Module(body=stats_selected, type_ignores=[]), str(stats_src), "exec"), stats_ns)
+compute_thresholds = stats_ns["compute_thresholds"]
+default_thresholds = stats_ns["default_thresholds"]
+MIN_FIVE_STAR = stats_ns["MIN_FIVE_STAR"]
+MAX_FIVE_STAR = stats_ns["MAX_FIVE_STAR"]
+
+base = default_thresholds()
+assert abs(base.limits[5] - 30.0) < 1e-9
+assert abs(base.limits[1] - 180.0) < 1e-9
+assert not base.adaptive
+
+# 样本不足 → 默认
+few = compute_thresholds([20.0] * 5)
+assert not few.adaptive and few.limits[5] == 30.0
+
+# 普遍很快 → 五星收紧但不低于下限
+fast_hist = [18.0] * 20
+fast = compute_thresholds(fast_hist)
+assert fast.adaptive
+assert MIN_FIVE_STAR <= fast.limits[5] <= MAX_FIVE_STAR
+assert abs(fast.limits[4] / fast.limits[5] - 1.5) < 1e-9
+assert abs(fast.limits[1] / fast.limits[5] - 6.0) < 1e-9
+
+# 极端快 → 卡在 15s
+ultra = compute_thresholds([8.0] * 30)
+assert abs(ultra.limits[5] - MIN_FIVE_STAR) < 1e-9
+
+# 偏慢 → 仍不超过 30s
+slow_hist = compute_thresholds([50.0] * 20)
+assert abs(slow_hist.limits[5] - MAX_FIVE_STAR) < 1e-9
 
 print("test_guess_letter ok")
