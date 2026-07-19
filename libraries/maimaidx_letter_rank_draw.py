@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw
 from ..config import SIYUAN, TBFONT
 from .image import DrawText, image_to_base64
 from .maimaidx_api_data import maiApi
-from .maimaidx_guess_letter import format_elapsed
+from .maimaidx_guess_letter import LetterSettlement, format_elapsed
 from .maimaidx_letter_stats import LetterMemberStats
 
 _BG = (42, 28, 22, 255)
@@ -192,52 +192,60 @@ async def render_time_board(
     return _draw_rank_panel(title=title, subtitle=subtitle, rows=rows)
 
 
-async def render_round_boards(
-    *,
-    score_rows: List[Tuple[str, int, str, int, int]],
-    contrib_rows: List[Tuple[str, int, str, int]],
-    time_rows: List[Tuple[str, int, str, float]],
-    elapsed_text: str,
-    stars_text: str,
-) -> Tuple[Image.Image, Image.Image, Image.Image]:
-    """
-    本局三图。
-    score_rows: uid, billing, name, score, weight
-    contrib_rows: uid, billing, name, weight
-    time_rows: uid, billing, name, elapsed (same for all contributors this round)
-    """
-    score_members = [
-        LetterMemberStats(
-            uid=uid, name=name, billing_id=bid, score=score, weight=weight, games=1
+async def render_settlement_split(settlement: LetterSettlement) -> Image.Image:
+    """本局榜单+分成：贡献、权重、分到的分/BREAK（一张综合图）。"""
+    width = 900
+    row_h = 78
+    header_h = 128
+    footer_h = 52
+    rewards = list(settlement.rewards)
+    n = max(1, len(rewards))
+    height = header_h + row_h * n + footer_h
+    im = Image.new("RGBA", (width, height), _BG)
+    dr = ImageDraw.Draw(im)
+    font = DrawText(dr, _board_font())
+    dr.rounded_rectangle((20, 20, width - 20, height - 20), radius=20, fill=_CARD)
+    font.draw(44, 36, 32, "本局榜单 · 贡献分成", _TITLE, "lt", 2, (0, 0, 0, 120))
+    font.draw(
+        44,
+        78,
+        16,
+        (
+            f"用时 {settlement.elapsed_text} · {settlement.stars_text}"
+            f"  ·  奖池 {settlement.score_pool} 分 / {settlement.break_pool} BREAK"
+        ),
+        _MUTED,
+        "lt",
+    )
+    font.draw(44, 100, 14, settlement.thresholds_text, _MUTED, "lt")
+
+    if not rewards:
+        font.draw(44, header_h + 12, 22, "本局无人有效贡献", _MUTED, "lt")
+        return im
+
+    avatars = await _load_avatars(
+        [(avatar_qq_candidate(r.uid, r.billing_id), r.name) for r in rewards], 48
+    )
+    y = header_h
+    for idx, r in enumerate(rewards):
+        if idx > 0:
+            dr.line((44, y, width - 44, y), fill=_LINE, width=1)
+        av = avatars[idx] if idx < len(avatars) else _placeholder_avatar(r.name, 48)
+        im.alpha_composite(av.resize((48, 48), Image.Resampling.LANCZOS), (48, y + 14))
+        rank_color = _OK if idx < 3 else _TEXT
+        font.draw(112, y + 12, 22, f"#{idx + 1}", rank_color, "lt")
+        font.draw(168, y + 12, 22, r.name, _TEXT, "lt")
+        font.draw(
+            168,
+            y + 40,
+            16,
+            f"{r.detail}  ·  权重 {r.weight}  →  +{r.score} 分  +{r.break_points} BREAK",
+            _MUTED,
+            "lt",
         )
-        for uid, bid, name, score, weight in score_rows
-    ]
-    contrib_members = [
-        LetterMemberStats(uid=uid, name=name, billing_id=bid, weight=weight, games=1)
-        for uid, bid, name, weight in contrib_rows
-    ]
-    time_members = [
-        LetterMemberStats(
-            uid=uid, name=name, billing_id=bid, best_elapsed=el, games=1
-        )
-        for uid, bid, name, el in time_rows
-    ]
-    score_img = await render_score_board(
-        score_members,
-        title="本局积分",
-        subtitle=f"用时 {elapsed_text} · {stars_text}",
-    )
-    contrib_img = await render_contrib_board(
-        contrib_members,
-        title="本局贡献",
-        subtitle=f"用时 {elapsed_text} · {stars_text}",
-    )
-    time_img = await render_time_board(
-        time_members,
-        title="本局通关用时",
-        subtitle=f"全员完成 {elapsed_text} · {stars_text}",
-    )
-    return score_img, contrib_img, time_img
+        y += row_h
+    font.draw(44, height - 40, 14, "开字母×1 / 补齐×3 / 开歌×4 · 无贡献不得分", _MUTED, "lt")
+    return im
 
 
 def image_b64(im: Image.Image) -> str:

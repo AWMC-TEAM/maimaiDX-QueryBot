@@ -345,9 +345,9 @@ class LetterBoard:
 
 
 def format_settlement_message(settlement: LetterSettlement) -> str:
+    """通关结算短文案（详情放分成图）。"""
     lines = [
         f"🎉 全部解开！用时 {settlement.elapsed_text} · {settlement.stars_text}",
-        settlement.thresholds_text,
         (
             f"本局奖池：{settlement.score_pool} 分 / {settlement.break_pool} BREAK"
             "（按贡献分配；无贡献不得分）"
@@ -355,13 +355,6 @@ def format_settlement_message(settlement: LetterSettlement) -> str:
     ]
     if not settlement.rewards:
         lines.append("本局无人有效贡献，不发奖。")
-        return "\n".join(lines)
-    lines.append("贡献结算：")
-    for r in settlement.rewards:
-        lines.append(
-            f"· {r.name}：{r.detail} → 权重 {r.weight}"
-            f" · +{r.score} 分 · +{r.break_points} BREAK"
-        )
     return "\n".join(lines)
 
 

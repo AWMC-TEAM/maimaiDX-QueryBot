@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 
 from nonebot import on_command, on_message
@@ -10,8 +9,7 @@ from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegme
 from nonebot.params import CommandArg
 from nonebot.rule import Rule
 
-from ..config import log, maiconfig
-from ..libraries.maimaidx_group_rating import build_forward_node
+from ..config import log
 from ..libraries.maimaidx_guess_letter import (
     BOARD_SIZE,
     LetterBoard,
@@ -27,8 +25,8 @@ from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_letter_rank_draw import (
     image_b64,
     render_contrib_board,
-    render_round_boards,
     render_score_board,
+    render_settlement_split,
     render_time_board,
 )
 from ..libraries.maimaidx_letter_stats import letter_stats
@@ -39,7 +37,6 @@ from ..libraries.maimaidx_platform import (
     get_event_group_id,
     get_sender_display_name,
     is_group_message_event,
-    is_likely_qq_group_id,
     platform_user_id,
     resolve_reply_message,
 )
@@ -84,14 +81,15 @@ letter_song = on_command("开歌", rule=LETTER_PLAYING, priority=5, block=True)
 letter_quit = on_command(
     "不玩了", aliases={"结束开字母"}, rule=LETTER_PLAYING, priority=5, block=True
 )
+# priority 低于「开字母」，避免被「开字母」+参数抢先匹配
 letter_score_cmd = on_command(
-    "开字母排行", aliases={"开字母积分榜"}, rule=GROUP_MESSAGE, priority=5, block=True
+    "开字母排行", aliases={"开字母积分榜"}, rule=GROUP_MESSAGE, priority=4, block=True
 )
 letter_contrib_cmd = on_command(
-    "开字母贡献榜", rule=GROUP_MESSAGE, priority=5, block=True
+    "开字母贡献榜", rule=GROUP_MESSAGE, priority=4, block=True
 )
 letter_time_cmd = on_command(
-    "开字母时间榜", rule=GROUP_MESSAGE, priority=5, block=True
+    "开字母时间榜", rule=GROUP_MESSAGE, priority=4, block=True
 )
 # 对局中可直接发字母 / 别名，无需命令前缀
 letter_quick = on_message(rule=LETTER_PLAYING, priority=9, block=False)
@@ -110,69 +108,17 @@ _HELP = (
 )
 
 
-def _forward_image_node(user_id: str, nickname: str, image_b64_str: str, caption: str = "") -> dict:
-    content: list[dict] = [{"type": "image", "data": {"file": image_b64_str}}]
-    if caption.strip():
-        content.append({"type": "text", "data": {"text": "\n" + caption.strip()}})
-    return {
-        "type": "node",
-        "data": {
-            "name": str(nickname),
-            "uin": str(user_id),
-            "content": content,
-        },
-    }
-
-
-async def _send_forward(bot: Bot, event: MessageEvent, nodes: list[dict]) -> bool:
-    gid = get_event_group_id(event)
-    if gid is None or not nodes:
-        return False
-    messages = json.loads(json.dumps(nodes, ensure_ascii=False))
-    try:
-        if is_likely_qq_group_id(gid):
-            await bot.call_api(
-                "send_group_forward_msg", group_id=int(gid), messages=messages
-            )
-            return True
-    except Exception as exc:
-        log.warning(f"[LetterGuess] 合并转发失败：{type(exc).__name__}: {exc}")
-    # 降级：逐张发图
-    for node in nodes:
-        try:
-            data = node.get("data") or {}
-            content = data.get("content") or []
-            msg = Message()
-            for seg in content:
-                if seg.get("type") == "image":
-                    msg += MessageSegment.image(seg["data"]["file"])
-                elif seg.get("type") == "text":
-                    msg += str(seg.get("data", {}).get("text", ""))
-            if msg:
-                await bot.send(event, adapt_guess_outbound(msg, event=event))
-        except Exception as exc:
-            log.warning(f"[LetterGuess] 降级发图失败：{type(exc).__name__}: {exc}")
-    return False
-
-
-async def _payout_settlement(event: MessageEvent, gid, settlement: LetterSettlement) -> str:
-    """通关结算发奖：固定积分 + 自定义 BREAK。"""
+async def _payout_settlement(event: MessageEvent, gid, settlement: LetterSettlement) -> None:
+    """通关结算发奖（文案已由短结算句展示，此处只落库）。"""
     from ..libraries.maimaidx_break import break_db
 
-    text = format_settlement_message(settlement)
-    if not settlement.rewards:
-        return text
-    detail_lines: list[str] = []
     for reward in settlement.rewards:
         if reward.score > 0:
-            added, total, rank = await guess_score.award_fixed_points(
+            await guess_score.award_fixed_points(
                 gid, reward.uid, reward.name, reward.score
             )
-            detail_lines.append(
-                f"· {reward.name} 积分 +{added}（总分 {total}，总榜第 {rank}）"
-            )
         if reward.break_points > 0:
-            balance = break_db.add_balance(
+            break_db.add_balance(
                 reward.billing_id,
                 reward.break_points,
                 "letter_settlement",
@@ -183,12 +129,6 @@ async def _payout_settlement(event: MessageEvent, gid, settlement: LetterSettlem
                     "weight": reward.weight,
                 },
             )
-            detail_lines.append(
-                f"· {reward.name} BREAK +{reward.break_points}（余额 {balance}）"
-            )
-    if detail_lines:
-        text += "\n" + "\n".join(detail_lines)
-    return text
 
 
 async def _send_board(matcher, event: MessageEvent, board, *, text: str = "") -> None:
@@ -198,6 +138,20 @@ async def _send_board(matcher, event: MessageEvent, board, *, text: str = "") ->
     await matcher.send(
         adapt_guess_outbound(msg, event=event),
         reply_message=resolve_reply_message(event, reply_message=True),
+    )
+
+
+async def _send_plain(matcher, event: MessageEvent, text: str) -> None:
+    await matcher.send(
+        adapt_guess_outbound(text, event=event),
+        reply_message=resolve_reply_message(event, reply_message=True),
+    )
+
+
+async def _send_image(matcher, event: MessageEvent, im) -> None:
+    await matcher.send(
+        adapt_guess_outbound(MessageSegment.image(image_b64(im)), event=event),
+        reply_message=False,
     )
 
 
@@ -232,54 +186,15 @@ async def _finish_rate_limited(matcher, event: MessageEvent) -> None:
         )
 
 
-async def _send_settlement_charts(
-    bot: Bot, event: MessageEvent, settlement: LetterSettlement
-) -> None:
-    nickname = str(getattr(maiconfig, "botName", None) or "AWMC Bot")
-    score_rows = [
-        (r.uid, r.billing_id, r.name, r.score, r.weight) for r in settlement.rewards
-    ]
-    contrib_rows = [
-        (r.uid, r.billing_id, r.name, r.weight) for r in settlement.rewards
-    ]
-    # 时间榜：本局参与者按权重排序，用时同一通关时间
-    time_rows = [
-        (r.uid, r.billing_id, r.name, settlement.elapsed)
-        for r in sorted(settlement.rewards, key=lambda x: (-x.weight, x.name))
-    ]
-    try:
-        score_im, contrib_im, time_im = await render_round_boards(
-            score_rows=score_rows,
-            contrib_rows=contrib_rows,
-            time_rows=time_rows,
-            elapsed_text=settlement.elapsed_text,
-            stars_text=settlement.stars_text,
-        )
-    except Exception as exc:
-        log.warning(f"[LetterGuess] 结算绘图失败：{type(exc).__name__}: {exc}")
-        return
-    nodes = [
-        build_forward_node(
-            str(event.self_id),
-            nickname,
-            format_settlement_message(settlement),
-        ),
-        _forward_image_node(
-            str(event.self_id), nickname, image_b64(score_im), "本局积分"
-        ),
-        _forward_image_node(
-            str(event.self_id), nickname, image_b64(contrib_im), "本局贡献"
-        ),
-        _forward_image_node(
-            str(event.self_id), nickname, image_b64(time_im), "本局通关用时（含头像）"
-        ),
-    ]
-    await _send_forward(bot, event, nodes)
-
-
 async def _maybe_finish_board(
     matcher, event: MessageEvent, gid, board: LetterBoard, parts: list[str]
 ) -> None:
+    """
+    通关结算 UX（严格顺序）：
+    1) 文案：猜中/补齐行 + 全部解开用时星级 + 奖池
+    2) 本局榜单+分成图
+    3) 开字母看板图（全开）
+    """
     if not board.finished:
         await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
         await matcher.finish()
@@ -302,17 +217,21 @@ async def _maybe_finish_board(
             for r in settlement.rewards
         ],
     )
-    parts.append(await _payout_settlement(event, gid, settlement))
-    await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
-    try:
-        bot = matcher.bot if hasattr(matcher, "bot") else None
-        if bot is None:
-            from nonebot import get_bot
+    await _payout_settlement(event, gid, settlement)
 
-            bot = get_bot()
-        await _send_settlement_charts(bot, event, settlement)
+    # 1) 文案
+    text = "\n".join([*parts, format_settlement_message(settlement)])
+    await _send_plain(matcher, event, text)
+
+    # 2) 本局榜单+分成图
+    try:
+        split_im = await render_settlement_split(settlement)
+        await _send_image(matcher, event, split_im)
     except Exception as exc:
-        log.warning(f"[LetterGuess] 结算图发送失败：{type(exc).__name__}: {exc}")
+        log.warning(f"[LetterGuess] 结算分成图失败：{type(exc).__name__}: {exc}")
+
+    # 3) 最终看板
+    await _send_board(matcher, event, board)
     await matcher.finish()
 
 

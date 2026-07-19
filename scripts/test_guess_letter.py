@@ -191,8 +191,9 @@ assert sum(r.break_points for r in result.rewards) == result.break_pool
 text = format_settlement_message(result)
 assert "25.500秒" in text
 assert "⭐️⭐️⭐️⭐️⭐️" in text
-assert "本局阈值" in text
-assert "甲" in text and "乙" in text
+assert "本局奖池：40 分 / 8 BREAK" in text
+assert "按贡献分配" in text
+assert "本局阈值" not in text  # 阈值放分成图，短文案不含
 
 slow = LetterBoard(
     songs=[LetterSong("1", "AA", ["AA"], solved=True, solved_by="甲")],
