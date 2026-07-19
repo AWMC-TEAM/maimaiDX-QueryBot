@@ -31,6 +31,10 @@ STATIC_STATE_FILES = {
     "group_alias_switch.json",
     "group_feature_switch.json",
 }
+REBUILDABLE_CACHE_DIRS = {
+    ("audio_guess", "cache"),
+    ("chart_guess", "cache"),
+}
 
 
 class StorageError(RuntimeError):
@@ -99,7 +103,7 @@ def _excluded(path: Path, config: Any) -> bool:
         return False
     if rel.parts and rel.parts[0] in {"storage", "migration"}:
         return True
-    if len(rel.parts) >= 2 and rel.parts[:2] == ("audio_guess", "cache"):
+    if len(rel.parts) >= 2 and rel.parts[:2] in REBUILDABLE_CACHE_DIRS:
         return True
     if not bool(_setting(config, "maimaidx_storage_include_user_scores", True)):
         if rel.parts and rel.parts[0] == "user_scores":
@@ -118,7 +122,7 @@ def _excluded_directory(path: Path, config: Any) -> bool:
         return False
     if rel.parts and rel.parts[0] in {"storage", "migration"}:
         return True
-    if len(rel.parts) >= 2 and rel.parts[:2] == ("audio_guess", "cache"):
+    if len(rel.parts) >= 2 and rel.parts[:2] in REBUILDABLE_CACHE_DIRS:
         return True
     if rel.parts and rel.parts[0] == "user_scores":
         return not bool(_setting(config, "maimaidx_storage_include_user_scores", True))
