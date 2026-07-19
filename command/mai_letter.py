@@ -20,6 +20,7 @@ from ..libraries.maimaidx_guess_letter import (
     points_for_letter_hit,
     points_for_song_solve,
 )
+from ..libraries.maimaidx_guess_rate_limit import consume_guess_answer_slot
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_music import guess
 from ..libraries.maimaidx_platform import (
@@ -164,7 +165,17 @@ def _is_reserved_command(text: str) -> bool:
     return False
 
 
+async def _finish_rate_limited(matcher, event: MessageEvent) -> None:
+    msg = consume_guess_answer_slot(platform_user_id(event))
+    if msg:
+        await matcher.finish(
+            adapt_guess_outbound(msg, event=event),
+            reply_message=resolve_reply_message(event, reply_message=True),
+        )
+
+
 async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> None:
+    await _finish_rate_limited(matcher, event)
     board = letter_guess.get(gid)
     assert board is not None
     key = raw.strip()[0]
@@ -194,6 +205,7 @@ async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> Non
 
 async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool:
     """尝试开歌；猜中返回 True，未中返回 False（由调用方决定是否提示）。"""
+    await _finish_rate_limited(matcher, event)
     board = letter_guess.get(gid)
     if board is None:
         return False

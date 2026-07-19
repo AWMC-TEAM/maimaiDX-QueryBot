@@ -19,6 +19,7 @@ from ..libraries.maimaidx_guess_boost_card import (
     guess_boost_card,
 )
 from ..libraries.maimaidx_guess_match import match_guess_answer
+from ..libraries.maimaidx_guess_rate_limit import consume_guess_answer_slot
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_guess_audio import (
@@ -1162,6 +1163,12 @@ async def _(event: MessageEvent):
     if not ans:
         await guess_music_solve.finish()
     uid_key = platform_user_id(event)
+    rate_limit_msg = consume_guess_answer_slot(uid_key)
+    if rate_limit_msg:
+        await guess_music_solve.finish(
+            adapt_guess_outbound(rate_limit_msg, event=event),
+            reply_message=resolve_reply_message(event, reply_message=True),
+        )
     data.user_attempts[uid_key] = data.user_attempts.get(uid_key, 0) + 1
     first_guess = data.user_attempts[uid_key] == 1
     pic_difficulty = data.difficulty if isinstance(data, GuessPicData) else None
