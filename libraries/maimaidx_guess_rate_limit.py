@@ -1,11 +1,11 @@
-"""猜歌类玩法的答题限流：同一用户全局 3 秒一次。"""
+"""猜歌类玩法的答题限流：同一用户全局 2.5 秒一次。"""
 
 from __future__ import annotations
 
 import time
 from typing import Dict, Optional
 
-GUESS_ANSWER_COOLDOWN_SECONDS = 3.0
+GUESS_ANSWER_COOLDOWN_SECONDS = 2.5
 
 _last_answer_at: Dict[str, float] = {}
 
