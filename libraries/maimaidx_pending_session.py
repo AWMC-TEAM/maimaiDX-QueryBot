@@ -105,17 +105,20 @@ async def collect_cleanup_targets() -> List[PendingTarget]:
     targets: List[PendingTarget] = list(_pending.values())
     _pending.clear()
 
-    # 猜歌 / 猜曲绘 / 猜曲子 / 猜铺面
+    # 猜歌 / 猜曲绘 / 猜曲子 / 猜铺面 / 开字母
     try:
         from .maimaidx_guess_audio import request_hot_batch_cancel
+        from .maimaidx_guess_letter import letter_guess
         from .maimaidx_guess_score import guess_score
         from .maimaidx_music import guess
 
         request_hot_batch_cancel()
-        gids = list(set(guess.Group.keys()) | set(guess.Preparing))
+        gids = list(set(guess.Group.keys()) | set(guess.Preparing) | set(letter_guess.Group.keys()))
         for gid in gids:
             targets.append(PendingTarget('group', str(gid)))
             guess.Preparing.discard(gid)
+            if gid in letter_guess.Group:
+                letter_guess.end(gid)
             if gid in guess.Group:
                 guess.Group[gid].end = True
                 try:

@@ -7,6 +7,7 @@ from .mai_break import *
 from .mai_b50_analysis import *
 from .mai_feature import *
 from .mai_guess import *
+from .mai_letter import *
 from .mai_lxns import *
 from .mai_migration import *
 from .mai_playcount import *

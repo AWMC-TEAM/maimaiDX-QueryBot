@@ -62,7 +62,7 @@ def _busy_surcharge_exempt(matcher: Matcher) -> bool:
     if bool(getattr(type(matcher), "_maimaidx_busy_surcharge_exempt", False)):
         return True
     module = str(getattr(matcher, "module", "") or "")
-    return module.endswith(".mai_guess")
+    return module.endswith(".mai_guess") or module.endswith(".mai_letter")
 
 
 def _serial_user_operation(matcher: Matcher) -> bool:

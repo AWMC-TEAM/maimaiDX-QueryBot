@@ -199,7 +199,7 @@ async def _award_guess_points(
     return settlement
 
 
-_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘、猜曲子或猜铺面'
+_GUESS_BUSY_HINT = '该群已有正在进行的猜歌、猜曲绘、猜曲子、猜铺面或开字母'
 _GUESS_SEND_FAIL_MSG = '游戏数据获取失败，本游戏已结束。'
 GUESS_SEND_TIMEOUT_TEXT = 15
 GUESS_SEND_TIMEOUT_MEDIA = 60
@@ -210,6 +210,16 @@ GUESS_CHART_PREPARE_FIRST_UPDATE = 25
 GUESS_CHART_PREPARE_UPDATE_INTERVAL = 30
 GUESS_GENERIC_PREPARE_FIRST_UPDATE = 8
 GUESS_GENERIC_PREPARE_UPDATE_INTERVAL = 15
+
+
+def _letter_busy(gid: GroupId) -> bool:
+    from ..libraries.maimaidx_guess_letter import letter_guess
+
+    return letter_guess.is_playing(gid)
+
+
+def _guess_or_letter_busy(gid: GroupId) -> bool:
+    return guess.is_busy(gid) or _letter_busy(gid)
 
 
 def _guess_loop_should_stop(gid: GroupId) -> bool:
@@ -681,7 +691,7 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_start.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌')
-    if guess.is_busy(gid):
+    if _guess_or_letter_busy(gid):
         await guess_music_start.finish(_GUESS_BUSY_HINT)
     await _guess_notify(guess_music_start, event, '正在准备猜歌（选曲与提示）…', reply=True)
     guess.start(gid)
@@ -741,7 +751,7 @@ async def _(event: MessageEvent, matched=RegexMatched()):
     gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_pic.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    if guess.is_busy(gid):
+    if _guess_or_letter_busy(gid):
         await guess_music_pic.finish(_GUESS_BUSY_HINT, reply_message=True)
     diff_raw = matched.group(1)
     difficulty = int(diff_raw) if diff_raw else None
@@ -840,7 +850,7 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_audio.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    if not await guess.try_begin_prepare(gid):
+    if _letter_busy(gid) or not await guess.try_begin_prepare(gid):
         await guess_music_audio.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     data = None
@@ -949,7 +959,7 @@ async def _(event: MessageEvent):
     gid = get_event_group_id(event)
     if gid not in guess.switch.enable:
         await guess_music_chart.finish('该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True)
-    if not await guess.try_begin_prepare(gid):
+    if _letter_busy(gid) or not await guess.try_begin_prepare(gid):
         await guess_music_chart.finish(_GUESS_BUSY_HINT, reply_message=True)
 
     data = None
@@ -1180,6 +1190,18 @@ async def _(event: MessageEvent):
 @guess_music_reset.handle()
 async def _(event: MessageEvent):
     gid = get_event_group_id(event)
+    from ..libraries.maimaidx_guess_letter import letter_guess
+
+    if letter_guess.is_playing(gid):
+        board = letter_guess.get(gid)
+        if board is not None:
+            letter_guess.reveal_all(board)
+            letter_guess.end(gid)
+            titles = ' / '.join(s.title for s in board.songs)
+            await guess_music_reset.finish(
+                f'已结束开字母。\n本局曲目：{titles}',
+                reply_message=True,
+            )
     if gid in guess.Preparing:
         guess.end_prepare(gid)
         await guess_music_reset.finish('已取消猜歌准备，本局未开始。', reply_message=True)

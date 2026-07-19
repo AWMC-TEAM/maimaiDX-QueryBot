@@ -17,6 +17,7 @@ from nonebot.params import CommandArg, Endswith, RegexMatched
 from ..config import SONGS_PER_PAGE, diffs, log, maiconfig
 from ..libraries.image import image_to_base64, text_to_bytes_io
 from ..libraries.maimaidx_model import AliasStatus
+from ..libraries.maimaidx_guess_letter import letter_guess
 from ..libraries.maimaidx_music import feature_manager, guess, mai, maiApi
 from ..libraries.maimaidx_music_info import build_tags_forward_nodes, draw_music_info
 from ..libraries.maimaidx_multiver_chart import draw_multiver_chart
@@ -31,6 +32,11 @@ search_charter      = on_command('谱师查歌', aliases={'search charter'})
 search_alias_song   = on_endswith(('是什么歌', '是啥歌'))
 query_chart         = on_regex(r'^id\s?([0-9]+)$', re.IGNORECASE)
 chart_preview       = on_regex(r'^谱面\s?([0-9]+)(绿|黄|红|紫|白)$')
+
+
+def _guess_anti_cheat_active(group_id) -> bool:
+    gid = str(group_id)
+    return gid in guess.Group or letter_guess.is_playing(gid)
 
 
 def _bot_nickname(bot: Bot) -> str:
@@ -278,7 +284,7 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
 async def _(event: MessageEvent, message: Message = CommandArg()):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'search'):
         raise IgnoredException('功能已禁用')
-    if isinstance(event, GroupMessageEvent) and str(event.group_id) in guess.Group:
+    if isinstance(event, GroupMessageEvent) and _guess_anti_cheat_active(event.group_id):
         await search_bpm.finish('本群正在猜歌，不要作弊哦~', reply_message=True)
     args = message.extract_plain_text().strip().split()
     page = 1
@@ -323,7 +329,7 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
 async def _(event: MessageEvent, message: Message = CommandArg()):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'search'):
         raise IgnoredException('功能已禁用')
-    if isinstance(event, GroupMessageEvent) and str(event.group_id) in guess.Group:
+    if isinstance(event, GroupMessageEvent) and _guess_anti_cheat_active(event.group_id):
         await search_artist.finish('本群正在猜歌，不要作弊哦~', reply_message=True)
     args = message.extract_plain_text().strip().split()
     page = 1
@@ -362,7 +368,7 @@ async def _(event: MessageEvent, message: Message = CommandArg()):
 async def _(event: MessageEvent, message: Message = CommandArg()):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'search'):
         raise IgnoredException('功能已禁用')
-    if isinstance(event, GroupMessageEvent) and str(event.group_id) in guess.Group:
+    if isinstance(event, GroupMessageEvent) and _guess_anti_cheat_active(event.group_id):
         await search_bpm.finish('本群正在猜歌，不要作弊哦~', reply_message=True)
     args = message.extract_plain_text().strip().split()
     page = 1
@@ -485,7 +491,7 @@ async def _(bot: Bot, event: MessageEvent, match=RegexMatched()):
 async def _(event: MessageEvent, match=RegexMatched()):
     if isinstance(event, GroupMessageEvent) and not feature_manager.is_enabled(event.group_id, 'query'):
         raise IgnoredException('功能已禁用')
-    if isinstance(event, GroupMessageEvent) and str(event.group_id) in guess.Group:
+    if isinstance(event, GroupMessageEvent) and _guess_anti_cheat_active(event.group_id):
         await chart_preview.finish('本群正在猜歌，不要作弊哦~', reply_message=True)
     song_id = match.group(1)
     diff_name = match.group(2)
