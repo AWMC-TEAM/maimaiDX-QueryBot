@@ -20,7 +20,6 @@ from ..libraries.maimaidx_guess_letter import (
     format_settlement_message,
     letter_guess,
 )
-from ..libraries.maimaidx_guess_rate_limit import consume_guess_answer_slot
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_letter_rank_draw import (
     image_b64,
@@ -177,15 +176,6 @@ def _is_reserved_command(text: str) -> bool:
     return False
 
 
-async def _finish_rate_limited(matcher, event: MessageEvent) -> None:
-    msg = consume_guess_answer_slot(platform_user_id(event))
-    if msg:
-        await matcher.finish(
-            adapt_guess_outbound(msg, event=event),
-            reply_message=resolve_reply_message(event, reply_message=True),
-        )
-
-
 async def _maybe_finish_board(
     matcher, event: MessageEvent, gid, board: LetterBoard, parts: list[str]
 ) -> None:
@@ -233,7 +223,7 @@ async def _maybe_finish_board(
 
 
 async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> None:
-    await _finish_rate_limited(matcher, event)
+    # 开字母对局中人人短消息抢答，全局限频会刷「答案被吃掉」并造成异步堆积后爆发，故不限频。
     board = letter_guess.get(gid)
     assert board is not None
     key = raw.strip()[0]
@@ -252,7 +242,7 @@ async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> Non
 
 async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool:
     """尝试开歌；猜中返回 True，未中返回 False（由调用方决定是否提示）。"""
-    await _finish_rate_limited(matcher, event)
+    # 同上：开字母路径不调用 consume_guess_answer_slot（猜歌等模式仍保留 3 秒限频）。
     board = letter_guess.get(gid)
     if board is None:
         return False
