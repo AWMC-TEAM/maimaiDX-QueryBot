@@ -57,13 +57,39 @@ STAR_THRESHOLDS: Tuple[Tuple[float, int], ...] = (
 SCORE_POOL_BY_STAR: Dict[int, int] = {5: 40, 4: 28, 3: 20, 2: 12, 1: 8, 0: 4}
 BREAK_POOL_BY_STAR: Dict[int, int] = {5: 8, 4: 6, 3: 4, 2: 3, 1: 2, 0: 1}
 
+# 开字母限时活动：结算分数 / BREAK ×3（仅开字母；过期自动恢复 1 倍）
+# 自 2026-07-19 23:30 CST（≈ 1784475000）起持续 7 天
+LETTER_TRIPLE_START = 1784475000
+LETTER_TRIPLE_DURATION = 7 * 86400
+LETTER_TRIPLE_MULTIPLIER = 3
+
 # 人多/突发负载 → 文字模式（本局粘性，直到结束；跳过看板/结算图）
-TEXT_MODE_MIN_CONTRIBUTORS = 5  # 本局有贡献的 uid 数 ≥ 此值
+TEXT_MODE_MIN_CONTRIBUTORS = 3  # 本局有贡献的 uid 数 ≥ 此值
 TEXT_MODE_BURST_WINDOW = 2.0  # 秒：统计窗口
-TEXT_MODE_BURST_COUNT = 8  # 窗口内开字母相关处理次数 ≥ 此值
+TEXT_MODE_BURST_COUNT = 4  # 窗口内开字母相关处理次数 ≥ 此值
 
 # 开字母专用答题冷却（非高峰）；与猜歌 3 秒全局限频互不共用
 LETTER_ANSWER_COOLDOWN_SECONDS = 2.5
+
+
+def letter_reward_multiplier(*, now: Optional[float] = None) -> int:
+    """开字母结算倍率：限时活动内为 LETTER_TRIPLE_MULTIPLIER，否则 1。"""
+    t = time.time() if now is None else float(now)
+    end = LETTER_TRIPLE_START + LETTER_TRIPLE_DURATION
+    if LETTER_TRIPLE_START <= t < end:
+        return LETTER_TRIPLE_MULTIPLIER
+    return 1
+
+
+def letter_triple_active(*, now: Optional[float] = None) -> bool:
+    return letter_reward_multiplier(now=now) > 1
+
+
+def letter_triple_banner(*, now: Optional[float] = None) -> str:
+    """活动提示文案；未在活动期内返回空串。"""
+    if not letter_triple_active(now=now):
+        return ""
+    return f"🔥 限时×{LETTER_TRIPLE_MULTIPLIER}：本周开字母结算分数与 BREAK 三倍！"
 
 _BG = (42, 28, 22, 255)
 _CARD = (58, 40, 32, 255)
@@ -223,6 +249,7 @@ class LetterSettlement:
     limits: Dict[int, float] = field(default_factory=default_star_limits)
     adaptive: bool = False
     sample_count: int = 0
+    reward_multiplier: int = 1
 
     @property
     def elapsed_text(self) -> str:
@@ -237,6 +264,14 @@ class LetterSettlement:
         return format_threshold_lines(
             self.limits, adaptive=self.adaptive, sample_count=self.sample_count
         )
+
+    @property
+    def pool_label(self) -> str:
+        """奖池一行文案（含限时倍率标注）。"""
+        base = f"本局奖池：{self.score_pool} 分 / {self.break_pool} BREAK"
+        if self.reward_multiplier > 1:
+            return f"{base}（限时×{self.reward_multiplier}；按贡献分配；无贡献不得分）"
+        return f"{base}（按贡献分配；无贡献不得分）"
 
 
 @dataclass
@@ -392,13 +427,18 @@ class LetterBoard:
         limits: Optional[Dict[int, float]] = None,
         adaptive: bool = False,
         sample_count: int = 0,
+        event_now: Optional[float] = None,
     ) -> LetterSettlement:
-        """全部解开后的通关结算（不玩了勿调用）。"""
+        """全部解开后的通关结算（不玩了勿调用）。
+
+        event_now：活动倍率判定用墙钟（默认 time.time()）；测试可传入固定值。
+        """
         elapsed = self.elapsed(now)
         caps = limits or default_star_limits()
         stars = star_for_elapsed(elapsed, caps)
-        score_pool = SCORE_POOL_BY_STAR.get(stars, SCORE_POOL_BY_STAR[0])
-        break_pool = BREAK_POOL_BY_STAR.get(stars, BREAK_POOL_BY_STAR[0])
+        mult = letter_reward_multiplier(now=event_now)
+        score_pool = SCORE_POOL_BY_STAR.get(stars, SCORE_POOL_BY_STAR[0]) * mult
+        break_pool = BREAK_POOL_BY_STAR.get(stars, BREAK_POOL_BY_STAR[0]) * mult
         weights = {
             uid: c.weight for uid, c in self.contributions.items() if c.weight > 0
         }
@@ -431,6 +471,7 @@ class LetterBoard:
             limits=dict(caps),
             adaptive=adaptive,
             sample_count=sample_count,
+            reward_multiplier=mult,
         )
 
 
@@ -438,10 +479,7 @@ def format_settlement_message(settlement: LetterSettlement) -> str:
     """通关结算短文案（详情放分成图）。"""
     lines = [
         f"🎉 全部解开！用时 {settlement.elapsed_text} · {settlement.stars_text}",
-        (
-            f"本局奖池：{settlement.score_pool} 分 / {settlement.break_pool} BREAK"
-            "（按贡献分配；无贡献不得分）"
-        ),
+        settlement.pool_label,
     ]
     if not settlement.rewards:
         lines.append("本局无人有效贡献，不发奖。")
@@ -469,10 +507,7 @@ def format_settlement_ranking_text(settlement: LetterSettlement) -> str:
     """文字版贡献分成榜（人多结算用）。"""
     lines = [
         f"🎉 全部解开！用时 {settlement.elapsed_text} · {settlement.stars_text}",
-        (
-            f"本局奖池：{settlement.score_pool} 分 / {settlement.break_pool} BREAK"
-            "（按贡献分配；无贡献不得分）"
-        ),
+        settlement.pool_label,
     ]
     if not settlement.rewards:
         lines.append("本局无人有效贡献，不发奖。")

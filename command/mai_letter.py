@@ -21,6 +21,7 @@ from ..libraries.maimaidx_guess_letter import (
     format_settlement_message,
     format_settlement_text,
     letter_guess,
+    letter_triple_banner,
 )
 from ..libraries.maimaidx_guess_score import guess_score
 from ..libraries.maimaidx_letter_rank_draw import (
@@ -366,12 +367,15 @@ async def _(matcher, event: MessageEvent, args: Message = CommandArg()):
         log.warning(f"[LetterGuess] 开局失败：{type(exc).__name__}: {exc}")
         await letter_open.finish(f"开局失败：{exc}", reply_message=True)
     th = letter_stats.thresholds_for(gid)
+    banner = letter_triple_banner()
+    banner_line = f"{banner}\n" if banner else ""
     await _send_board(
         letter_open,
         event,
         board,
         text=(
             f"🎮 舞萌开字母开始！共 {len(board.songs)} 首歌。\n"
+            f"{banner_line}"
             "直接发字母开字符，直接发别名/曲名猜歌。\n"
             "全部解开后按用时与贡献结算；局内不计分。\n"
             f"{th.format_lines()}\n"

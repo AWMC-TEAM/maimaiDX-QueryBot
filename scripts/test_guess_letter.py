@@ -51,6 +51,12 @@ names = {
     "TEXT_MODE_BURST_WINDOW",
     "TEXT_MODE_BURST_COUNT",
     "LETTER_ANSWER_COOLDOWN_SECONDS",
+    "LETTER_TRIPLE_START",
+    "LETTER_TRIPLE_DURATION",
+    "LETTER_TRIPLE_MULTIPLIER",
+    "letter_reward_multiplier",
+    "letter_triple_active",
+    "letter_triple_banner",
 }
 selected = []
 for node in tree.body:
@@ -104,6 +110,12 @@ TEXT_MODE_MIN_CONTRIBUTORS = ns["TEXT_MODE_MIN_CONTRIBUTORS"]
 TEXT_MODE_BURST_WINDOW = ns["TEXT_MODE_BURST_WINDOW"]
 TEXT_MODE_BURST_COUNT = ns["TEXT_MODE_BURST_COUNT"]
 LETTER_ANSWER_COOLDOWN_SECONDS = ns["LETTER_ANSWER_COOLDOWN_SECONDS"]
+LETTER_TRIPLE_START = ns["LETTER_TRIPLE_START"]
+LETTER_TRIPLE_DURATION = ns["LETTER_TRIPLE_DURATION"]
+LETTER_TRIPLE_MULTIPLIER = ns["LETTER_TRIPLE_MULTIPLIER"]
+letter_reward_multiplier = ns["letter_reward_multiplier"]
+letter_triple_active = ns["letter_triple_active"]
+letter_triple_banner = ns["letter_triple_banner"]
 SCORE_POOL_BY_STAR = ns["SCORE_POOL_BY_STAR"]
 BREAK_POOL_BY_STAR = ns["BREAK_POOL_BY_STAR"]
 
@@ -200,9 +212,11 @@ settle_board = LetterBoard(
 settle_board.ensure_contribution("1", 11, "甲").letter_hits = 2
 settle_board.ensure_contribution("1", 11, "甲").song_opens = 1
 settle_board.ensure_contribution("2", 22, "乙").letter_completes = 1
-result = settle_board.settle(now=1025.5)
+# event_now 取活动前，保证基线 1 倍结算可断言
+result = settle_board.settle(now=1025.5, event_now=LETTER_TRIPLE_START - 1)
 assert abs(result.elapsed - 25.5) < 1e-9
 assert result.stars == 5
+assert result.reward_multiplier == 1
 assert result.score_pool == SCORE_POOL_BY_STAR[5]
 assert result.break_pool == BREAK_POOL_BY_STAR[5]
 assert sum(r.score for r in result.rewards) == result.score_pool
@@ -212,7 +226,26 @@ assert "25.500秒" in text
 assert "⭐️⭐️⭐️⭐️⭐️" in text
 assert "本局奖池：40 分 / 8 BREAK" in text
 assert "按贡献分配" in text
+assert "限时×" not in text
 assert "本局阈值" not in text  # 阈值放分成图，短文案不含
+
+# 限时×3：奖池与发放均乘倍，文案标注
+triple = settle_board.settle(
+    now=1025.5, event_now=LETTER_TRIPLE_START + 60
+)
+assert triple.reward_multiplier == LETTER_TRIPLE_MULTIPLIER
+assert triple.score_pool == SCORE_POOL_BY_STAR[5] * LETTER_TRIPLE_MULTIPLIER
+assert triple.break_pool == BREAK_POOL_BY_STAR[5] * LETTER_TRIPLE_MULTIPLIER
+assert sum(r.score for r in triple.rewards) == triple.score_pool
+assert sum(r.break_points for r in triple.rewards) == triple.break_pool
+triple_text = format_settlement_message(triple)
+assert f"限时×{LETTER_TRIPLE_MULTIPLIER}" in triple_text
+assert "120 分 / 24 BREAK" in triple_text
+assert letter_triple_active(now=LETTER_TRIPLE_START)
+assert not letter_triple_active(now=LETTER_TRIPLE_START + LETTER_TRIPLE_DURATION)
+assert "限时×" in letter_triple_banner(now=LETTER_TRIPLE_START + 1)
+assert letter_triple_banner(now=LETTER_TRIPLE_START - 1) == ""
+assert letter_reward_multiplier(now=LETTER_TRIPLE_START - 1) == 1
 
 # 文字看板 / 文字结算榜
 board_txt = format_board_text(settle_board)
@@ -225,11 +258,12 @@ assert "→ +" in rank_txt and "BREAK" in rank_txt
 assert "开字母×" in rank_txt or "开歌×" in rank_txt or "补齐×" in rank_txt
 full_txt = format_settlement_text(result, settle_board)
 assert "全部解开" in full_txt and "【舞萌开字母】" in full_txt
+assert f"限时×{LETTER_TRIPLE_MULTIPLIER}" in format_settlement_ranking_text(triple)
 
 # 文字模式：贡献人数阈值（粘性）
-assert TEXT_MODE_MIN_CONTRIBUTORS == 5
+assert TEXT_MODE_MIN_CONTRIBUTORS == 3
 assert TEXT_MODE_BURST_WINDOW == 2.0
-assert TEXT_MODE_BURST_COUNT == 8
+assert TEXT_MODE_BURST_COUNT == 4
 crowd = LetterBoard(
     songs=[LetterSong("1", "AA", ["AA"], solved=True, solved_by="x")],
     started_at=0.0,
@@ -269,7 +303,7 @@ slow = LetterBoard(
     started_at=0.0,
 )
 slow.ensure_contribution("1", 11, "甲").letter_hits = 1
-slow_result = slow.settle(now=200.0)
+slow_result = slow.settle(now=200.0, event_now=LETTER_TRIPLE_START - 1)
 assert slow_result.stars == 0
 assert slow_result.score_pool == SCORE_POOL_BY_STAR[0]
 

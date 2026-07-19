@@ -211,6 +211,11 @@ async def render_settlement_split(settlement: LetterSettlement) -> Image.Image:
     font = DrawText(dr, _board_font())
     dr.rounded_rectangle((20, 20, width - 20, height - 20), radius=20, fill=_CARD)
     font.draw(44, 36, 32, "本局榜单 · 贡献分成", _TITLE, "lt", 2, (0, 0, 0, 120))
+    pool_suffix = (
+        f"（限时×{settlement.reward_multiplier}）"
+        if getattr(settlement, "reward_multiplier", 1) > 1
+        else ""
+    )
     font.draw(
         44,
         78,
@@ -218,6 +223,7 @@ async def render_settlement_split(settlement: LetterSettlement) -> Image.Image:
         (
             f"用时 {settlement.elapsed_text} · {star_text_draw(settlement.stars)}"
             f"  ·  奖池 {settlement.score_pool} 分 / {settlement.break_pool} BREAK"
+            f"{pool_suffix}"
         ),
         _MUTED,
         "lt",
