@@ -340,14 +340,6 @@ async def _(event: MessageEvent):
         await _apply_open_letter(letter_quick, event, gid, text)
         return
 
-    # 多字符 → 先尝试开歌（别名/曲名）
+    # 多字符 → 仅正确别名/曲名才开歌；未命中与猜曲绘一样静默
     if 2 <= len(text) <= 48:
-        if await _apply_open_song(letter_quick, event, gid, text):
-            return
-        # 未命中时轻提示，避免刷屏：仅短文本回复
-        if len(text) <= 24:
-            await letter_quick.send(
-                adapt_guess_outbound("没有对上未解开的歌（也可发单个字母开字符）", event=event),
-                reply_message=resolve_reply_message(event, reply_message=True),
-            )
-            await letter_quick.finish()
+        await _apply_open_song(letter_quick, event, gid, text)
