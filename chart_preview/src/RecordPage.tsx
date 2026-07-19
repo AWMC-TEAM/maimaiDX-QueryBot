@@ -1,6 +1,7 @@
 /**
  * 猜铺面录制页：仅渲染谱面动画，不加载音乐 / 背景视频 / UI。
- * Playwright 通过 window.__GUESS_CHART__ 状态机驱动录制。
+ * 播放窗口内用 MediaRecorder 录制 canvas，供 Playwright 取回；
+ * 正解音时间轴由 hitOffsetsMs 交给后端精确混音。
  */
 import { useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -27,8 +28,13 @@ type GuessBridge = {
   songId: number | null;
   kind: ChartKind | null;
   diff: ChartDifficulty | null;
-  /** 相对播放起点的正解音时间（毫秒），供后端混音 */
+  /** 相对播放起点的正解音时间（毫秒） */
   hitOffsetsMs: number[];
+  /** 录制开始 → play() 的前置空白（毫秒），用于音画对齐 */
+  recordLeadMs: number;
+  /** MediaRecorder 产出的 webm（base64，无 data: 前缀） */
+  videoBase64: string | null;
+  videoMime: string | null;
 };
 
 declare global {
@@ -117,18 +123,45 @@ function collectHitOffsetsMs(chart: Chart, startMs: number, durationMs: number):
   const endMs = startMs + durationMs;
   const seen = new Set<string>();
   const hits: number[] = [];
-  for (const note of chart.notes) {
+  for (let i = 0; i < chart.notes.length; i++) {
+    const note = chart.notes[i];
     if (!shouldPlayAnswerSound(note)) continue;
-    const key = note.timingMs.toFixed(3);
+    // 同刻多押只响一次；用 index 区分极端重合以外的 note
+    const key = `${note.type}:${note.timingMs.toFixed(3)}`;
     if (seen.has(key)) continue;
     seen.add(key);
     // timingOffset=-50 → 正解音略早于判定时刻
     const absMs = note.timingMs + ANSWER_SOUND_BASE_OFFSET_MS;
-    if (absMs < startMs || absMs > endMs) continue;
-    hits.push(Math.max(0, absMs - startMs));
+    if (absMs < startMs - 1 || absMs > endMs + 1) continue;
+    hits.push(Math.max(0, Math.min(durationMs, absMs - startMs)));
   }
   hits.sort((a, b) => a - b);
   return hits;
+}
+
+function pickRecorderMime(): string {
+  const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  for (const t of types) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      const idx = dataUrl.indexOf(',');
+      resolve(idx >= 0 ? dataUrl.slice(idx + 1) : '');
+    };
+    reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function ensureBridge(): GuessBridge {
@@ -142,6 +175,9 @@ function ensureBridge(): GuessBridge {
       kind: null,
       diff: null,
       hitOffsetsMs: [],
+      recordLeadMs: 0,
+      videoBase64: null,
+      videoMime: null,
     };
   }
   return window.__GUESS_CHART__;
@@ -190,8 +226,10 @@ export default function RecordPage() {
       kind: params.kind,
       diff: params.diff,
       hitOffsetsMs: [],
+      recordLeadMs: 0,
+      videoBase64: null,
+      videoMime: null,
     });
-    // 页面内正解音仍关闭：Playwright 录屏不含 WebAudio，改由后端混入 answer.wav
     setSoundEnabled(false);
     setMusicVolume(0);
     setMusicUrl('');
@@ -273,6 +311,9 @@ export default function RecordPage() {
           diff: diffToUse,
           error: null,
           hitOffsetsMs,
+          recordLeadMs: 0,
+          videoBase64: null,
+          videoMime: null,
         });
       } catch (e) {
         console.error(e);
@@ -310,20 +351,93 @@ export default function RecordPage() {
     if (window.__GUESS_CHART__?.state !== 'ready') return;
 
     startedRef.current = true;
-    const durationMs = params.durationSec * 1000;
+    let cancelled = false;
 
-    // 等一帧让 canvas 完成首绘
-    const startTimer = window.setTimeout(() => {
-      setBridge({ state: 'playing' });
-      play();
-      window.setTimeout(() => {
+    (async () => {
+      // 等 canvas 首绘稳定
+      await sleep(300);
+      if (cancelled) return;
+
+      const canvas = document.querySelector(
+        '[data-guess-chart-canvas] canvas'
+      ) as HTMLCanvasElement | null;
+      if (!canvas) {
+        setBridge({ state: 'error', error: 'canvas not found' });
+        return;
+      }
+      if (typeof MediaRecorder === 'undefined') {
+        setBridge({ state: 'error', error: 'MediaRecorder unavailable' });
+        return;
+      }
+
+      const mime = pickRecorderMime();
+      const stream = canvas.captureStream(30);
+      const recorder = mime
+        ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2_500_000 })
+        : new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunks.push(e.data);
+      };
+
+      const stopped = new Promise<Blob>((resolve, reject) => {
+        recorder.onerror = () => reject(new Error('MediaRecorder error'));
+        recorder.onstop = () => {
+          resolve(new Blob(chunks, { type: recorder.mimeType || mime || 'video/webm' }));
+        };
+      });
+
+      try {
+        // 先开录再 play：前置空白计入 recordLeadMs，后端据此对齐正解音
+        const tRec = performance.now();
+        recorder.start(100);
+        setBridge({
+          state: 'playing',
+          videoBase64: null,
+          videoMime: recorder.mimeType || mime || 'video/webm',
+        });
+        play();
+        const recordLeadMs = Math.max(0, performance.now() - tRec);
+        setBridge({ recordLeadMs });
+        await sleep(params.durationSec * 1000);
+        if (cancelled) return;
         pause();
-        setBridge({ state: 'done' });
-      }, durationMs);
-    }, 400);
+        // 多录一小段，保证末尾判定与正解音尾部进画面
+        await sleep(280);
+        if (recorder.state !== 'inactive') recorder.stop();
+        const blob = await stopped;
+        if (cancelled) return;
+        if (!blob.size) {
+          setBridge({ state: 'error', error: 'empty recording' });
+          return;
+        }
+        const videoBase64 = await blobToBase64(blob);
+        setBridge({
+          state: 'done',
+          recordLeadMs,
+          videoBase64,
+          videoMime: blob.type || mime || 'video/webm',
+        });
+      } catch (e) {
+        console.error(e);
+        try {
+          if (recorder.state !== 'inactive') recorder.stop();
+        } catch {
+          // ignore
+        }
+        if (!cancelled) {
+          setBridge({
+            state: 'error',
+            error: e instanceof Error ? e.message : 'record failed',
+          });
+        }
+      } finally {
+        stream.getTracks().forEach((t) => t.stop());
+      }
+    })();
 
     return () => {
-      window.clearTimeout(startTimer);
+      cancelled = true;
     };
   }, [chartData, params.durationSec, play, pause]);
 

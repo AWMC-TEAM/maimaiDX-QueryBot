@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import shutil
 import socket
-import struct
 import subprocess
 import threading
 import time
 import wave
+from array import array
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -22,16 +23,14 @@ from playwright.async_api import async_playwright
 
 _PKG_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHART_CDN = 'https://assets2.lxns.net/maimai/chart'
-# rev=2：加长片段 + 混入正解音，使旧缓存失效
-CHART_VIDEO_REV = 2
+# rev=4：MediaRecorder + recordLeadMs 对齐 + 不截断尾音
+CHART_VIDEO_REV = 4
 DEFAULT_DURATION = 40
 DEFAULT_VIEWPORT = 720
 ANSWER_GRACE = 120
 # 作答倒计时提醒节点（秒）
 COUNTDOWN_MARKS = (100, 80, 60, 40, 20)
-# Playwright 收尾等待，用于裁剪出纯播放段
-RECORD_END_PAD_SEC = 0.45
-MAX_HIT_SOUNDS = 80
+MAX_HIT_SOUNDS = 2500
 CHART_DIFF_NAMES = {
     2: '绿',
     3: '黄',
@@ -217,15 +216,16 @@ def _load_wav_mono_pcm16(path: Path) -> Tuple[int, List[int]]:
         frames = wf.readframes(wf.getnframes())
     if width != 2:
         raise RuntimeError(f'answer.wav 需为 16-bit PCM，实际 sampwidth={width}')
-    samples = list(struct.unpack('<' + 'h' * (len(frames) // 2), frames))
+    samples = array('h')
+    samples.frombytes(frames)
     if channels == 2:
-        samples = [
-            int((samples[i] + samples[i + 1]) / 2)
-            for i in range(0, len(samples) - 1, 2)
-        ]
+        samples = array(
+            'h',
+            (int((samples[i] + samples[i + 1]) / 2) for i in range(0, len(samples) - 1, 2)),
+        )
     elif channels != 1:
         raise RuntimeError(f'不支持的声道数: {channels}')
-    return rate, samples
+    return rate, list(samples)
 
 
 def _build_answer_track_wav(
@@ -245,37 +245,45 @@ def _build_answer_track_wav(
         log.warning(f'[GuessChart] 读取正解音失败: {e}')
         return False
 
-    total = max(1, int(duration_sec * rate) + len(answer))
-    mix = [0] * total
-    hits = sorted(float(x) for x in hit_offsets_ms if float(x) >= 0)[:MAX_HIT_SOUNDS]
+    # 预留完整 answer 尾音，避免最后几击被截断
+    total = max(1, int(round(duration_sec * rate)) + len(answer) + rate // 10)
+    mix = array('h', [0]) * total
+    hits = sorted({round(float(x), 3) for x in hit_offsets_ms if float(x) >= 0})
+    if len(hits) > MAX_HIT_SOUNDS:
+        # 均匀抽样，避免超密谱把音轨打爆
+        step = len(hits) / MAX_HIT_SOUNDS
+        hits = [hits[int(i * step)] for i in range(MAX_HIT_SOUNDS)]
+    placed = 0
     for hit_ms in hits:
-        start = int(hit_ms / 1000.0 * rate)
+        start = int(round(hit_ms / 1000.0 * rate))
         if start >= total:
             continue
         for i, sample in enumerate(answer):
             idx = start + i
             if idx >= total:
                 break
-            val = mix[idx] + int(sample * 0.85)
+            val = int(mix[idx]) + int(sample * 0.9)
             mix[idx] = max(-32767, min(32767, val))
+        placed += 1
 
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(out_wav), 'wb') as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(rate)
-        wf.writeframes(struct.pack('<' + 'h' * len(mix), *mix))
-    return True
+        wf.writeframes(mix.tobytes())
+    log.info(f'[GuessChart] 正解音轨 hits={placed}/{len(hits)} duration={duration_sec:.3f}s')
+    return placed > 0
 
 
-def _ffmpeg_finalize(
+def _ffmpeg_mux(
     webm: Path,
     mp4: Path,
     *,
-    duration: int,
     hit_offsets_ms: Sequence[float],
+    record_lead_ms: float = 0.0,
 ) -> None:
-    """裁剪播放段、混入正解音并压成 H.264 mp4。"""
+    """将 MediaRecorder webm 转码，并按录制时间轴混入正解音。"""
     mp4.parent.mkdir(parents=True, exist_ok=True)
     work = mp4.parent / '_encode'
     if work.exists():
@@ -283,44 +291,71 @@ def _ffmpeg_finalize(
     work.mkdir(parents=True, exist_ok=True)
 
     silent = work / 'silent.mp4'
-    video_dur = _ffprobe_duration(webm)
-    play_start = max(0.0, video_dur - float(duration) - RECORD_END_PAD_SEC)
     cmd_video = [
         'ffmpeg', '-y',
-        '-ss', f'{play_start:.3f}',
         '-i', str(webm),
-        '-t', str(duration),
         '-an',
         '-c:v', 'libx264',
         '-preset', 'veryfast',
-        '-crf', '28',
+        '-crf', '26',
         '-pix_fmt', 'yuv420p',
         '-vf', f'scale={DEFAULT_VIEWPORT}:{DEFAULT_VIEWPORT}',
+        '-movflags', '+faststart',
         str(silent),
     ]
     proc = subprocess.run(cmd_video, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f'ffmpeg 视频转码失败: {proc.stderr[-800:]}')
 
+    video_dur = _ffprobe_duration(silent)
+    lead = max(0.0, float(record_lead_ms))
+    # hit 相对 play()；加上录制前置空白即视频时间轴（不做整段拉伸）
+    aligned_hits = [lead + float(h) for h in hit_offsets_ms]
+
     audio_wav = work / 'answers.wav'
     has_audio = _build_answer_track_wav(
         audio_wav,
-        duration_sec=float(duration) + 0.2,
-        hit_offsets_ms=hit_offsets_ms,
+        duration_sec=video_dur + 0.35,
+        hit_offsets_ms=aligned_hits,
     )
     tmp = mp4.with_suffix('.tmp.mp4')
     if has_audio:
-        cmd_mux = [
-            'ffmpeg', '-y',
-            '-i', str(silent),
-            '-i', str(audio_wav),
-            '-c:v', 'copy',
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-shortest',
-            '-movflags', '+faststart',
-            str(tmp),
-        ]
+        audio_dur = _ffprobe_duration(audio_wav)
+        # 画面不够长时冻结尾帧，避免 -t 裁掉末尾正解音
+        pad = max(0.0, audio_dur - video_dur + 0.05)
+        if pad > 0.01:
+            vf = f'[0:v]tpad=stop_mode=clone:stop_duration={pad:.3f}[v]'
+            cmd_mux = [
+                'ffmpeg', '-y',
+                '-i', str(silent),
+                '-i', str(audio_wav),
+                '-filter_complex', f'{vf};[1:a]anull[a]',
+                '-map', '[v]',
+                '-map', '[a]',
+                '-c:v', 'libx264',
+                '-preset', 'veryfast',
+                '-crf', '26',
+                '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac',
+                '-b:a', '160k',
+                '-shortest',
+                '-movflags', '+faststart',
+                str(tmp),
+            ]
+        else:
+            cmd_mux = [
+                'ffmpeg', '-y',
+                '-i', str(silent),
+                '-i', str(audio_wav),
+                '-map', '0:v:0',
+                '-map', '1:a:0',
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-b:a', '160k',
+                '-shortest',
+                '-movflags', '+faststart',
+                str(tmp),
+            ]
     else:
         cmd_mux = [
             'ffmpeg', '-y',
@@ -366,8 +401,6 @@ async def _render_chart_video(
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
             viewport={'width': DEFAULT_VIEWPORT, 'height': DEFAULT_VIEWPORT},
-            record_video_dir=str(work),
-            record_video_size={'width': DEFAULT_VIEWPORT, 'height': DEFAULT_VIEWPORT},
             device_scale_factor=1,
         )
         page = await context.new_page()
@@ -386,33 +419,58 @@ async def _render_chart_video(
                 """() => window.__GUESS_CHART__
                     && (window.__GUESS_CHART__.state === 'done'
                         || window.__GUESS_CHART__.state === 'error')""",
-                timeout=(duration + 60) * 1000,
+                timeout=(duration + 90) * 1000,
             )
-            bridge = await page.evaluate('() => window.__GUESS_CHART__')
+            bridge = await page.evaluate(
+                """() => {
+                    const g = window.__GUESS_CHART__ || {};
+                    return {
+                        state: g.state,
+                        error: g.error,
+                        durationSec: g.durationSec,
+                        startSec: g.startSec,
+                        songId: g.songId,
+                        kind: g.kind,
+                        diff: g.diff,
+                        hitOffsetsMs: g.hitOffsetsMs || [],
+                        recordLeadMs: g.recordLeadMs || 0,
+                        videoBase64: g.videoBase64 || null,
+                        videoMime: g.videoMime || null,
+                    };
+                }"""
+            )
             if bridge.get('state') == 'error':
                 raise RuntimeError(bridge.get('error') or '谱面录制失败')
             meta = dict(bridge or {})
-            # 尾帧多留一点，避免录制提前截断
-            await page.wait_for_timeout(int(RECORD_END_PAD_SEC * 1000))
         finally:
             await page.close()
             await context.close()
             await browser.close()
 
-    webms = sorted(work.glob('*.webm'), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not webms:
-        raise RuntimeError('Playwright 未产出 webm 视频')
+    b64 = meta.get('videoBase64') or ''
+    if not b64:
+        raise RuntimeError('页面未返回录制视频（videoBase64 为空）')
+    webm = work / 'capture.webm'
+    webm.write_bytes(base64.b64decode(b64))
     hits = meta.get('hitOffsetsMs') or []
     if not isinstance(hits, list):
         hits = []
+    try:
+        lead_ms = float(meta.get('recordLeadMs') or 0)
+    except (TypeError, ValueError):
+        lead_ms = 0.0
     await asyncio.to_thread(
-        _ffmpeg_finalize,
-        webms[0],
+        _ffmpeg_mux,
+        webm,
         out_mp4,
-        duration=duration,
         hit_offsets_ms=hits,
+        record_lead_ms=lead_ms,
     )
     shutil.rmtree(work, ignore_errors=True)
+    # 避免把巨大 base64 写进 manifest
+    meta.pop('videoBase64', None)
+    meta['hit_count'] = len(hits)
+    meta['recordLeadMs'] = lead_ms
     return meta
 
 
