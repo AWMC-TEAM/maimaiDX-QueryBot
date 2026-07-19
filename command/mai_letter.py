@@ -81,7 +81,7 @@ letter_song = on_command("开歌", rule=LETTER_PLAYING, priority=5, block=True)
 letter_quit = on_command(
     "不玩了", aliases={"结束开字母"}, rule=LETTER_PLAYING, priority=5, block=True
 )
-# priority 低于「开字母」，避免被「开字母」+参数抢先匹配
+# priority 高于「开字母」，避免被拆成 开字母+参数
 letter_score_cmd = on_command(
     "开字母排行", aliases={"开字母积分榜"}, rule=GROUP_MESSAGE, priority=4, block=True
 )
@@ -274,11 +274,16 @@ async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool
 
 @letter_start.handle()
 @letter_open.handle()
-async def _(event: MessageEvent, args: Message = CommandArg()):
+async def _(matcher, event: MessageEvent, args: Message = CommandArg()):
     gid = get_event_group_id(event)
     if gid is None:
         return
     raw = args.extract_plain_text().strip()
+    # 「开字母排行」等可能被拆成 开字母 + 参数，交给专用指令
+    if raw in {"排行", "积分榜", "贡献榜", "时间榜"} or raw.startswith(
+        ("排行", "积分榜", "贡献榜", "时间榜")
+    ):
+        matcher.skip()
     enabled_err = _ensure_enabled(gid)
     if enabled_err:
         await letter_open.finish(enabled_err, reply_message=True)
