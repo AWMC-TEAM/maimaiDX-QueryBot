@@ -50,6 +50,7 @@ names = {
     "TEXT_MODE_MIN_CONTRIBUTORS",
     "TEXT_MODE_BURST_WINDOW",
     "TEXT_MODE_BURST_COUNT",
+    "LETTER_ANSWER_COOLDOWN_SECONDS",
 }
 selected = []
 for node in tree.body:
@@ -102,6 +103,7 @@ format_settlement_text = ns["format_settlement_text"]
 TEXT_MODE_MIN_CONTRIBUTORS = ns["TEXT_MODE_MIN_CONTRIBUTORS"]
 TEXT_MODE_BURST_WINDOW = ns["TEXT_MODE_BURST_WINDOW"]
 TEXT_MODE_BURST_COUNT = ns["TEXT_MODE_BURST_COUNT"]
+LETTER_ANSWER_COOLDOWN_SECONDS = ns["LETTER_ANSWER_COOLDOWN_SECONDS"]
 SCORE_POOL_BY_STAR = ns["SCORE_POOL_BY_STAR"]
 BREAK_POOL_BY_STAR = ns["BREAK_POOL_BY_STAR"]
 
@@ -248,6 +250,19 @@ for i in range(TEXT_MODE_BURST_COUNT):
     burst.note_process(now=t0 + i * 0.01)
 assert burst.text_mode
 assert burst.prefer_text()
+
+# 开字母专用 2.5s 冷却：非高峰提示一次后静默；高峰跳过
+assert LETTER_ANSWER_COOLDOWN_SECONDS == 2.5
+cd_board = LetterBoard(songs=[LetterSong("1", "AA", ["AA"])], started_at=t0)
+assert cd_board.try_consume_answer("u1", now=t0) is None
+tip = cd_board.try_consume_answer("u1", now=t0 + 0.5)
+assert tip and "稍慢一点" in tip
+assert cd_board.try_consume_answer("u1", now=t0 + 1.0) == ""  # 静默
+assert cd_board.try_consume_answer("u1", now=t0 + LETTER_ANSWER_COOLDOWN_SECONDS) is None
+# 高峰文字模式不检查
+peak = LetterBoard(songs=[LetterSong("1", "AA", ["AA"])], text_mode=True)
+assert peak.try_consume_answer("u9", now=t0) is None
+assert peak.try_consume_answer("u9", now=t0 + 0.1) is None
 
 slow = LetterBoard(
     songs=[LetterSong("1", "AA", ["AA"], solved=True, solved_by="甲")],

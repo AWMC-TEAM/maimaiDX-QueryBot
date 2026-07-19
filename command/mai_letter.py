@@ -249,13 +249,33 @@ async def _maybe_finish_board(
     await matcher.finish()
 
 
+async def _letter_cooldown_block(matcher, event: MessageEvent, board: LetterBoard) -> bool:
+    """
+    开字母非高峰 2.5s/人冷却。高峰文字模式跳过。
+    返回 True 表示已拦截（调用方应停止后续处理）。
+    不调用猜歌的 consume_guess_answer_slot。
+    """
+    tip = board.try_consume_answer(platform_user_id(event))
+    if tip is None:
+        return False
+    if tip:
+        await matcher.send(
+            adapt_guess_outbound(tip, event=event),
+            reply_message=False,
+        )
+    return True
+
+
 async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> None:
-    # 开字母对局中人人短消息抢答，全局限频会刷「答案被吃掉」并造成异步堆积后爆发，故不限频。
+    # 非高峰：本局 2.5s/人冷却；高峰文字模式不检查。不用猜歌 3s 全局限频。
     board = letter_guess.get(gid)
     assert board is not None
     key = raw.strip()[0]
     if not _is_maskable(key):
         await matcher.finish("只能开字母、数字或日文/汉字字符哦", reply_message=True)
+    if await _letter_cooldown_block(matcher, event, board):
+        await matcher.finish()
+        return
     solver = get_sender_display_name(event)
     msg, board, _completed, _hidden_before = letter_guess.open_letter(
         gid,
@@ -268,11 +288,13 @@ async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> Non
 
 
 async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool:
-    """尝试开歌；猜中返回 True，未中返回 False（由调用方决定是否提示）。"""
-    # 同上：开字母路径不调用 consume_guess_answer_slot（猜歌等模式仍保留 3 秒限频）。
+    """尝试开歌；猜中或冷却拦截返回 True，未中返回 False（由调用方决定是否提示）。"""
+    # 开字母路径不用 consume_guess_answer_slot（猜歌等模式仍保留 3 秒限频）。
     board = letter_guess.get(gid)
     if board is None:
         return False
+    if await _letter_cooldown_block(matcher, event, board):
+        return True
     msg, board, song, _completed, _hidden_before = letter_guess.open_song(
         gid,
         text,

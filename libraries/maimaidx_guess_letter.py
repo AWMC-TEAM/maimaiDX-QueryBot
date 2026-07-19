@@ -62,6 +62,9 @@ TEXT_MODE_MIN_CONTRIBUTORS = 5  # 本局有贡献的 uid 数 ≥ 此值
 TEXT_MODE_BURST_WINDOW = 2.0  # 秒：统计窗口
 TEXT_MODE_BURST_COUNT = 8  # 窗口内开字母相关处理次数 ≥ 此值
 
+# 开字母专用答题冷却（非高峰）；与猜歌 3 秒全局限频互不共用
+LETTER_ANSWER_COOLDOWN_SECONDS = 2.5
+
 _BG = (42, 28, 22, 255)
 _CARD = (58, 40, 32, 255)
 _TITLE = (255, 214, 170, 255)
@@ -277,6 +280,9 @@ class LetterBoard:
     # 人多/突发时粘性降级为纯文字，本局内不再出图
     text_mode: bool = False
     process_times: List[float] = field(default_factory=list)
+    # 非高峰：每人上次有效答题时间；冷却提示只发一次避免刷屏
+    last_answer_at: Dict[str, float] = field(default_factory=dict)
+    cooldown_notified: Set[str] = field(default_factory=set)
 
     @property
     def solved_count(self) -> int:
@@ -294,6 +300,37 @@ class LetterBoard:
     def elapsed(self, now: Optional[float] = None) -> float:
         t = time.time() if now is None else float(now)
         return max(0.0, t - float(self.started_at))
+
+    def try_consume_answer(
+        self, uid: str, *, now: Optional[float] = None
+    ) -> Optional[str]:
+        """
+        开字母专用答题冷却（2.5 秒/人）。
+
+        返回 None：放行（并记录本次时间）。
+        返回非空：冷却中，需短提示一次。
+        返回空串 ''：冷却中且本轮已提示过，静默丢弃。
+
+        高峰（文字模式）直接放行，不做冷却判断。
+        与猜歌 consume_guess_answer_slot（3 秒全局）完全独立。
+        """
+        if self.text_mode or self.prefer_text():
+            return None
+        key = str(uid or "").strip()
+        if not key:
+            return None
+        t = time.time() if now is None else float(now)
+        last = self.last_answer_at.get(key)
+        if last is not None:
+            remain = LETTER_ANSWER_COOLDOWN_SECONDS - (t - last)
+            if remain > 0:
+                if key in self.cooldown_notified:
+                    return ""
+                self.cooldown_notified.add(key)
+                return f"稍慢一点，{remain:.1f}秒后再试"
+        self.last_answer_at[key] = t
+        self.cooldown_notified.discard(key)
+        return None
 
     def note_process(self, now: Optional[float] = None) -> bool:
         """
