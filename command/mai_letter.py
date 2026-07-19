@@ -217,15 +217,17 @@ async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool
     board = letter_guess.get(gid)
     if board is None:
         return False
-    hidden_map = {s.music_id: s.hidden_count(board.revealed) for s in board.songs}
-    msg, board, song = letter_guess.open_song(
+    msg, board, song, completed, hidden_before = letter_guess.open_song(
         gid, text, solver=get_sender_display_name(event)
     )
     if song is None:
         return False
     parts = [msg]
-    pts = points_for_song_solve(hidden_map.get(song.music_id, 0))
-    settlement = await _award_points(event, gid, pts, tag="开歌")
+    pts = points_for_song_solve(hidden_before.get(song.music_id, 0))
+    for done in completed:
+        pts += points_for_letter_complete(hidden_before.get(done.music_id, 0))
+    tag = "开歌+字母补齐" if completed else "开歌"
+    settlement = await _award_points(event, gid, pts, tag=tag)
     if settlement:
         parts.append(settlement)
     if board.finished:

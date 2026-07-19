@@ -229,14 +229,18 @@ class LetterGuessManager:
         if not _is_maskable(ch):
             return "只能开字母、数字或日文/汉字字符哦", board, [], {}
         key = _norm_token(ch)
-        if key in board.revealed:
-            return f"字母「{key}」已经开过了", board, [], {}
-
         hidden_before = {
             song.music_id: song.hidden_count(board.revealed)
             for song in board.songs
             if not song.solved
         }
+        if key in board.revealed:
+            # 历史对局可能已全开字母却未 claim，再跑一次避免卡在 [??]
+            completed = board.claim_fully_revealed(solver)
+            msg = f"字母「{key}」已经开过了"
+            msg += _format_letter_complete(completed)
+            return msg, board, completed, hidden_before
+
         board.revealed.add(key)
         board.opened_order.append(key)
         hit = 0
@@ -254,11 +258,16 @@ class LetterGuessManager:
 
     def open_song(
         self, gid: GroupId, guess_text: str, *, solver: str = ""
-    ) -> Tuple[str, LetterBoard, Optional[LetterSong]]:
+    ) -> Tuple[str, LetterBoard, Optional[LetterSong], List[LetterSong], dict[str, int]]:
         board = self.Group[gid]
         text = guess_text.strip()
         if not text:
-            return "请发送歌名或别名，例如：开歌 conflict", board, None
+            return "请发送歌名或别名，例如：开歌 conflict", board, None, [], {}
+        hidden_before = {
+            song.music_id: song.hidden_count(board.revealed)
+            for song in board.songs
+            if not song.solved
+        }
         for song in board.songs:
             if song.solved:
                 continue
@@ -272,8 +281,12 @@ class LetterGuessManager:
                         if key not in board.revealed:
                             board.revealed.add(key)
                             board.opened_order.append(key)
-                return f"✅ 猜中：{song.title}", board, song
-        return "没有对上未解开的歌，再想想？", board, None
+                # 附带补齐的其它曲归当前开歌者
+                completed = board.claim_fully_revealed(solver)
+                msg = f"✅ 猜中：{song.title}"
+                msg += _format_letter_complete(completed)
+                return msg, board, song, completed, hidden_before
+        return "没有对上未解开的歌，再想想？", board, None, [], hidden_before
 
     def reveal_all(self, board: LetterBoard) -> None:
         for song in board.songs:
