@@ -16,6 +16,7 @@ from ..libraries.maimaidx_guess_letter import (
     LetterBoard,
     LetterSettlement,
     _is_maskable,
+    _norm_token,
     board_image_segment,
     format_board_text,
     format_elapsed,
@@ -280,17 +281,24 @@ async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> Non
     key = raw.strip()[0]
     if not _is_maskable(key):
         await matcher.finish("只能开字母、数字或日文/汉字字符哦", reply_message=True)
-    if await _letter_cooldown_block(matcher, event, board):
-        await matcher.finish()
-        return
+    already = _norm_token(key) in board.revealed
+    # 已开过的字母不走冷却提示，避免刷屏；仍调用 open_letter 以处理历史补齐
+    if not already:
+        if await _letter_cooldown_block(matcher, event, board):
+            await matcher.finish()
+            return
     solver = get_sender_display_name(event)
-    msg, board, _completed, _hidden_before = letter_guess.open_letter(
+    msg, board, completed, _hidden_before = letter_guess.open_letter(
         gid,
         raw,
         solver=solver,
         uid=platform_user_id(event),
         billing_id=billing_user_id(event),
     )
+    if already and not msg and not completed:
+        # 字母已开过且无补齐：静默忽略，不发看板/文字
+        await matcher.finish()
+        return
     await _maybe_finish_board(matcher, event, gid, board, [msg])
 
 

@@ -176,7 +176,16 @@ msg2, _, completed2, _ = mgr2.open_letter(
 )
 assert completed2 and completed2[0].solved_by == "补洞侠"
 assert "字母补齐：AB" in msg2
+assert "已经开过" not in msg2
 assert hist.contributions["u2"].letter_completes == 1
+
+# 已开过且无补齐：静默（空文案）
+mgr3 = LetterGuessManager()
+dup = LetterSong(music_id="d", title="AB", answers=["AB"], solved=True, solved_by="x")
+dup_board = LetterBoard(songs=[dup], revealed={"a", "b"})
+mgr3.Group[3] = dup_board
+msg3, _, completed3, _ = mgr3.open_letter(3, "a", solver="刷屏侠", uid="u3")
+assert msg3 == "" and completed3 == []
 
 assert format_elapsed(12.3456) == "12.346秒"
 assert format_elapsed(0) == "0.000秒"
@@ -272,8 +281,11 @@ assert "25.500秒" in frozen.elapsed_text
 # 文字看板 / 文字结算榜
 board_txt = format_board_text(settle_board)
 assert "【舞萌开字母】进度 2/2" in board_txt
-assert "[OK] AA" in board_txt
-assert "[OK] BB" in board_txt
+assert "✅ AA" in board_txt
+assert "✅ BB" in board_txt
+assert "🤔" in format_board_text(
+    LetterBoard(songs=[LetterSong("9", "XY", ["XY"])], revealed=set())
+)
 rank_txt = format_settlement_ranking_text(result)
 assert "#1" in rank_txt and "权重" in rank_txt
 assert "→ +" in rank_txt and "BREAK" in rank_txt

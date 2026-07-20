@@ -514,7 +514,8 @@ def format_board_text(board: LetterBoard) -> str:
         )
     ]
     for idx, song in enumerate(board.songs, 1):
-        icon = "[OK]" if song.solved else "[??]"
+        # 文字看板用 emoji；PIL 出图仍用 [OK]/[??] 避免缺字
+        icon = "✅" if song.solved else "🤔"
         lines.append(f"{idx}. {icon} {song.display(board.revealed)}")
     opened = ", ".join(board.opened_order) if board.opened_order else "（还没有）"
     lines.append(f"已开：{opened}")
@@ -662,14 +663,17 @@ class LetterGuessManager:
             if not song.solved
         }
         if key in board.revealed:
-            # 历史对局可能已全开字母却未 claim，再跑一次避免卡在 [??]
+            # 历史对局可能已全开字母却未 claim，再跑一次避免卡在未解开
             completed = board.claim_fully_revealed(solver)
             if completed and uid:
                 c = board.ensure_contribution(uid, billing_id, solver)
                 c.letter_completes += len(completed)
-            msg = f"字母「{key}」已经开过了"
-            msg += _format_letter_complete(completed)
-            return msg, board, completed, hidden_before
+            if completed:
+                # 仅补齐仍提示；「已经开过了」本身静默，防刷屏
+                msg = _format_letter_complete(completed).lstrip("\n")
+                return msg, board, completed, hidden_before
+            # 空文案 = 已开过且无新进展，调用方应静默忽略
+            return "", board, [], hidden_before
 
         board.revealed.add(key)
         board.opened_order.append(key)
