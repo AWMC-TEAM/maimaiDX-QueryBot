@@ -1,4 +1,5 @@
-from typing import Optional
+import asyncio
+from typing import Optional, Tuple
 
 from nonebot import get_bots, on_command, require
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, MessageEvent, MessageSegment
@@ -17,7 +18,14 @@ from ..libraries.maimaidx_break import (
     format_checkin_result,
     get_account_profile,
 )
-from ..libraries.maimaidx_platform import billing_user_id
+from ..libraries.maimaidx_guess_score import guess_score
+from ..libraries.maimaidx_guess_stats_draw import personal_guess_stats_image_b64
+from ..libraries.maimaidx_platform import (
+    billing_user_id,
+    get_event_group_id,
+    get_sender_display_name,
+    platform_user_id,
+)
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_pending_session import finish_pending, session_key, track_event
 from ..config import log, maiconfig
@@ -96,7 +104,7 @@ async def _():
         '· BREAK抽奖 [1-10] — 每次默认消耗 2 BREAK，发送“BREAK抽奖 帮助”看奖池\n'
         '· 发红包 [总额] [份数] — 群内发送 BREAK 手气红包，也可按提示逐步输入\n'
         '· 抢红包 — 领取本群当前红包；红包状态 — 查看领取明细\n'
-        '· 我的AWMC — 查看账号状态与使用统计\n'
+        '· 我的AWMC — 查看账号状态、使用统计；群内自动附带猜歌数据图\n'
         '· 查分指令 — 每日首次实际请求查分器 API 免费，之后每次扣 1 BREAK（缓存命中不扣）\n'
         + format_analysis_pricing_help()
         + '· BREAK 不足时请先签到\n\n'
@@ -332,6 +340,52 @@ async def _expire_break_red_packets() -> None:
             )
 
 
+def _forward_image_node(user_id: str, nickname: str, image_b64: str, caption: str = '') -> dict:
+    """合并转发节点：图片 + 可选说明。"""
+    content: list = [{'type': 'image', 'data': {'file': image_b64}}]
+    if caption.strip():
+        content.append({'type': 'text', 'data': {'text': '\n' + caption.strip()}})
+    return {
+        'type': 'node',
+        'data': {
+            'name': str(nickname),
+            'uin': str(user_id),
+            'content': content,
+        },
+    }
+
+
+async def _try_guess_stats_for_awmc(
+    event: MessageEvent,
+) -> Optional[Tuple[str, str]]:
+    """群内解析到用户时尝试出猜歌数据图；失败返回 None，不抛错。"""
+    if not isinstance(event, GroupMessageEvent):
+        return None
+    gid = get_event_group_id(event)
+    if gid is None:
+        return None
+    try:
+        uid = platform_user_id(event)
+        display_name = get_sender_display_name(event) or uid
+        stats = guess_score.build_user_guess_stats(gid, uid)
+        stats['name'] = display_name or stats.get('name') or str(uid)
+        has_data = int(stats.get('total_score') or 0) > 0 or any(
+            int((stats.get('modes') or {}).get(m, {}).get('count') or 0)
+            for m in guess_score.GUESS_MODES
+        )
+        if not has_data:
+            return None
+        b64 = await asyncio.to_thread(personal_guess_stats_image_b64, stats)
+        caption = (
+            f'🎵 本群猜歌数据（{display_name}）\n'
+            f'也可单独发送「我的猜歌」查看；@ 某人可查对方。'
+        )
+        return b64, caption
+    except Exception as exc:
+        log.warning(f'[BREAK] 我的AWMC 附带猜歌图失败（已忽略）：{type(exc).__name__}: {exc}')
+        return None
+
+
 @awmc_checkin.handle()
 async def _(event: MessageEvent):
     group_id = event.group_id if isinstance(event, GroupMessageEvent) else None
@@ -347,6 +401,10 @@ async def _(bot: Bot, event: MessageEvent):
     sections = format_account_profile_sections(profile)
     nickname = str(getattr(maiconfig, 'botName', None) or 'AWMC Bot')
     nodes = [build_forward_node(str(event.self_id), nickname, section) for section in sections]
+    guess_payload = await _try_guess_stats_for_awmc(event)
+    if guess_payload:
+        b64, caption = guess_payload
+        nodes.append(_forward_image_node(str(event.self_id), nickname, b64, caption))
     try:
         if isinstance(event, GroupMessageEvent):
             await bot.call_api(
@@ -358,7 +416,19 @@ async def _(bot: Bot, event: MessageEvent):
             )
     except Exception as exc:
         log.warning(f'[BREAK] 我的AWMC合并转发失败，回退文本：{type(exc).__name__}: {exc}')
-        await my_awmc.finish(format_account_profile(profile), reply_message=True)
+        await my_awmc.send(format_account_profile(profile), reply_message=True)
+        if guess_payload:
+            try:
+                b64, caption = guess_payload
+                await my_awmc.send(
+                    MessageSegment.image(b64) + f'\n{caption}',
+                    reply_message=False,
+                )
+            except Exception as img_exc:
+                log.warning(
+                    f'[BREAK] 我的AWMC 回退发送猜歌图失败：{type(img_exc).__name__}: {img_exc}'
+                )
+        await my_awmc.finish()
     await my_awmc.finish()
 
 

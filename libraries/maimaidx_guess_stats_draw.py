@@ -63,8 +63,18 @@ def _draw_multi_line_chart(
     w: int,
     h: int,
 ) -> None:
-    dt.draw(x + 20, y + 16, 26, '近 30 日积分趋势（五模式）', _TITLE, 'lt', 1, (0, 0, 0, 100))
-    left, top, right, bottom = x + 52, y + 58, x + w - 24, y + h - 40
+    # 标题与图例分行，避免「近 30 日…」与五模式色点重叠
+    dt.draw(x + 20, y + 14, 24, '近 30 日积分趋势（五模式）', _TITLE, 'lt', 1, (0, 0, 0, 100))
+    lx = x + 20
+    ly = y + 48
+    for mode in GuessScoreManager.GUESS_MODES:
+        color = _MODE_COLORS[mode]
+        label = GuessScoreManager.MODE_LABELS[mode]
+        dr.ellipse((lx, ly - 5, lx + 10, ly + 5), fill=color)
+        dt.draw(lx + 16, ly, 14, label, color, 'lm')
+        lx += 96
+
+    left, top, right, bottom = x + 52, y + 76, x + w - 24, y + h - 40
     dr.line((left, top, left, bottom), fill=_LINE, width=2)
     dr.line((left, bottom, right, bottom), fill=_LINE, width=2)
 
@@ -111,15 +121,6 @@ def _draw_multi_line_chart(
             px = left if n == 1 else int(left + (right - left) * i / (n - 1))
             dt.draw(px, bottom + 8, 13, labels[i], _MUTED, 'mt')
 
-    lx = left
-    ly = y + 42
-    for mode in GuessScoreManager.GUESS_MODES:
-        color = _MODE_COLORS[mode]
-        label = GuessScoreManager.MODE_LABELS[mode]
-        dr.ellipse((lx, ly - 5, lx + 10, ly + 5), fill=color)
-        dt.draw(lx + 16, ly, 14, label, color, 'lm')
-        lx += 88
-
 
 def _draw_radar(
     dr: ImageDraw.ImageDraw,
@@ -141,7 +142,8 @@ def _draw_radar(
     if n < 3:
         return
 
-    dt.draw(cx, cy - radius - 36, 20, title, _TITLE, 'mm', 1, (0, 0, 0, 80))
+    # 小标题放在雷达圈外上方，与顶点轴标签留足空隙
+    dt.draw(cx, cy - radius - 78, 17, title, _TITLE, 'mm', 1, (0, 0, 0, 80))
 
     for r_frac in (0.25, 0.5, 0.75, 1.0):
         r = int(radius * r_frac)
@@ -174,24 +176,30 @@ def _draw_radar(
             color = _MODE_COLORS.get(mode, line)
             dr.ellipse((px - 5, py - 5, px + 5, py + 5), fill=color, outline=(255, 255, 255, 220))
 
-    label_r = radius + 34
+    # 轴标签外推；模式名与数值分半径绘制，避免压住顶点
     for i in range(n):
         ang = -math.pi / 2 + 2 * math.pi * i / n
-        lx = int(cx + label_r * math.cos(ang))
-        ly = int(cy + label_r * math.sin(ang))
+        # 顶部轴再外推一点，躲开小标题
+        top_bias = 18 if abs(ang + math.pi / 2) < 0.25 else 0
+        name_r = radius + 42 + top_bias
+        val_r = radius + 62 + top_bias
+        nx = int(cx + name_r * math.cos(ang))
+        ny = int(cy + name_r * math.sin(ang))
+        vx = int(cx + val_r * math.cos(ang))
+        vy = int(cy + val_r * math.sin(ang))
         mode = modes[i] if i < len(modes) else ''
         color = _MODE_COLORS.get(mode, _TEXT)
         raw = int(raw_values[i]) if i < len(raw_values) else 0
-        dt.draw(lx, ly - 8, 15, labels[i], color, 'mm')
-        dt.draw(lx, ly + 12, 13, f'{raw}{unit}', _MUTED, 'mm')
+        dt.draw(nx, ny, 14, labels[i], color, 'mm')
+        dt.draw(vx, vy, 12, f'{raw}{unit}', _MUTED, 'mm')
 
     max_raw = max(raw_values) if raw_values else 0
     if max_raw > 0:
-        axis_ang = -math.pi / 2
+        # 刻度写在轴线右侧，避开顶部模式名
         for frac in (0.5, 1.0):
             r = int(radius * frac)
-            tx = int(cx + (r + 10) * math.cos(axis_ang) + 18)
-            ty = int(cy + (r + 10) * math.sin(axis_ang))
+            tx = int(cx + 16)
+            ty = int(cy - r)
             dt.draw(tx, ty, 11, str(int(max_raw * frac)), _MUTED, 'lm')
 
 
@@ -199,9 +207,9 @@ def draw_personal_guess_stats(stats: dict) -> Image.Image:
     """根据 GuessScoreManager.build_user_guess_stats 结果出图。"""
     width = 1080
     header_h = 150
-    chart_h = 320
+    chart_h = 340
     mode_h = 200
-    radar_h = 360
+    radar_h = 460
     recent_rows = max(1, len(stats.get('recent') or []))
     recent_h = 56 + recent_rows * 36 + 24
     footer_h = 56
@@ -267,7 +275,7 @@ def draw_personal_guess_stats(stats: dict) -> Image.Image:
 
     y += mode_h + gap
     _rounded(dr, (margin, y, width - margin, y + radar_h), 18, _CARD)
-    dt.draw(margin + 28, y + 20, 26, '五维能力雷达', _TITLE, 'lt', 1, (0, 0, 0, 100))
+    dt.draw(margin + 28, y + 16, 26, '五维能力雷达', _TITLE, 'lt', 1, (0, 0, 0, 100))
     radar = stats.get('radar') or {}
     labels = radar.get('labels') or [GuessScoreManager.MODE_LABELS[m] for m in GuessScoreManager.GUESS_MODES]
     mode_keys = radar.get('modes') or list(GuessScoreManager.GUESS_MODES)
@@ -276,27 +284,28 @@ def draw_personal_guess_stats(stats: dict) -> Image.Image:
     points_norm = radar.get('points_norm') or [0.0] * 5
     counts_norm = radar.get('counts_norm') or [0.0] * 5
     mid = width // 2
-    radar_cy = y + 200
+    # 圆心下移、半径略减，给小标题与轴标签留白
+    radar_cy = y + 250
     has_data = any(int(v) > 0 for v in points) or any(int(v) > 0 for v in counts)
     if not has_data:
         dt.draw(mid, radar_cy, 20, '暂无雷达数据（结算后自动生成）', _MUTED, 'mm')
     else:
         _draw_radar(
             dr, dt,
-            cx=margin + 250, cy=radar_cy, radius=110,
+            cx=margin + 250, cy=radar_cy, radius=95,
             labels=labels, norms=points_norm, raw_values=points, modes=mode_keys,
             title='积分分布', unit='分',
             fill=(120, 196, 220, 55), line=_ACCENT,
         )
         _draw_radar(
             dr, dt,
-            cx=width - margin - 250, cy=radar_cy, radius=110,
+            cx=width - margin - 250, cy=radar_cy, radius=95,
             labels=labels, norms=counts_norm, raw_values=counts, modes=mode_keys,
             title='次数分布', unit='次',
             fill=(200, 160, 90, 55), line=(230, 180, 100, 255),
         )
         dt.draw(
-            mid, y + radar_h - 28, 14,
+            mid, y + radar_h - 22, 13,
             '各轴相对个人最高维归一；顶点数值为实际积分 / 次数',
             _MUTED, 'mm',
         )
