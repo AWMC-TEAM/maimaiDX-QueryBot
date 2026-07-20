@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 
 from PIL import Image, ImageDraw
 
-from ..config import SIYUAN, TBFONT, log
+from ..config import SIYUAN, TBFONT, footer_generated, log
 from .image import DrawText, image_to_base64
 from .maimaidx_guess_match import match_guess_answer
 from .maimaidx_guess_rate_limit import format_guess_answer_rate_limit
@@ -131,6 +131,46 @@ def _latin_letter_count(title: str) -> int:
 def format_elapsed(seconds: float) -> str:
     """统一用时文案：xx.xxx秒。"""
     return f"{max(0.0, float(seconds)):.3f}秒"
+
+
+def format_elapsed_diff_suffix(
+    current: float, previous: Optional[float]
+) -> str:
+    """
+    相对上一局用时差值后缀：更快为负、更慢为正。
+    无上一局记录时返回空串。
+    """
+    if previous is None:
+        return ""
+    delta = float(current) - float(previous)
+    sign = "+" if delta >= 0 else ""
+    return f" ({sign}{delta:.3f}秒)"
+
+
+def format_finish_elapsed_line(
+    elapsed: float, previous: Optional[float] = None
+) -> str:
+    """通关先发文案：本游戏已结束 + 可选相对上一局 diff。"""
+    return (
+        f"🎉 本游戏已结束，时间: {format_elapsed(elapsed)}"
+        f"{format_elapsed_diff_suffix(elapsed, previous)}"
+    )
+
+
+def combo_solved_count(*, completed: int, song_opened: bool = False) -> int:
+    """一次操作解开/补齐的曲数：开字母=补齐数；开歌=1+附带补齐数。"""
+    n = max(0, int(completed))
+    if song_opened:
+        n += 1
+    return n
+
+
+def format_combo_tip(count: int) -> str:
+    """≥2 首时返回 Combo 提示；否则空串。"""
+    n = int(count)
+    if n < 2:
+        return ""
+    return f"Combo! ×{n}"
 
 
 def default_star_limits() -> Dict[int, float]:
@@ -832,14 +872,19 @@ def render_letter_board(board: LetterBoard) -> Image.Image:
         ty += 26
 
     title_font.draw(
-        48,
-        height - 52,
-        16,
-        "直接发字母 / 别名  ·  不玩了",
+        width // 2,
+        height - 28,
+        14,
+        letter_image_footer(),
         _MUTED,
-        "lt",
+        "mm",
     )
     return im
+
+
+def letter_image_footer() -> str:
+    """开字母相关图片统一底部文案。"""
+    return f"舞萌开字母 | {footer_generated()}"
 
 
 def board_image_segment(board: LetterBoard):

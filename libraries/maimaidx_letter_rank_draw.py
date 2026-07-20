@@ -15,6 +15,7 @@ from .maimaidx_api_data import maiApi
 from .maimaidx_guess_letter import (
     LetterSettlement,
     format_elapsed,
+    letter_image_footer,
     star_text_draw,
     stars_for_draw,
 )
@@ -28,6 +29,21 @@ _MUTED = (180, 160, 145, 255)
 _LINE = (90, 66, 54, 255)
 _OK = (120, 210, 140, 255)
 _ACCENT = (255, 180, 120, 255)
+
+# 开字母图统一底部留白（与 letter_image_footer 配套）
+LETTER_FOOTER_ZONE = 40
+
+
+def _draw_letter_footer(im: Image.Image, font: DrawText) -> None:
+    """所有开字母相关图共用同一套 footer。"""
+    font.draw(
+        im.width // 2,
+        im.height - 22,
+        13,
+        letter_image_footer(),
+        _MUTED,
+        "mm",
+    )
 
 
 def _board_font() -> Path:
@@ -107,7 +123,7 @@ def _draw_rank_panel(
     width = 860
     row_h = 64
     header_h = 110
-    footer_h = 48
+    footer_h = LETTER_FOOTER_ZONE
     n = max(1, len(rows))
     height = header_h + row_h * n + footer_h
     im = Image.new("RGBA", (width, height), _BG)
@@ -119,6 +135,7 @@ def _draw_rank_panel(
     y = header_h
     if not rows:
         font.draw(44, y + 10, 22, "暂无记录", _MUTED, "lt")
+        _draw_letter_footer(im, font)
         return im
     for idx, (rank_label, line, avatar) in enumerate(rows):
         if idx > 0:
@@ -129,7 +146,7 @@ def _draw_rank_panel(
         font.draw(108, y + 18, 22, rank_label, color, "lt")
         font.draw(168, y + 18, 22, line, _TEXT, "lt")
         y += row_h
-    font.draw(44, height - 40, 14, "舞萌开字母 · 按群统计", _MUTED, "lt")
+    _draw_letter_footer(im, font)
     return im
 
 
@@ -210,7 +227,7 @@ def _paint_settlement_split(
     width = 900
     row_h = 78
     header_h = 128
-    footer_h = 52
+    footer_h = LETTER_FOOTER_ZONE
     rewards = list(settlement.rewards)
     n = max(1, len(rewards))
     height = header_h + row_h * n + footer_h
@@ -240,6 +257,7 @@ def _paint_settlement_split(
 
     if not rewards:
         font.draw(44, header_h + 12, 22, "本局无人有效贡献", _MUTED, "lt")
+        _draw_letter_footer(im, font)
         return im
 
     y = header_h
@@ -260,7 +278,7 @@ def _paint_settlement_split(
             "lt",
         )
         y += row_h
-    font.draw(44, height - 40, 14, "开字母×1 / 补齐×3 / 开歌×4 · 无贡献不得分", _MUTED, "lt")
+    _draw_letter_footer(im, font)
     return im
 
 

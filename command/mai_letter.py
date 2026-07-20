@@ -18,8 +18,11 @@ from ..libraries.maimaidx_guess_letter import (
     _is_maskable,
     _norm_token,
     board_image_segment,
+    combo_solved_count,
     format_board_text,
+    format_combo_tip,
     format_elapsed,
+    format_finish_elapsed_line,
     letter_guess,
     letter_triple_banner,
 )
@@ -213,11 +216,11 @@ async def _maybe_finish_board(
         await matcher.finish()
         return
 
-    # 第一波：立刻发文字反馈（不等渲染/落库）
-    elapsed_text = format_elapsed(board.elapsed())
+    # 第一波：立刻发文字反馈（不等渲染/落库）；含相对上一局用时 diff
+    prev_elapsed = letter_stats.last_clear_elapsed(gid)
     quick_lines = [
         *parts,
-        f"🎉 本游戏已结束，时间: {elapsed_text}",
+        format_finish_elapsed_line(board.elapsed(), prev_elapsed),
         "⏳ 正在结算本局贡献...",
     ]
     await _send_plain(matcher, event, "\n".join(quick_lines), fast=True)
@@ -229,7 +232,7 @@ async def _maybe_finish_board(
         sample_count=th.sample_count,
     )
     letter_guess.end(gid)
-    await letter_stats.record_clear(
+    feedback = await letter_stats.record_clear(
         gid,
         elapsed=settlement.elapsed,
         stars=settlement.stars,
@@ -241,6 +244,12 @@ async def _maybe_finish_board(
         ],
     )
     await _payout_settlement(event, gid, settlement)
+
+    # 达标 / 破纪录：各短跟一条，不塞进结算图
+    for tip in feedback.goal_tips:
+        await _send_plain(matcher, event, tip, fast=True)
+    for tip in feedback.record_tips:
+        await _send_plain(matcher, event, tip, fast=True)
 
     # 第二波：通关结算始终出图（bypass prefer_text）；分成图 + 终局看板图
     msg = Message()
@@ -299,7 +308,11 @@ async def _apply_open_letter(matcher, event: MessageEvent, gid, raw: str) -> Non
         # 字母已开过且无补齐：静默忽略，不发看板/文字
         await matcher.finish()
         return
-    await _maybe_finish_board(matcher, event, gid, board, [msg])
+    parts = [msg] if msg else []
+    combo = format_combo_tip(combo_solved_count(completed=len(completed)))
+    if combo:
+        parts.append(combo)
+    await _maybe_finish_board(matcher, event, gid, board, parts)
 
 
 async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool:
@@ -310,7 +323,7 @@ async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool
         return False
     if await _letter_cooldown_block(matcher, event, board):
         return True
-    msg, board, song, _completed, _hidden_before = letter_guess.open_song(
+    msg, board, song, completed, _hidden_before = letter_guess.open_song(
         gid,
         text,
         solver=get_sender_display_name(event),
@@ -321,7 +334,13 @@ async def _apply_open_song(matcher, event: MessageEvent, gid, text: str) -> bool
         # 未中也记一次处理，便于突发负载及时切文字
         board.note_process()
         return False
-    await _maybe_finish_board(matcher, event, gid, board, [msg])
+    parts = [msg] if msg else []
+    combo = format_combo_tip(
+        combo_solved_count(completed=len(completed), song_opened=True)
+    )
+    if combo:
+        parts.append(combo)
+    await _maybe_finish_board(matcher, event, gid, board, parts)
     return True
 
 
@@ -383,6 +402,7 @@ async def _(matcher, event: MessageEvent, args: Message = CommandArg()):
     th = letter_stats.thresholds_for(gid)
     banner = letter_triple_banner()
     banner_line = f"{banner}\n" if banner else ""
+    goals_line = letter_stats.daily_goals_line(gid)
     await _send_board(
         letter_open,
         event,
@@ -393,6 +413,7 @@ async def _(matcher, event: MessageEvent, args: Message = CommandArg()):
             "直接发字母开字符，直接发别名/曲名猜歌。\n"
             "全部解开后按用时与贡献结算；局内不计分。\n"
             f"{th.format_lines()}\n"
+            f"{goals_line}\n"
         ),
     )
     await letter_open.finish()

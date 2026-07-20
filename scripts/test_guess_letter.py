@@ -29,6 +29,10 @@ names = {
     "SCORE_POOL_BY_STAR",
     "BREAK_POOL_BY_STAR",
     "format_elapsed",
+    "format_elapsed_diff_suffix",
+    "format_finish_elapsed_line",
+    "combo_solved_count",
+    "format_combo_tip",
     "default_star_limits",
     "star_for_elapsed",
     "star_text",
@@ -100,6 +104,10 @@ _format_letter_complete = ns["_format_letter_complete"]
 _is_maskable = ns["_is_maskable"]
 _norm_token = ns["_norm_token"]
 format_elapsed = ns["format_elapsed"]
+format_elapsed_diff_suffix = ns["format_elapsed_diff_suffix"]
+format_finish_elapsed_line = ns["format_finish_elapsed_line"]
+combo_solved_count = ns["combo_solved_count"]
+format_combo_tip = ns["format_combo_tip"]
 default_star_limits = ns["default_star_limits"]
 star_for_elapsed = ns["star_for_elapsed"]
 star_text = ns["star_text"]
@@ -122,6 +130,26 @@ letter_triple_banner = ns["letter_triple_banner"]
 SCORE_POOL_BY_STAR = ns["SCORE_POOL_BY_STAR"]
 BREAK_POOL_BY_STAR = ns["BREAK_POOL_BY_STAR"]
 
+# Combo：开字母补齐 ≥2；开歌 = 1 + 附带补齐
+assert combo_solved_count(completed=0) == 0
+assert combo_solved_count(completed=1) == 1
+assert combo_solved_count(completed=2) == 2
+assert combo_solved_count(completed=0, song_opened=True) == 1
+assert combo_solved_count(completed=2, song_opened=True) == 3
+assert format_combo_tip(1) == ""
+assert format_combo_tip(2) == "Combo! ×2"
+assert format_combo_tip(3) == "Combo! ×3"
+
+# 相对上一局用时 diff
+assert format_elapsed_diff_suffix(40.0, None) == ""
+assert format_elapsed_diff_suffix(39.829, 45.0) == " (-5.171秒)"
+assert format_elapsed_diff_suffix(50.0, 40.0) == " (+10.000秒)"
+assert format_elapsed_diff_suffix(42.0, 42.0) == " (+0.000秒)"
+assert format_finish_elapsed_line(39.829, None) == "🎉 本游戏已结束，时间: 39.829秒"
+assert (
+    format_finish_elapsed_line(39.829, 45.0)
+    == "🎉 本游戏已结束，时间: 39.829秒 (-5.171秒)"
+)
 song = LetterSong(
     music_id="1",
     title="Halcyon",
@@ -351,10 +379,23 @@ stats_names = {
     "STAR_RATIO",
     "HISTORY_WINDOW",
     "MIN_SAMPLES_FOR_ADAPTIVE",
+    "DAILY_LOOKBACK_DAYS",
+    "MIN_GOAL_CLEARS",
+    "MAX_GOAL_CLEARS",
+    "DEFAULT_GOAL_CLEARS",
+    "MIN_GOAL_WEIGHT",
+    "MAX_GOAL_WEIGHT",
+    "DEFAULT_GOAL_WEIGHT",
+    "MIN_SAMPLES_FOR_FASTEST_GOAL",
     "StarThresholds",
+    "DailyGoalsSpec",
     "default_thresholds",
     "_percentile",
     "compute_thresholds",
+    "day_key",
+    "compute_daily_goals",
+    "_day_start_ts",
+    "is_better_record",
 }
 stats_selected = []
 for node in stats_tree.body:
@@ -379,8 +420,10 @@ stats_ns = {
     "Tuple": Tuple,
     "Union": Union,
     "frozen": True,
+    "math": __import__("math"),
+    "time": time,
 }
-# StarThresholds uses @dataclass(frozen=True) — need dataclasses.dataclass
+# StarThresholds / DailyGoalsSpec use @dataclass(frozen=True)
 import dataclasses
 
 stats_ns["dataclass"] = dataclasses.dataclass
@@ -389,6 +432,9 @@ compute_thresholds = stats_ns["compute_thresholds"]
 default_thresholds = stats_ns["default_thresholds"]
 MIN_FIVE_STAR = stats_ns["MIN_FIVE_STAR"]
 MAX_FIVE_STAR = stats_ns["MAX_FIVE_STAR"]
+compute_daily_goals = stats_ns["compute_daily_goals"]
+is_better_record = stats_ns["is_better_record"]
+DailyGoalsSpec = stats_ns["DailyGoalsSpec"]
 
 base = default_thresholds()
 assert abs(base.limits[5] - 30.0) < 1e-9
@@ -414,5 +460,37 @@ assert abs(ultra.limits[5] - MIN_FIVE_STAR) < 1e-9
 # 偏慢 → 仍不超过 30s
 slow_hist = compute_thresholds([50.0] * 20)
 assert abs(slow_hist.limits[5] - MAX_FIVE_STAR) < 1e-9
+
+# 破纪录比较
+assert is_better_record(kind="fastest", new_value=20.0, old_value=None)
+assert is_better_record(kind="fastest", new_value=19.0, old_value=20.0)
+assert not is_better_record(kind="fastest", new_value=20.0, old_value=20.0)
+assert not is_better_record(kind="fastest", new_value=21.0, old_value=20.0)
+assert is_better_record(kind="max", new_value=10, old_value=None)
+assert is_better_record(kind="max", new_value=11, old_value=10)
+assert not is_better_record(kind="max", new_value=10, old_value=10)
+assert not is_better_record(kind="max", new_value=0, old_value=None)
+
+# 每日目标：无历史 → 默认
+now = time.time()
+empty_goals = compute_daily_goals([], now=now)
+assert empty_goals.clears == stats_ns["DEFAULT_GOAL_CLEARS"]
+assert empty_goals.weight == stats_ns["DEFAULT_GOAL_WEIGHT"]
+assert empty_goals.fastest is None
+
+# 近几日活跃偏高 → 通关/贡献目标上浮
+day_ago = now - 86400
+busy_rows = [(day_ago, 40.0, 20) for _ in range(5)] + [
+    (day_ago - 86400, 35.0, 18) for _ in range(5)
+]
+busy_goals = compute_daily_goals(busy_rows, now=now)
+assert busy_goals.clears >= empty_goals.clears
+assert busy_goals.weight >= empty_goals.weight
+assert "通关≥" in busy_goals.format_line()
+
+# 样本足够 → 有最快目标
+many_rows = [(now - 86400 * (i % 5 + 1), 30.0 + i, 10) for i in range(12)]
+fast_goal = compute_daily_goals(many_rows, now=now)
+assert fast_goal.fastest is not None
 
 print("test_guess_letter ok")
