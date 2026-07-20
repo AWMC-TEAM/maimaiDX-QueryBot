@@ -73,10 +73,16 @@ async def get_music():
         )
     log.opt(colors=True).success('<g>maimaiDX 插件初始化完成，等待客户端连接</g>')
     try:
-        from .libraries.maimaidx_guess_chart import schedule_chart_cache_background_fill
+        from .libraries.maimaidx_guess_chart import (
+            ADAPTIVE_ENABLED,
+            schedule_chart_cache_background_fill,
+        )
 
         schedule_chart_cache_background_fill()
-        log.info('猜铺面 BGM 后台补洞已调度（低并发）')
+        if ADAPTIVE_ENABLED:
+            log.info('猜铺面自适应并发 + BGM 后台补洞已调度')
+        else:
+            log.info('猜铺面 BGM 后台补洞已调度（固定并发）')
     except Exception as e:
         log.warning(f'猜铺面后台补洞调度失败: {e}')
     if maiconfig.b50_assets_path:

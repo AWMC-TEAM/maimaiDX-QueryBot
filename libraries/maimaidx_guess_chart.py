@@ -70,6 +70,23 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 def _default_render_workers() -> int:
     """在线录制槽：宁少勿多，避免 Chromium 饿死查分/传分。"""
     n = _cpu_count()
@@ -99,21 +116,84 @@ def _default_bg_fill_workers() -> int:
     return 1
 
 
+def _default_render_max() -> int:
+    return 4 if _cpu_count() >= 16 else 2
+
+
+def _default_bg_fill_max() -> int:
+    return 2 if _cpu_count() >= 16 else 1
+
+
 # 环境变量：
+# MAIMAIDX_CHART_ADAPTIVE / RENDER_*_MIN|MAX / BG_FILL_*_MIN|MAX
 # MAIMAIDX_CHART_RENDER_WORKERS / BATCH_SONGS / FFMPEG_THREADS
 # MAIMAIDX_CHART_CPU_POOL / BG_FILL_WORKERS / VIDEO_PRESET
-RENDER_WORKERS = _env_int('MAIMAIDX_CHART_RENDER_WORKERS', _default_render_workers())
-BATCH_SONG_WORKERS = _env_int(
-    'MAIMAIDX_CHART_BATCH_SONGS', _default_batch_song_workers(),
+ADAPTIVE_ENABLED = _env_bool('MAIMAIDX_CHART_ADAPTIVE', True)
+ADAPTIVE_INTERVAL_SEC = max(5, _env_int('MAIMAIDX_CHART_ADAPTIVE_INTERVAL', 20))
+ADAPTIVE_WARMUP_SEC = max(0, _env_int('MAIMAIDX_CHART_ADAPTIVE_WARMUP', 60, minimum=0))
+# load1 / ncpu：idle < elevated < busy < critical
+ADAPTIVE_LOAD_IDLE = _env_float('MAIMAIDX_CHART_LOAD_IDLE', 0.25)
+ADAPTIVE_LOAD_ELEVATED = _env_float('MAIMAIDX_CHART_LOAD_ELEVATED', 0.35)
+ADAPTIVE_LOAD_BUSY = _env_float('MAIMAIDX_CHART_LOAD_BUSY', 0.50)
+ADAPTIVE_LOAD_CRIT = _env_float('MAIMAIDX_CHART_LOAD_CRIT', 0.70)
+# 事件循环延迟（ms）：sleep(50ms) 的 overrun
+ADAPTIVE_LAG_BUSY_MS = _env_float('MAIMAIDX_CHART_LAG_BUSY_MS', 80.0)
+ADAPTIVE_LAG_CRIT_MS = _env_float('MAIMAIDX_CHART_LAG_CRIT_MS', 200.0)
+
+RENDER_MIN = _env_int('MAIMAIDX_CHART_RENDER_MIN', 1)
+RENDER_MAX = _env_int('MAIMAIDX_CHART_RENDER_MAX', _default_render_max())
+BG_FILL_MIN = _env_int('MAIMAIDX_CHART_BG_FILL_MIN', 0, minimum=0)
+BG_FILL_MAX = _env_int('MAIMAIDX_CHART_BG_FILL_MAX', _default_bg_fill_max(), minimum=0)
+BATCH_SONG_MIN = _env_int('MAIMAIDX_CHART_BATCH_SONGS_MIN', 1)
+BATCH_SONG_MAX = _env_int(
+    'MAIMAIDX_CHART_BATCH_SONGS_MAX',
+    max(1, min(2, RENDER_MAX)),
 )
+# 兼容：只写了旧变量、未写 MAX 时，把旧变量当作上限
+if os.environ.get('MAIMAIDX_CHART_RENDER_WORKERS') and not os.environ.get(
+    'MAIMAIDX_CHART_RENDER_MAX'
+):
+    RENDER_MAX = _env_int('MAIMAIDX_CHART_RENDER_WORKERS', RENDER_MAX)
+if os.environ.get('MAIMAIDX_CHART_BG_FILL_WORKERS') and not os.environ.get(
+    'MAIMAIDX_CHART_BG_FILL_MAX'
+):
+    BG_FILL_MAX = _env_int(
+        'MAIMAIDX_CHART_BG_FILL_WORKERS', BG_FILL_MAX, minimum=0,
+    )
+if os.environ.get('MAIMAIDX_CHART_BATCH_SONGS') and not os.environ.get(
+    'MAIMAIDX_CHART_BATCH_SONGS_MAX'
+):
+    BATCH_SONG_MAX = _env_int('MAIMAIDX_CHART_BATCH_SONGS', BATCH_SONG_MAX)
+
+RENDER_MIN = max(1, min(RENDER_MIN, RENDER_MAX))
+RENDER_MAX = max(RENDER_MIN, RENDER_MAX)
+BG_FILL_MIN = max(0, min(BG_FILL_MIN, BG_FILL_MAX))
+BG_FILL_MAX = max(BG_FILL_MIN, BG_FILL_MAX)
+BATCH_SONG_MIN = max(1, min(BATCH_SONG_MIN, BATCH_SONG_MAX))
+BATCH_SONG_MAX = max(BATCH_SONG_MIN, BATCH_SONG_MAX)
+
+# 运行时可变；自适应开启时从保守档起步，勿一启动打满
+if ADAPTIVE_ENABLED:
+    RENDER_WORKERS = RENDER_MIN
+    BG_FILL_WORKERS = BG_FILL_MIN
+    BATCH_SONG_WORKERS = BATCH_SONG_MIN
+else:
+    RENDER_WORKERS = _env_int(
+        'MAIMAIDX_CHART_RENDER_WORKERS', _default_render_workers(),
+    )
+    BATCH_SONG_WORKERS = _env_int(
+        'MAIMAIDX_CHART_BATCH_SONGS', _default_batch_song_workers(),
+    )
+    BG_FILL_WORKERS = _env_int(
+        'MAIMAIDX_CHART_BG_FILL_WORKERS', _default_bg_fill_workers(), minimum=0,
+    )
+
 FFMPEG_THREADS = _env_int('MAIMAIDX_CHART_FFMPEG_THREADS', _default_ffmpeg_threads())
 CPU_POOL_WORKERS = _env_int('MAIMAIDX_CHART_CPU_POOL', _default_cpu_pool_workers())
-# 允许 0：关闭后台补洞（在线高峰止血）
-BG_FILL_WORKERS = _env_int(
-    'MAIMAIDX_CHART_BG_FILL_WORKERS', _default_bg_fill_workers(), minimum=0,
+# 负载超过该阈值时跳过本轮后台补洞（load1 / nproc）；与 elevated 档对齐
+BG_FILL_LOAD_RATIO = _env_float(
+    'MAIMAIDX_CHART_BG_FILL_LOAD_RATIO', ADAPTIVE_LOAD_ELEVATED,
 )
-# 负载超过该阈值时跳过本轮后台补洞（load1 / nproc）
-BG_FILL_LOAD_RATIO = float(os.environ.get('MAIMAIDX_CHART_BG_FILL_LOAD_RATIO') or '0.35')
 CHROMIUM_NICE = _env_int('MAIMAIDX_CHART_CHROMIUM_NICE', FFMPEG_NICE, minimum=0)
 CHART_DIFF_NAMES = {
     2: '绿',
@@ -134,33 +214,86 @@ _static_lock = threading.Lock()
 _prepare_status = ''
 _prepare_status_lock = threading.Lock()
 _batch_cancel = threading.Event()
-_render_sem: Optional[asyncio.Semaphore] = None
-_bg_fill_sem: Optional[asyncio.Semaphore] = None
+_render_sem: Optional['_AdjustableSemaphore'] = None
+_bg_fill_sem: Optional['_AdjustableSemaphore'] = None
 _cpu_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _bg_fill_task: Optional[asyncio.Task] = None
+_adaptive_task: Optional[asyncio.Task] = None
+_adaptive_started_at = 0.0
+_adaptive_tier = 'init'
+_adaptive_up_streak = 0
 _CACHE_KEY_RE = re.compile(
     r'^(?P<mid>.+)_(?P<kind>standard|dx|utage)_(?P<diff>\d+)_r(?P<rev>\d+)$'
 )
 
 
-def _get_render_sem() -> asyncio.Semaphore:
+class _AdjustableSemaphore:
+    """可动态调整容量的信号量；容量为 0 时 acquire 会等待。"""
+
+    def __init__(self, value: int) -> None:
+        self._cap = max(0, int(value))
+        self._used = 0
+        self._cond: Optional[asyncio.Condition] = None
+
+    def _ensure_cond(self) -> asyncio.Condition:
+        if self._cond is None:
+            self._cond = asyncio.Condition()
+        return self._cond
+
+    @property
+    def capacity(self) -> int:
+        return self._cap
+
+    @property
+    def in_use(self) -> int:
+        return self._used
+
+    async def acquire(self) -> None:
+        cond = self._ensure_cond()
+        async with cond:
+            while self._used >= self._cap:
+                await cond.wait()
+            self._used += 1
+
+    async def release(self) -> None:
+        cond = self._ensure_cond()
+        async with cond:
+            self._used = max(0, self._used - 1)
+            cond.notify_all()
+
+    async def set_capacity(self, value: int) -> None:
+        cond = self._ensure_cond()
+        async with cond:
+            self._cap = max(0, int(value))
+            cond.notify_all()
+
+    async def __aenter__(self) -> '_AdjustableSemaphore':
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.release()
+
+
+def _get_render_sem() -> _AdjustableSemaphore:
     global _render_sem
     if _render_sem is None:
-        _render_sem = asyncio.Semaphore(RENDER_WORKERS)
+        _render_sem = _AdjustableSemaphore(RENDER_WORKERS)
         log.info(
-            f'[GuessChart] 并行度 cpu={_cpu_count()} '
-            f'render_workers={RENDER_WORKERS} batch_songs={BATCH_SONG_WORKERS} '
-            f'bg_fill={BG_FILL_WORKERS} cpu_pool={CPU_POOL_WORKERS} '
-            f'ffmpeg_threads={FFMPEG_THREADS} preset={VIDEO_PRESET} fps={CAPTURE_FPS}'
+            f'[GuessChart] 并行度 cpu={_cpu_count()} adaptive={int(ADAPTIVE_ENABLED)} '
+            f'render={RENDER_WORKERS}[{RENDER_MIN}-{RENDER_MAX}] '
+            f'batch_songs={BATCH_SONG_WORKERS}[{BATCH_SONG_MIN}-{BATCH_SONG_MAX}] '
+            f'bg_fill={BG_FILL_WORKERS}[{BG_FILL_MIN}-{BG_FILL_MAX}] '
+            f'cpu_pool={CPU_POOL_WORKERS} ffmpeg_threads={FFMPEG_THREADS} '
+            f'preset={VIDEO_PRESET} fps={CAPTURE_FPS}'
         )
     return _render_sem
 
 
-def _get_bg_fill_sem() -> asyncio.Semaphore:
+def _get_bg_fill_sem() -> _AdjustableSemaphore:
     global _bg_fill_sem
     if _bg_fill_sem is None:
-        # Semaphore(0) 会永久阻塞；BG_FILL=0 时不应进入此路径
-        _bg_fill_sem = asyncio.Semaphore(max(1, BG_FILL_WORKERS))
+        _bg_fill_sem = _AdjustableSemaphore(max(0, BG_FILL_WORKERS))
     return _bg_fill_sem
 
 
@@ -203,6 +336,184 @@ def _bg_fill_should_pause() -> bool:
     if BG_FILL_WORKERS <= 0:
         return True
     return _system_load_ratio() >= max(0.05, BG_FILL_LOAD_RATIO)
+
+
+def _adaptive_targets(
+    load: float,
+    lag_ms: float,
+    *,
+    warmup: bool = False,
+) -> Tuple[int, int, int, str]:
+    """
+    根据负载与事件循环延迟给出目标并发。
+    保主功能：优先砍 BG_FILL，再砍 RENDER；忙时硬底 RENDER_MIN / BG_FILL=0。
+    """
+    if warmup:
+        return RENDER_MIN, BG_FILL_MIN, BATCH_SONG_MIN, 'warmup'
+
+    if load >= ADAPTIVE_LOAD_CRIT or lag_ms >= ADAPTIVE_LAG_CRIT_MS:
+        return RENDER_MIN, 0, BATCH_SONG_MIN, 'critical'
+    if load >= ADAPTIVE_LOAD_BUSY or lag_ms >= ADAPTIVE_LAG_BUSY_MS:
+        render = max(RENDER_MIN, min(RENDER_MAX, 2))
+        return render, 0, BATCH_SONG_MIN, 'busy'
+    if load >= ADAPTIVE_LOAD_ELEVATED:
+        render = max(RENDER_MIN, min(RENDER_MAX, 2))
+        return render, 0, min(BATCH_SONG_MAX, max(BATCH_SONG_MIN, 2)), 'elevated'
+    if load >= ADAPTIVE_LOAD_IDLE:
+        render = max(RENDER_MIN, min(RENDER_MAX, 3))
+        bg = min(BG_FILL_MAX, max(BG_FILL_MIN, 1)) if BG_FILL_MAX > 0 else 0
+        batch = min(BATCH_SONG_MAX, max(BATCH_SONG_MIN, min(2, render)))
+        return render, bg, batch, 'normal'
+    # idle：允许升到配置上限
+    return RENDER_MAX, BG_FILL_MAX, BATCH_SONG_MAX, 'idle'
+
+
+def _step_toward(current: int, target: int, *, aggressive_down: bool) -> int:
+    """平滑调整：升档每次 +1；降档可一次到位（保主功能）。"""
+    if target == current:
+        return current
+    if target < current:
+        return target if aggressive_down else current - 1
+    return current + 1
+
+
+async def _measure_loop_lag_ms(probe_sec: float = 0.05) -> float:
+    """用 sleep overrun 估计事件循环拥塞（近似消息处理延迟）。"""
+    t0 = time.perf_counter()
+    await asyncio.sleep(probe_sec)
+    overrun = time.perf_counter() - t0 - probe_sec
+    return max(0.0, overrun * 1000.0)
+
+
+async def _apply_adaptive_workers(
+    render: int,
+    bg_fill: int,
+    batch: int,
+    *,
+    tier: str,
+    load: float,
+    lag_ms: float,
+) -> None:
+    global RENDER_WORKERS, BG_FILL_WORKERS, BATCH_SONG_WORKERS, _adaptive_tier
+    render = max(RENDER_MIN, min(RENDER_MAX, int(render)))
+    bg_fill = max(BG_FILL_MIN, min(BG_FILL_MAX, int(bg_fill)))
+    batch = max(BATCH_SONG_MIN, min(BATCH_SONG_MAX, int(batch)))
+    # 保主：忙/升温档与高 load 时强制关掉补洞
+    if tier == 'warmup':
+        bg_fill = min(bg_fill, BG_FILL_MIN)
+    elif tier in ('critical', 'busy', 'elevated') or load >= BG_FILL_LOAD_RATIO:
+        bg_fill = 0
+
+    changed = (
+        render != RENDER_WORKERS
+        or bg_fill != BG_FILL_WORKERS
+        or batch != BATCH_SONG_WORKERS
+        or tier != _adaptive_tier
+    )
+    RENDER_WORKERS = render
+    BG_FILL_WORKERS = bg_fill
+    BATCH_SONG_WORKERS = batch
+    _adaptive_tier = tier
+
+    rsem = _get_render_sem()
+    bsem = _get_bg_fill_sem()
+    if rsem.capacity != render:
+        await rsem.set_capacity(render)
+    if bsem.capacity != bg_fill:
+        await bsem.set_capacity(bg_fill)
+
+    msg = (
+        f'[GuessChart] 自适应档位={tier} load={load:.2f} lag={lag_ms:.0f}ms '
+        f'render={render}/{RENDER_MAX} bg_fill={bg_fill}/{BG_FILL_MAX} '
+        f'batch={batch}/{BATCH_SONG_MAX}'
+    )
+    if changed:
+        log.info(msg)
+    else:
+        log.debug(msg)
+
+
+async def _chart_adaptive_loop() -> None:
+    global _adaptive_started_at, _adaptive_up_streak
+    _adaptive_started_at = time.time()
+    log.info(
+        f'[GuessChart] 自适应并发已启动 interval={ADAPTIVE_INTERVAL_SEC}s '
+        f'warmup={ADAPTIVE_WARMUP_SEC}s '
+        f'render[{RENDER_MIN}-{RENDER_MAX}] bg_fill[{BG_FILL_MIN}-{BG_FILL_MAX}] '
+        f'load_idle<{ADAPTIVE_LOAD_IDLE:.2f} elevated>={ADAPTIVE_LOAD_ELEVATED:.2f} '
+        f'busy>={ADAPTIVE_LOAD_BUSY:.2f} crit>={ADAPTIVE_LOAD_CRIT:.2f} '
+        f'lag_busy>={ADAPTIVE_LAG_BUSY_MS:.0f}ms lag_crit>={ADAPTIVE_LAG_CRIT_MS:.0f}ms'
+    )
+    # 立即落到保守档，避免启动瞬间打满
+    await _apply_adaptive_workers(
+        RENDER_MIN, BG_FILL_MIN, BATCH_SONG_MIN,
+        tier='warmup', load=_system_load_ratio(), lag_ms=0.0,
+    )
+    while True:
+        try:
+            await asyncio.sleep(ADAPTIVE_INTERVAL_SEC)
+            load = _system_load_ratio()
+            lag_ms = await _measure_loop_lag_ms()
+            warmup = (
+                ADAPTIVE_WARMUP_SEC > 0
+                and (time.time() - _adaptive_started_at) < ADAPTIVE_WARMUP_SEC
+            )
+            tgt_r, tgt_b, tgt_batch, tier = _adaptive_targets(
+                load, lag_ms, warmup=warmup,
+            )
+            # 升档需连续 2 次同向，抑抖；降档立即响应
+            going_up = (
+                tgt_r > RENDER_WORKERS
+                or tgt_b > BG_FILL_WORKERS
+                or tgt_batch > BATCH_SONG_WORKERS
+            )
+            going_down = (
+                tgt_r < RENDER_WORKERS
+                or tgt_b < BG_FILL_WORKERS
+                or tgt_batch < BATCH_SONG_WORKERS
+            )
+            if going_down:
+                _adaptive_up_streak = 0
+                next_r = _step_toward(
+                    RENDER_WORKERS, tgt_r, aggressive_down=True,
+                )
+                next_b = _step_toward(
+                    BG_FILL_WORKERS, tgt_b, aggressive_down=True,
+                )
+                next_batch = _step_toward(
+                    BATCH_SONG_WORKERS, tgt_batch, aggressive_down=True,
+                )
+            elif going_up:
+                _adaptive_up_streak += 1
+                if _adaptive_up_streak < 2 and not warmup:
+                    next_r, next_b, next_batch = (
+                        RENDER_WORKERS, BG_FILL_WORKERS, BATCH_SONG_WORKERS,
+                    )
+                    tier = _adaptive_tier or tier
+                else:
+                    next_r = _step_toward(
+                        RENDER_WORKERS, tgt_r, aggressive_down=False,
+                    )
+                    # 升 RENDER 之前先确认 load 允许再开 BG_FILL
+                    next_b = _step_toward(
+                        BG_FILL_WORKERS, tgt_b, aggressive_down=False,
+                    )
+                    next_batch = _step_toward(
+                        BATCH_SONG_WORKERS, tgt_batch, aggressive_down=False,
+                    )
+            else:
+                _adaptive_up_streak = 0
+                next_r, next_b, next_batch = tgt_r, tgt_b, tgt_batch
+
+            await _apply_adaptive_workers(
+                next_r, next_b, next_batch,
+                tier=tier, load=load, lag_ms=lag_ms,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning(f'[GuessChart] 自适应循环异常: {e}')
+            await asyncio.sleep(ADAPTIVE_INTERVAL_SEC)
 
 
 def _renice_pid(pid: int, nice: int) -> None:
@@ -1402,16 +1713,22 @@ async def _chart_bgm_background_fill_loop() -> None:
     cleanup_stale_chart_workdirs()
     log.info(
         f'[GuessChart] 后台补 BGM 已启动 workers={BG_FILL_WORKERS} '
+        f'adaptive={int(ADAPTIVE_ENABLED)} '
         f'load_pause>={BG_FILL_LOAD_RATIO:.2f} '
-        f'(延迟 {BG_FILL_STARTUP_DELAY_SEC}s；在线高峰会自动停)'
+        f'(延迟 {BG_FILL_STARTUP_DELAY_SEC}s；忙时停、闲时由自适应升并发)'
     )
     while True:
         try:
             if BG_FILL_WORKERS <= 0:
-                await asyncio.sleep(BG_FILL_IDLE_SLEEP_SEC)
+                # 自适应关闭补洞时短睡，便于闲时尽快恢复
+                await asyncio.sleep(
+                    ADAPTIVE_INTERVAL_SEC if ADAPTIVE_ENABLED else BG_FILL_IDLE_SLEEP_SEC
+                )
                 continue
             if _batch_cancel.is_set() or _bg_fill_should_pause():
-                await asyncio.sleep(BG_FILL_IDLE_SLEEP_SEC)
+                await asyncio.sleep(
+                    ADAPTIVE_INTERVAL_SEC if ADAPTIVE_ENABLED else BG_FILL_IDLE_SLEEP_SEC
+                )
                 continue
             holes = await asyncio.to_thread(list_mute_without_bgm)
             if not holes:
@@ -1428,10 +1745,33 @@ async def _chart_bgm_background_fill_loop() -> None:
             await asyncio.sleep(BG_FILL_IDLE_SLEEP_SEC)
 
 
+def schedule_chart_adaptive_controller() -> None:
+    """启动自适应并发控制器（单例）。关闭自适应时为 no-op。"""
+    global _adaptive_task
+    if not ADAPTIVE_ENABLED:
+        log.info('[GuessChart] MAIMAIDX_CHART_ADAPTIVE=0，使用固定并发')
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        log.warning('[GuessChart] 无事件循环，跳过自适应并发')
+        return
+    if _adaptive_task is not None and not _adaptive_task.done():
+        return
+    _adaptive_task = loop.create_task(
+        _chart_adaptive_loop(),
+        name='maimaidx-chart-adaptive',
+    )
+
+
 def schedule_chart_cache_background_fill() -> None:
-    """启动后小并发补齐 BGM 空洞；可重复调用（单例）。BG_FILL=0 时不启动。"""
+    """启动后小并发补齐 BGM 空洞；可重复调用（单例）。
+
+    固定模式且 BG_FILL=0 时不启动；自适应模式始终启动循环（workers=0 时休眠）。
+    """
     global _bg_fill_task
-    if BG_FILL_WORKERS <= 0:
+    schedule_chart_adaptive_controller()
+    if not ADAPTIVE_ENABLED and BG_FILL_WORKERS <= 0:
         log.info('[GuessChart] MAIMAIDX_CHART_BG_FILL_WORKERS=0，跳过后台补 BGM')
         return
     try:

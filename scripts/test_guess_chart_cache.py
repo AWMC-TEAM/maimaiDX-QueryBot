@@ -36,6 +36,7 @@ def _load_chart_module():
         loguru = types.ModuleType('loguru')
         class _L:
             def info(self, *a, **k): pass
+            def debug(self, *a, **k): pass
             def warning(self, *a, **k): pass
             def error(self, *a, **k): pass
         loguru.logger = _L()
@@ -76,6 +77,44 @@ class GuessChartCacheTests(unittest.TestCase):
         self.assertLessEqual(self.gc._default_render_workers(), 2)
         self.assertLessEqual(self.gc._default_bg_fill_workers(), 1)
         self.assertLessEqual(self.gc._default_cpu_pool_workers(), 6)
+
+    def test_adaptive_targets_cut_bg_fill_first(self):
+        gc = self.gc
+        # critical：硬底
+        r, b, batch, tier = gc._adaptive_targets(0.85, 0.0)
+        self.assertEqual(tier, 'critical')
+        self.assertEqual(r, gc.RENDER_MIN)
+        self.assertEqual(b, 0)
+        self.assertEqual(batch, gc.BATCH_SONG_MIN)
+        # busy：补洞关，录制可保留少量
+        r, b, _, tier = gc._adaptive_targets(0.55, 0.0)
+        self.assertEqual(tier, 'busy')
+        self.assertEqual(b, 0)
+        self.assertGreaterEqual(r, gc.RENDER_MIN)
+        # elevated：仍关补洞
+        _, b, _, tier = gc._adaptive_targets(0.40, 0.0)
+        self.assertEqual(tier, 'elevated')
+        self.assertEqual(b, 0)
+        # lag 也能触发 busy/critical
+        _, b, _, tier = gc._adaptive_targets(0.10, gc.ADAPTIVE_LAG_BUSY_MS + 1)
+        self.assertEqual(tier, 'busy')
+        self.assertEqual(b, 0)
+        # idle：允许升到上限
+        r, b, batch, tier = gc._adaptive_targets(0.05, 0.0)
+        self.assertEqual(tier, 'idle')
+        self.assertEqual(r, gc.RENDER_MAX)
+        self.assertEqual(b, gc.BG_FILL_MAX)
+        self.assertEqual(batch, gc.BATCH_SONG_MAX)
+        # warmup
+        r, b, _, tier = gc._adaptive_targets(0.05, 0.0, warmup=True)
+        self.assertEqual(tier, 'warmup')
+        self.assertEqual(r, gc.RENDER_MIN)
+        self.assertEqual(b, gc.BG_FILL_MIN)
+
+    def test_step_toward_aggressive_down(self):
+        self.assertEqual(self.gc._step_toward(4, 1, aggressive_down=True), 1)
+        self.assertEqual(self.gc._step_toward(1, 4, aggressive_down=False), 2)
+        self.assertEqual(self.gc._step_toward(2, 2, aggressive_down=True), 2)
 
     def test_cache_key_and_round_ready(self):
         with tempfile.TemporaryDirectory() as tmp:
