@@ -99,17 +99,19 @@ class GuessScoreManager:
     MAX_HISTORY_PER_PERIOD = 30
     MAX_EVENTS_PER_GROUP = 8000
 
-    # 个人数据图默认四模式（不含开字母结算分）
+    # 个人数据图五模式（含开字母结算分）
     MODE_SONG = 'song'
     MODE_PIC = 'pic'
     MODE_AUDIO = 'audio'
     MODE_CHART = 'chart'
-    GUESS_MODES = (MODE_SONG, MODE_PIC, MODE_AUDIO, MODE_CHART)
+    MODE_LETTER = 'letter'
+    GUESS_MODES = (MODE_SONG, MODE_PIC, MODE_AUDIO, MODE_CHART, MODE_LETTER)
     MODE_LABELS = {
         MODE_SONG: '猜歌',
         MODE_PIC: '猜曲绘',
         MODE_AUDIO: '猜曲子',
         MODE_CHART: '猜铺面',
+        MODE_LETTER: '开字母',
     }
 
     PERIODS: Dict[str, PeriodSpec] = {
@@ -296,7 +298,7 @@ class GuessScoreManager:
         days: int = 30,
         recent_n: int = 12,
     ) -> Dict:
-        """个人猜歌数据图用快照；趋势仅含四模式猜对明细，不含开字母。"""
+        """个人猜歌数据图用快照：五模式趋势 / 雷达 / 近期明细（含开字母结算）。"""
         uk = self._uid_key(uid)
         member = self.store.groups.get(self._gid_key(gid), GuessGroupScores()).members.get(uk)
         name = (member.name if member else '') or uk
@@ -343,6 +345,18 @@ class GuessScoreManager:
             at = e.at[5:16] if len(e.at) >= 16 else e.at
             recent.append({'mode': e.mode, 'points': e.points, 'at': at})
 
+        radar_labels = [self.MODE_LABELS[m] for m in self.GUESS_MODES]
+        radar_points = [int(modes[m]['points'] or 0) for m in self.GUESS_MODES]
+        radar_counts = [int(modes[m]['count'] or 0) for m in self.GUESS_MODES]
+        max_pts = max(radar_points) if radar_points else 0
+        max_cnt = max(radar_counts) if radar_counts else 0
+        points_norm = [
+            (p / max_pts) if max_pts > 0 else 0.0 for p in radar_points
+        ]
+        counts_norm = [
+            (c / max_cnt) if max_cnt > 0 else 0.0 for c in radar_counts
+        ]
+
         return {
             'uid': uk,
             'name': name,
@@ -355,9 +369,17 @@ class GuessScoreManager:
                 **series,
             },
             'recent': recent,
+            'radar': {
+                'labels': radar_labels,
+                'modes': list(self.GUESS_MODES),
+                'points': radar_points,
+                'counts': radar_counts,
+                'points_norm': points_norm,
+                'counts_norm': counts_norm,
+            },
             'note': (
-                f'趋势/明细自明细落库后起算；不含开字母结算分。'
-                f'近 {days} 日四模式猜对 {len(window)} 次。'
+                f'趋势/明细自明细落库后实时更新；'
+                f'近 {days} 日五模式共 {len(window)} 次。'
             ),
         }
 
@@ -752,8 +774,10 @@ class GuessScoreManager:
         uid: UserId,
         name: str,
         points: int,
+        *,
+        mode: Optional[str] = None,
     ) -> Tuple[int, int, int]:
-        """发放固定积分（不计连击/倍率，不改 streak）。"""
+        """发放固定积分（不计连击/倍率，不改 streak）；可选写入模式明细。"""
         added = max(0, int(points))
         if added <= 0:
             member = self._get_member(gid, uid)
@@ -767,7 +791,11 @@ class GuessScoreManager:
             setattr(winner, spec.score_attr, getattr(winner, spec.score_attr) + added)
         if name:
             winner.name = name
+        if mode:
+            self._append_event(gid, uid, name or winner.name, mode, added)
         await self._save()
+        if mode:
+            await self._save_events()
         return added, winner.score, self.get_rank(gid, uid)
 
     @staticmethod

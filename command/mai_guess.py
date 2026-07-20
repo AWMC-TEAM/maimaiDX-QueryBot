@@ -1286,6 +1286,35 @@ async def _handle_guess_score_board(
     await _send_guess_score_forward(matcher, bot, event, title, nodes)
 
 
+async def _resolve_guess_stats_target(event: MessageEvent) -> tuple[str, str, bool]:
+    """解析「我的猜歌」目标用户：(uid, display_name, is_other)。无 at 查自己。"""
+    at_uid = parse_at_target_id(event)
+    self_uid = str(platform_user_id(event))
+    if not at_uid or at_uid == self_uid:
+        return self_uid, (_sender_name(event) or self_uid), False
+
+    name = ''
+    gid = get_event_group_id(event)
+    try:
+        bot = resolve_event_bot(event)
+        if gid is not None and str(gid).isdigit() and str(at_uid).isdigit():
+            member = await bot.call_api(
+                'get_group_member_info',
+                group_id=int(gid),
+                user_id=int(at_uid),
+            )
+            card = (member.get('card') or '').strip()
+            nick = (member.get('nickname') or '').strip()
+            name = card or nick
+    except Exception:
+        name = ''
+    if not name and gid is not None:
+        store_group = guess_score.store.groups.get(str(gid))
+        if store_group and at_uid in store_group.members:
+            name = store_group.members[at_uid].name or ''
+    return at_uid, (name or at_uid), True
+
+
 @guess_my_stats.handle()
 async def _(event: MessageEvent):
     gid = get_event_group_id(event)
@@ -1295,19 +1324,20 @@ async def _(event: MessageEvent):
         await guess_my_stats.finish(
             '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
         )
-    uid = platform_user_id(event)
+    uid, display_name, is_other = await _resolve_guess_stats_target(event)
     stats = guess_score.build_user_guess_stats(gid, uid)
-    # 用当前昵称覆盖（积分库可能滞后）
-    stats['name'] = _sender_name(event) or stats.get('name') or str(uid)
+    stats['name'] = display_name or stats.get('name') or str(uid)
     if (
         int(stats.get('total_score') or 0) <= 0
         and not any(int((stats.get('modes') or {}).get(m, {}).get('count') or 0)
                     for m in guess_score.GUESS_MODES)
     ):
-        await guess_my_stats.finish(
-            '你在本群还没有猜歌积分记录。猜对后会累计到「我的猜歌」。',
-            reply_message=True,
+        empty = (
+            f'{display_name} 在本群还没有猜歌积分记录。'
+            if is_other
+            else '你在本群还没有猜歌积分记录。猜对 / 开字母结算后会累计到「我的猜歌」。'
         )
+        await guess_my_stats.finish(empty, reply_message=True)
     b64 = await asyncio.to_thread(personal_guess_stats_image_b64, stats)
     await guess_my_stats.finish(
         adapt_guess_outbound(MessageSegment.image(b64), event=event),

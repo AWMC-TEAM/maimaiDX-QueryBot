@@ -117,7 +117,11 @@ async def _payout_settlement(event: MessageEvent, gid, settlement: LetterSettlem
     for reward in settlement.rewards:
         if reward.score > 0:
             await guess_score.award_fixed_points(
-                gid, reward.uid, reward.name, reward.score
+                gid,
+                reward.uid,
+                reward.name,
+                reward.score,
+                mode=guess_score.MODE_LETTER,
             )
         if reward.break_points > 0:
             break_db.add_balance(
