@@ -1,8 +1,7 @@
-"""个人猜歌数据图：五模式趋势 + 雷达 + 记录明细。"""
+"""个人猜歌数据图：五模式趋势 + 扇形占比 + 记录明细。"""
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -20,7 +19,6 @@ _TEXT = (236, 240, 248, 255)
 _MUTED = (150, 162, 184, 255)
 _LINE = (70, 82, 108, 255)
 _GRID = (58, 68, 92, 255)
-_ACCENT = (120, 196, 220, 255)
 
 _MODE_COLORS = {
     'song': (74, 144, 217, 255),
@@ -122,7 +120,7 @@ def _draw_multi_line_chart(
             dt.draw(px, bottom + 8, 13, labels[i], _MUTED, 'mt')
 
 
-def _draw_radar(
+def _draw_donut(
     dr: ImageDraw.ImageDraw,
     dt: DrawText,
     *,
@@ -130,77 +128,66 @@ def _draw_radar(
     cy: int,
     radius: int,
     labels: Sequence[str],
-    norms: Sequence[float],
-    raw_values: Sequence[int],
+    values: Sequence[int],
     modes: Sequence[str],
     title: str,
     unit: str,
-    fill: Tuple[int, int, int, int],
-    line: Tuple[int, int, int, int],
+    legend_x: int,
+    hole_ratio: float = 0.58,
 ) -> None:
-    n = len(labels)
-    if n < 3:
-        return
+    """环形扇形图：表达五模式在合计中的占比，图例在环右侧。"""
+    # 小标题在环上方，与环/卡片标题留足空隙
+    dt.draw(cx, cy - radius - 36, 17, title, _TITLE, 'mm', 1, (0, 0, 0, 80))
 
-    # 小标题放在雷达圈外上方，与顶点轴标签留足空隙
-    dt.draw(cx, cy - radius - 78, 17, title, _TITLE, 'mm', 1, (0, 0, 0, 80))
+    n = max(len(labels), len(values), len(modes))
+    raw = [max(0, int(values[i]) if i < len(values) else 0) for i in range(n)]
+    total = sum(raw)
+    bbox = (cx - radius, cy - radius, cx + radius, cy + radius)
+    hole_r = int(radius * hole_ratio)
 
-    for r_frac in (0.25, 0.5, 0.75, 1.0):
-        r = int(radius * r_frac)
-        ring = []
-        for i in range(n + 1):
-            ang = -math.pi / 2 + 2 * math.pi * i / n
-            ring.append((cx + r * math.cos(ang), cy + r * math.sin(ang)))
-        dr.line(ring, fill=_GRID, width=1)
-
-    for i in range(n):
-        ang = -math.pi / 2 + 2 * math.pi * i / n
-        color = _MODE_COLORS.get(modes[i] if i < len(modes) else '', _LINE)
-        dr.line(
-            [(cx, cy), (cx + radius * math.cos(ang), cy + radius * math.sin(ang))],
-            fill=(*color[:3], 90),
-            width=1,
+    if total <= 0:
+        dr.ellipse(bbox, outline=_GRID, width=10)
+        dr.ellipse(
+            (cx - hole_r, cy - hole_r, cx + hole_r, cy + hole_r),
+            fill=_CARD,
         )
-
-    pts: List[Tuple[float, float]] = []
-    for i in range(n):
-        v = max(0.0, min(1.0, float(norms[i]) if i < len(norms) else 0.0))
-        ang = -math.pi / 2 + 2 * math.pi * i / n
-        pts.append((cx + radius * v * math.cos(ang), cy + radius * v * math.sin(ang)))
-
-    if len(pts) >= 3:
-        dr.polygon(pts, fill=fill)
-        dr.line(pts + [pts[0]], fill=line, width=3)
-        for i, (px, py) in enumerate(pts):
+        dt.draw(cx, cy - 8, 15, '暂无数据', _MUTED, 'mm')
+        dt.draw(cx, cy + 14, 12, f'0{unit}', _MUTED, 'mm')
+    else:
+        # 从正上方起顺时针；零值跳过，避免 0° 空扇
+        start = -90.0
+        for i, v in enumerate(raw):
+            if v <= 0:
+                continue
+            extent = 360.0 * v / total
             mode = modes[i] if i < len(modes) else ''
-            color = _MODE_COLORS.get(mode, line)
-            dr.ellipse((px - 5, py - 5, px + 5, py + 5), fill=color, outline=(255, 255, 255, 220))
+            color = _MODE_COLORS.get(mode, _LINE)
+            end = start + extent
+            # 整圆时用 ellipse，避免 pieslice 缝隙
+            if abs(extent - 360.0) < 1e-6:
+                dr.ellipse(bbox, fill=color)
+            else:
+                dr.pieslice(bbox, start, end, fill=color)
+            start = end
+        dr.ellipse(
+            (cx - hole_r, cy - hole_r, cx + hole_r, cy + hole_r),
+            fill=_CARD,
+        )
+        dt.draw(cx, cy - 10, 16, f'{total}{unit}', _TEXT, 'mm')
+        dt.draw(cx, cy + 14, 12, '合计', _MUTED, 'mm')
 
-    # 轴标签外推；模式名与数值分半径绘制，避免压住顶点
+    # 图例：色点 + 模式名 + 数值 + 占比
+    ly = cy - radius + 4
     for i in range(n):
-        ang = -math.pi / 2 + 2 * math.pi * i / n
-        # 顶部轴再外推一点，躲开小标题
-        top_bias = 18 if abs(ang + math.pi / 2) < 0.25 else 0
-        name_r = radius + 42 + top_bias
-        val_r = radius + 62 + top_bias
-        nx = int(cx + name_r * math.cos(ang))
-        ny = int(cy + name_r * math.sin(ang))
-        vx = int(cx + val_r * math.cos(ang))
-        vy = int(cy + val_r * math.sin(ang))
         mode = modes[i] if i < len(modes) else ''
-        color = _MODE_COLORS.get(mode, _TEXT)
-        raw = int(raw_values[i]) if i < len(raw_values) else 0
-        dt.draw(nx, ny, 14, labels[i], color, 'mm')
-        dt.draw(vx, vy, 12, f'{raw}{unit}', _MUTED, 'mm')
-
-    max_raw = max(raw_values) if raw_values else 0
-    if max_raw > 0:
-        # 刻度写在轴线右侧，避开顶部模式名
-        for frac in (0.5, 1.0):
-            r = int(radius * frac)
-            tx = int(cx + 16)
-            ty = int(cy - r)
-            dt.draw(tx, ty, 11, str(int(max_raw * frac)), _MUTED, 'lm')
+        color = _MODE_COLORS.get(mode, _MUTED)
+        label = labels[i] if i < len(labels) else mode
+        v = raw[i]
+        pct = (100.0 * v / total) if total > 0 else 0.0
+        dr.ellipse((legend_x, ly - 5, legend_x + 10, ly + 5), fill=color)
+        dt.draw(legend_x + 16, ly, 14, label, color, 'lm')
+        dt.draw(legend_x + 16, ly + 18, 12, f'{v}{unit}  {pct:.0f}%', _MUTED, 'lm')
+        ly += 42
 
 
 def draw_personal_guess_stats(stats: dict) -> Image.Image:
@@ -209,13 +196,13 @@ def draw_personal_guess_stats(stats: dict) -> Image.Image:
     header_h = 150
     chart_h = 340
     mode_h = 200
-    radar_h = 460
+    pie_h = 420
     recent_rows = max(1, len(stats.get('recent') or []))
     recent_h = 56 + recent_rows * 36 + 24
     footer_h = 56
     margin = 28
     gap = 18
-    height = header_h + chart_h + mode_h + radar_h + recent_h + footer_h + margin * 2 + gap * 4
+    height = header_h + chart_h + mode_h + pie_h + recent_h + footer_h + margin * 2 + gap * 4
 
     im = Image.new('RGBA', (width, height), _BG)
     dr = ImageDraw.Draw(im)
@@ -274,43 +261,42 @@ def draw_personal_guess_stats(stats: dict) -> Image.Image:
         dt.draw(cx + 12, card_y + 98, 13, f'最近 {last_at}', _MUTED, 'lt')
 
     y += mode_h + gap
-    _rounded(dr, (margin, y, width - margin, y + radar_h), 18, _CARD)
-    dt.draw(margin + 28, y + 16, 26, '五维能力雷达', _TITLE, 'lt', 1, (0, 0, 0, 100))
+    _rounded(dr, (margin, y, width - margin, y + pie_h), 18, _CARD)
+    dt.draw(margin + 28, y + 16, 26, '五模式占比', _TITLE, 'lt', 1, (0, 0, 0, 100))
     radar = stats.get('radar') or {}
     labels = radar.get('labels') or [GuessScoreManager.MODE_LABELS[m] for m in GuessScoreManager.GUESS_MODES]
     mode_keys = radar.get('modes') or list(GuessScoreManager.GUESS_MODES)
     points = radar.get('points') or [0] * 5
     counts = radar.get('counts') or [0] * 5
-    points_norm = radar.get('points_norm') or [0.0] * 5
-    counts_norm = radar.get('counts_norm') or [0.0] * 5
     mid = width // 2
-    # 圆心下移、半径略减，给小标题与轴标签留白
-    radar_cy = y + 250
+    # 环心下移，给卡片标题与子标题留白；图例在环右侧，避免压住标题/明细
+    pie_cy = y + 230
+    pie_r = 100
     has_data = any(int(v) > 0 for v in points) or any(int(v) > 0 for v in counts)
     if not has_data:
-        dt.draw(mid, radar_cy, 20, '暂无雷达数据（结算后自动生成）', _MUTED, 'mm')
+        dt.draw(mid, pie_cy, 20, '暂无占比数据（结算后自动生成）', _MUTED, 'mm')
     else:
-        _draw_radar(
+        _draw_donut(
             dr, dt,
-            cx=margin + 250, cy=radar_cy, radius=95,
-            labels=labels, norms=points_norm, raw_values=points, modes=mode_keys,
-            title='积分分布', unit='分',
-            fill=(120, 196, 220, 55), line=_ACCENT,
+            cx=margin + 160, cy=pie_cy, radius=pie_r,
+            labels=labels, values=points, modes=mode_keys,
+            title='积分占比', unit='分',
+            legend_x=margin + 160 + pie_r + 28,
         )
-        _draw_radar(
+        _draw_donut(
             dr, dt,
-            cx=width - margin - 250, cy=radar_cy, radius=95,
-            labels=labels, norms=counts_norm, raw_values=counts, modes=mode_keys,
-            title='次数分布', unit='次',
-            fill=(200, 160, 90, 55), line=(230, 180, 100, 255),
+            cx=mid + 160, cy=pie_cy, radius=pie_r,
+            labels=labels, values=counts, modes=mode_keys,
+            title='次数占比', unit='次',
+            legend_x=mid + 160 + pie_r + 28,
         )
         dt.draw(
-            mid, y + radar_h - 22, 13,
-            '各轴相对个人最高维归一；顶点数值为实际积分 / 次数',
+            mid, y + pie_h - 22, 13,
+            '扇形为各模式占合计的比例；环心为合计积分 / 次数',
             _MUTED, 'mm',
         )
 
-    y += radar_h + gap
+    y += pie_h + gap
     _rounded(dr, (margin, y, width - margin, y + recent_h), 18, _CARD)
     dt.draw(margin + 28, y + 20, 26, '近期明细', _TITLE, 'lt', 1, (0, 0, 0, 100))
     recent = stats.get('recent') or []
