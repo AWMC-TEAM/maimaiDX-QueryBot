@@ -5,7 +5,7 @@ from typing import Dict, List, NamedTuple, Optional, Tuple, Union
 from loguru import logger as log
 from pydantic import BaseModel, Field
 
-from ..config import guess_score_file, guess_score_history_file
+from ..config import guess_score_events_file, guess_score_file, guess_score_history_file
 from .maimaidx_group_rating import build_forward_node
 from .maimaidx_platform import GroupId, UserId, format_forward_nodes_as_text, is_likely_qq_group_id, send_group_plain_text
 from .tool import writefile
@@ -65,6 +65,23 @@ class GuessScoreHistoryStore(BaseModel):
     groups: Dict[str, GuessHistoryGroup] = Field(default_factory=dict)
 
 
+class GuessScoreEvent(BaseModel):
+    """单次猜对结算明细（按模式+时间，供个人数据图）。"""
+    uid: str
+    name: str = ''
+    mode: str
+    points: int
+    at: str = ''
+
+
+class GuessScoreEventGroup(BaseModel):
+    events: List[GuessScoreEvent] = Field(default_factory=list)
+
+
+class GuessScoreEventStore(BaseModel):
+    groups: Dict[str, GuessScoreEventGroup] = Field(default_factory=dict)
+
+
 class GuessScoreManager:
 
     PIC_POINTS = {4: 4, 3: 3, 2: 2, 1: 1}
@@ -80,6 +97,20 @@ class GuessScoreManager:
     # 猜铺面限时双倍（含 2026-07-26 当天）
     CHART_SEASON_DOUBLE_END = date(2026, 7, 26)
     MAX_HISTORY_PER_PERIOD = 30
+    MAX_EVENTS_PER_GROUP = 8000
+
+    # 个人数据图默认四模式（不含开字母结算分）
+    MODE_SONG = 'song'
+    MODE_PIC = 'pic'
+    MODE_AUDIO = 'audio'
+    MODE_CHART = 'chart'
+    GUESS_MODES = (MODE_SONG, MODE_PIC, MODE_AUDIO, MODE_CHART)
+    MODE_LABELS = {
+        MODE_SONG: '猜歌',
+        MODE_PIC: '猜曲绘',
+        MODE_AUDIO: '猜曲子',
+        MODE_CHART: '猜铺面',
+    }
 
     PERIODS: Dict[str, PeriodSpec] = {
         'daily': PeriodSpec('daily_score', 'daily_key', '今日', '日榜', '日榜'),
@@ -135,6 +166,17 @@ class GuessScoreManager:
                 self.history_store = GuessScoreHistoryStore.model_validate(json.load(f))
         else:
             self.history_store = GuessScoreHistoryStore()
+        if guess_score_events_file.exists():
+            try:
+                with open(guess_score_events_file, 'r', encoding='utf-8') as f:
+                    self.event_store = GuessScoreEventStore.model_validate(json.load(f))
+            except Exception as e:
+                log.warning(
+                    f'[maimai] 读取猜歌明细失败，使用空库: {type(e).__name__}: {e}'
+                )
+                self.event_store = GuessScoreEventStore()
+        else:
+            self.event_store = GuessScoreEventStore()
 
     @staticmethod
     def _gid_key(gid: GroupId) -> str:
@@ -182,6 +224,142 @@ class GuessScoreManager:
 
     async def _save_history(self) -> None:
         await writefile(guess_score_history_file, self.history_store.model_dump())
+
+    async def _save_events(self) -> None:
+        await writefile(guess_score_events_file, self.event_store.model_dump())
+
+    def _get_event_group(self, gid: GroupId) -> GuessScoreEventGroup:
+        gk = self._gid_key(gid)
+        if gk not in self.event_store.groups:
+            self.event_store.groups[gk] = GuessScoreEventGroup()
+        return self.event_store.groups[gk]
+
+    def _append_event(
+        self,
+        gid: GroupId,
+        uid: UserId,
+        name: str,
+        mode: str,
+        points: int,
+    ) -> None:
+        if mode not in self.MODE_LABELS:
+            return
+        added = max(0, int(points))
+        if added <= 0:
+            return
+        group = self._get_event_group(gid)
+        group.events.append(
+            GuessScoreEvent(
+                uid=self._uid_key(uid),
+                name=name or '',
+                mode=mode,
+                points=added,
+                at=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            )
+        )
+        if len(group.events) > self.MAX_EVENTS_PER_GROUP:
+            group.events = group.events[-self.MAX_EVENTS_PER_GROUP :]
+
+    def list_user_events(
+        self,
+        gid: GroupId,
+        uid: UserId,
+        *,
+        days: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> List[GuessScoreEvent]:
+        group = self.event_store.groups.get(self._gid_key(gid))
+        if not group:
+            return []
+        uk = self._uid_key(uid)
+        items = [e for e in group.events if e.uid == uk and e.mode in self.MODE_LABELS]
+        if days is not None and days > 0:
+            cutoff = datetime.now() - timedelta(days=days)
+            filtered: List[GuessScoreEvent] = []
+            for e in items:
+                try:
+                    ts = datetime.strptime(e.at, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    continue
+                if ts >= cutoff:
+                    filtered.append(e)
+            items = filtered
+        if limit is not None and limit > 0:
+            return items[-limit:]
+        return items
+
+    def build_user_guess_stats(
+        self,
+        gid: GroupId,
+        uid: UserId,
+        *,
+        days: int = 30,
+        recent_n: int = 12,
+    ) -> Dict:
+        """个人猜歌数据图用快照；趋势仅含四模式猜对明细，不含开字母。"""
+        uk = self._uid_key(uid)
+        member = self.store.groups.get(self._gid_key(gid), GuessGroupScores()).members.get(uk)
+        name = (member.name if member else '') or uk
+        total_score = member.score if member else 0
+        events = self.list_user_events(gid, uid)
+        window = self.list_user_events(gid, uid, days=days)
+
+        modes: Dict[str, Dict[str, Union[int, str, None]]] = {}
+        for mode in self.GUESS_MODES:
+            mode_events = [e for e in events if e.mode == mode]
+            last_at = mode_events[-1].at if mode_events else None
+            if last_at and len(last_at) >= 16:
+                last_short = last_at[5:16]  # MM-DD HH:MM
+            else:
+                last_short = last_at
+            modes[mode] = {
+                'count': len(mode_events),
+                'points': sum(e.points for e in mode_events),
+                'last_at': last_short,
+            }
+
+        day_keys: List[str] = []
+        day_index: Dict[str, int] = {}
+        today = datetime.now().date()
+        for i in range(days - 1, -1, -1):
+            d = today - timedelta(days=i)
+            key = d.strftime('%Y-%m-%d')
+            day_index[key] = len(day_keys)
+            day_keys.append(key)
+        series: Dict[str, List[int]] = {m: [0] * days for m in self.GUESS_MODES}
+        for e in window:
+            try:
+                key = datetime.strptime(e.at, '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d')
+            except ValueError:
+                continue
+            idx = day_index.get(key)
+            if idx is None or e.mode not in series:
+                continue
+            series[e.mode][idx] += e.points
+
+        recent_raw = events[-recent_n:] if recent_n > 0 else []
+        recent = []
+        for e in reversed(recent_raw):
+            at = e.at[5:16] if len(e.at) >= 16 else e.at
+            recent.append({'mode': e.mode, 'points': e.points, 'at': at})
+
+        return {
+            'uid': uk,
+            'name': name,
+            'total_score': total_score,
+            'total_rank': self.get_rank(gid, uid),
+            'period_snapshot': self.get_period_snapshot(gid, uid),
+            'modes': modes,
+            'daily_series': {
+                'labels': [k[5:] for k in day_keys],  # MM-DD
+                **series,
+            },
+            'recent': recent,
+            'note': (
+                f'趋势/明细自明细落库后起算；不含开字母结算分。'
+                f'近 {days} 日四模式猜对 {len(window)} 次。'
+            ),
+        }
 
     @classmethod
     def previous_period_key(cls, period: str) -> str:
@@ -534,6 +712,8 @@ class GuessScoreManager:
         name: str,
         raw_base: int,
         multiplier: int,
+        *,
+        mode: Optional[str] = None,
     ) -> Tuple[int, int, int, int, int, int, Dict[str, Tuple[int, int]]]:
         group = self._get_group(gid)
         uk = self._uid_key(uid)
@@ -550,7 +730,11 @@ class GuessScoreManager:
             setattr(winner, spec.score_attr, getattr(winner, spec.score_attr) + total_added)
         if name:
             winner.name = name
+        if mode:
+            self._append_event(gid, uid, name or winner.name, mode, total_added)
         await self._save()
+        if mode:
+            await self._save_events()
         period_snapshot = self.get_period_snapshot(gid, uid)
         return (
             total_added,

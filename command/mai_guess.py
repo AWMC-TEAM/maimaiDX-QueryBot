@@ -22,6 +22,7 @@ from ..libraries.maimaidx_guess_match import match_guess_answer
 from ..libraries.maimaidx_guess_rate_limit import consume_guess_answer_slot
 from ..libraries.maimaidx_group_rating import build_forward_node
 from ..libraries.maimaidx_guess_score import guess_score
+from ..libraries.maimaidx_guess_stats_draw import personal_guess_stats_image_b64
 from ..libraries.maimaidx_guess_audio import (
     STAGE_FINAL_GRACE,
     STAGE_INTERVAL,
@@ -115,6 +116,13 @@ guess_score_hist_weekly  = on_command('猜歌历史周榜', rule=GROUP_MESSAGE)
 guess_score_hist_monthly = on_command('猜歌历史月榜', rule=GROUP_MESSAGE)
 guess_score_hist_yearly  = on_command('猜歌历史年榜', rule=GROUP_MESSAGE)
 guess_score_hist_season  = on_command('猜歌历史赛季榜', rule=GROUP_MESSAGE)
+guess_my_stats = on_command(
+    '我的猜歌',
+    aliases={'猜歌数据', '猜歌统计'},
+    rule=GROUP_MESSAGE,
+    priority=5,
+    block=True,
+)
 
 
 def _sender_name(event: MessageEvent) -> str:
@@ -153,14 +161,19 @@ async def _award_guess_points(
 ) -> str:
     if isinstance(data, GuessPicData):
         raw_base = guess_score.pic_points_for(data)
+        mode = guess_score.MODE_PIC
     elif isinstance(data, GuessAudioData):
         raw_base = guess_score.audio_points_for(data.hint_step)
+        mode = guess_score.MODE_AUDIO
     elif isinstance(data, GuessChartData):
         raw_base = _chart_points_now(data)
+        mode = guess_score.MODE_CHART
     elif isinstance(data, GuessDefaultData):
         raw_base = guess_score.song_points_for(data.hint_step)
+        mode = guess_score.MODE_SONG
     else:
         raw_base = 1
+        mode = guess_score.MODE_SONG
     multiplier, multiplier_tags = guess_score.get_score_multiplier(
         first_stage=first_stage,
         first_guess=first_guess,
@@ -183,6 +196,7 @@ async def _award_guess_points(
         _sender_name(event),
         raw_base,
         multiplier,
+        mode=mode,
     )
     settlement = guess_score.format_settlement_lines(
         added, raw_base, combo, multiplier, streak, total, rank, period_snapshot,
@@ -1270,6 +1284,35 @@ async def _handle_guess_score_board(
         period=period,
     )
     await _send_guess_score_forward(matcher, bot, event, title, nodes)
+
+
+@guess_my_stats.handle()
+async def _(event: MessageEvent):
+    gid = get_event_group_id(event)
+    if gid is None:
+        await guess_my_stats.finish('请在群内使用。', reply_message=True)
+    if gid not in guess.switch.enable:
+        await guess_my_stats.finish(
+            '该群已关闭猜歌功能，开启请输入 开启mai猜歌', reply_message=True,
+        )
+    uid = platform_user_id(event)
+    stats = guess_score.build_user_guess_stats(gid, uid)
+    # 用当前昵称覆盖（积分库可能滞后）
+    stats['name'] = _sender_name(event) or stats.get('name') or str(uid)
+    if (
+        int(stats.get('total_score') or 0) <= 0
+        and not any(int((stats.get('modes') or {}).get(m, {}).get('count') or 0)
+                    for m in guess_score.GUESS_MODES)
+    ):
+        await guess_my_stats.finish(
+            '你在本群还没有猜歌积分记录。猜对后会累计到「我的猜歌」。',
+            reply_message=True,
+        )
+    b64 = await asyncio.to_thread(personal_guess_stats_image_b64, stats)
+    await guess_my_stats.finish(
+        adapt_guess_outbound(MessageSegment.image(b64), event=event),
+        reply_message=True,
+    )
 
 
 @guess_score_rank.handle()
