@@ -99,6 +99,19 @@ letter_time_cmd = on_command(
 # 对局中可直接发字母 / 别名，无需命令前缀
 letter_quick = on_message(rule=LETTER_PLAYING, priority=9, block=False)
 
+# 开字母玩法不参与高峰期「额外 1 BREAK」附加费（含局内开字母/开歌/答题）。
+for _letter_matcher in (
+    letter_start,
+    letter_open,
+    letter_song,
+    letter_quit,
+    letter_score_cmd,
+    letter_contrib_cmd,
+    letter_time_cmd,
+    letter_quick,
+):
+    setattr(_letter_matcher, "_maimaidx_busy_surcharge_exempt", True)
+
 _HELP = (
     "【舞萌开字母】\n"
     f"· 发送「舞萌开字母」或「开字母」开局（{BOARD_SIZE} 首歌）\n"

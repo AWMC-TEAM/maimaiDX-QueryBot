@@ -51,17 +51,40 @@ async def _cleanup_admin_audit() -> None:
         log.info(f'管理审计过期数据已清理：{result}')
 
 
+def _matcher_module_name(matcher: Matcher) -> str:
+    """解析 matcher 所在模块名。
+
+    NoneBot 2.5+ 的 ``matcher.module`` 是 ``ModuleType``，``str(module)`` 形如
+    ``<module 'pkg.mai_guess' from '...'>``，不能再用 ``endswith('.mai_guess')``。
+    应优先读 ``module_name`` / ``__name__``。
+    """
+    for obj in (matcher, type(matcher)):
+        name = getattr(obj, "module_name", None)
+        if name:
+            return str(name)
+    mod = getattr(matcher, "module", None)
+    if mod is None:
+        mod = getattr(type(matcher), "module", None)
+    if isinstance(mod, str):
+        return mod
+    name = getattr(mod, "__name__", None) if mod is not None else None
+    return str(name) if name else ""
+
+
 def _plugin_matcher(matcher: Matcher) -> bool:
-    module = str(getattr(matcher, "module", "") or "")
+    module = _matcher_module_name(matcher)
     plugin_name = str(getattr(matcher, "plugin_name", "") or "")
-    return "maimaidx" in module.lower() or "maimaidx" in plugin_name.lower()
+    # ModuleType 的 repr 仍可能带 maimaidx；兼容旧路径。
+    raw_module = str(getattr(matcher, "module", "") or "")
+    blob = f"{module} {plugin_name} {raw_module}".lower()
+    return "maimaidx" in blob
 
 
 def _busy_surcharge_exempt(matcher: Matcher) -> bool:
     """猜歌模块是免费奖励玩法，整模块不参与高负载 BREAK 附加费。"""
     if bool(getattr(type(matcher), "_maimaidx_busy_surcharge_exempt", False)):
         return True
-    module = str(getattr(matcher, "module", "") or "")
+    module = _matcher_module_name(matcher)
     return module.endswith(".mai_guess") or module.endswith(".mai_letter")
 
 
@@ -88,7 +111,9 @@ def _command_name(matcher: Matcher, event: Event, state: T_State) -> str:
         command = "".join(str(item) for item in command)
     if command:
         return str(command)[:200]
-    module = str(getattr(matcher, "module", "") or "")
+    module = _matcher_module_name(matcher) or str(
+        getattr(matcher, "module", "") or ""
+    )
     try:
         text = event.get_plaintext().strip()
     except Exception:

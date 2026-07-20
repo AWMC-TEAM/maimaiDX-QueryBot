@@ -124,6 +124,35 @@ guess_my_stats = on_command(
     block=True,
 )
 
+# 猜歌玩法不参与高峰期「额外 1 BREAK」附加费（含局内答题 on_message）。
+for _guess_matcher in (
+    guess_music_start,
+    guess_music_pic,
+    guess_music_audio,
+    guess_music_chart,
+    update_guess_audio,
+    update_guess_chart,
+    guess_boost_grant,
+    guess_boost_query,
+    guess_music_solve,
+    guess_music_reset,
+    guess_music_enable,
+    guess_music_disable,
+    guess_score_rank,
+    guess_score_daily,
+    guess_score_weekly,
+    guess_score_monthly,
+    guess_score_yearly,
+    guess_score_season,
+    guess_score_hist_daily,
+    guess_score_hist_weekly,
+    guess_score_hist_monthly,
+    guess_score_hist_yearly,
+    guess_score_hist_season,
+    guess_my_stats,
+):
+    setattr(_guess_matcher, '_maimaidx_busy_surcharge_exempt', True)
+
 
 def _sender_name(event: MessageEvent) -> str:
     return get_sender_display_name(event)

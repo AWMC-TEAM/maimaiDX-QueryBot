@@ -2,6 +2,7 @@
 
 import ast
 import importlib.util
+import types
 from pathlib import Path
 
 
@@ -25,32 +26,59 @@ runtime_source = (root / "command" / "mai_admin_runtime.py").read_text(
     encoding="utf-8"
 )
 qq_bind_source = (root / "command" / "mai_qq_bind.py").read_text(encoding="utf-8")
+guess_source = (root / "command" / "mai_guess.py").read_text(encoding="utf-8")
+letter_source = (root / "command" / "mai_letter.py").read_text(encoding="utf-8")
 assert '_maimaidx_passive_recorder' in runtime_source
 assert "setattr(_qq_member_recorder, '_maimaidx_passive_recorder', True)" in qq_bind_source
 assert '_maimaidx_busy_surcharge_exempt' in runtime_source
+assert '_matcher_module_name' in runtime_source
 assert 'module.endswith(".mai_guess")' in runtime_source
 assert 'busy_surcharge_exempt = _busy_surcharge_exempt(matcher)' in runtime_source
+assert "setattr(_guess_matcher, '_maimaidx_busy_surcharge_exempt', True)" in guess_source
+assert 'setattr(_letter_matcher, "_maimaidx_busy_surcharge_exempt", True)' in letter_source
+assert "guess_music_solve" in guess_source
+assert "letter_quick" in letter_source
 
 runtime_tree = ast.parse(runtime_source)
-exempt_node = next(
-    node
+needed = {
+    node.name: node
     for node in runtime_tree.body
-    if isinstance(node, ast.FunctionDef) and node.name == '_busy_surcharge_exempt'
-)
+    if isinstance(node, ast.FunctionDef)
+    and node.name in {'_matcher_module_name', '_busy_surcharge_exempt', '_plugin_matcher'}
+}
+assert set(needed) == {
+    '_matcher_module_name',
+    '_busy_surcharge_exempt',
+    '_plugin_matcher',
+}
 runtime_namespace = {'Matcher': object}
 exec(
-    compile(ast.Module(body=[exempt_node], type_ignores=[]), "mai_admin_runtime.py", "exec"),
+    compile(
+        ast.Module(
+            body=[
+                needed['_matcher_module_name'],
+                needed['_plugin_matcher'],
+                needed['_busy_surcharge_exempt'],
+            ],
+            type_ignores=[],
+        ),
+        "mai_admin_runtime.py",
+        "exec",
+    ),
     runtime_namespace,
 )
 is_exempt = runtime_namespace['_busy_surcharge_exempt']
+is_plugin = runtime_namespace['_plugin_matcher']
+module_name_of = runtime_namespace['_matcher_module_name']
 
 
 class GuessMatcher:
+    # 旧测试假设：module 已是字符串（不应再依赖）
     module = 'nonebot_plugin_maimaidx.command.mai_guess'
 
 
 class ScoreMatcher:
-    module = 'nonebot_plugin_maimaidx.command.mai_score'
+    module_name = 'nonebot_plugin_maimaidx.command.mai_score'
 
 
 class FlagMatcher:
@@ -58,8 +86,44 @@ class FlagMatcher:
     _maimaidx_busy_surcharge_exempt = True
 
 
+class NB25GuessMatcher:
+    """模拟 NoneBot 2.5：module 是 ModuleType，真正名字在 module_name。"""
+
+    module_name = 'nonebot_plugin_maimaidx.command.mai_guess'
+    module = types.ModuleType('nonebot_plugin_maimaidx.command.mai_guess')
+
+
+class NB25LetterMatcher:
+    module_name = 'nonebot_plugin_maimaidx.command.mai_letter'
+    module = types.ModuleType('nonebot_plugin_maimaidx.command.mai_letter')
+
+
+class NB25ScoreMatcher:
+    module_name = 'nonebot_plugin_maimaidx.command.mai_score'
+    module = types.ModuleType('nonebot_plugin_maimaidx.command.mai_score')
+
+
+class ModuleOnlyGuessMatcher:
+    """只有 ModuleType.module、没有 module_name 时，应回退到 __name__。"""
+
+    module = types.ModuleType('nonebot_plugin_maimaidx.command.mai_guess')
+
+
+assert module_name_of(NB25GuessMatcher()) == 'nonebot_plugin_maimaidx.command.mai_guess'
+assert module_name_of(ModuleOnlyGuessMatcher()) == 'nonebot_plugin_maimaidx.command.mai_guess'
+# 关键回归：str(ModuleType) 不能 endswith('.mai_guess')
+assert not str(NB25GuessMatcher.module).endswith('.mai_guess')
+
 assert is_exempt(GuessMatcher())
 assert is_exempt(FlagMatcher())
+assert is_exempt(NB25GuessMatcher())
+assert is_exempt(NB25LetterMatcher())
+assert is_exempt(ModuleOnlyGuessMatcher())
 assert not is_exempt(ScoreMatcher())
+assert not is_exempt(NB25ScoreMatcher())
+
+assert is_plugin(NB25GuessMatcher())
+assert is_plugin(NB25ScoreMatcher())
+assert not is_plugin(FlagMatcher())
 
 print("busy surcharge meter tests: ok")
