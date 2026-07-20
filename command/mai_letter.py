@@ -19,7 +19,6 @@ from ..libraries.maimaidx_guess_letter import (
     board_image_segment,
     format_board_text,
     format_elapsed,
-    format_settlement_message,
     letter_guess,
     letter_triple_banner,
 )
@@ -200,8 +199,9 @@ async def _maybe_finish_board(
     matcher, event: MessageEvent, gid, board: LetterBoard, parts: list[str]
 ) -> None:
     """
-    通关结算：同一条消息（文案 + 分成榜图 + 终局看板图）。
+    通关结算：先立刻发结束文案，再渲染并发送分成榜图 + 终局看板图。
     人多文字模式只影响局中看板更新；通关结算始终强制出图。
+    「不玩了」中途结束不走本路径。
     """
     if board.finished:
         # 通关判定成功后立刻停表，不含后续落库/渲染耗时
@@ -211,6 +211,16 @@ async def _maybe_finish_board(
         await _send_board(matcher, event, board, text="\n".join(parts) + "\n")
         await matcher.finish()
         return
+
+    # 第一波：立刻发文字反馈（不等渲染/落库）
+    elapsed_text = format_elapsed(board.elapsed())
+    quick_lines = [
+        *parts,
+        f"🎉 本游戏已结束，时间: {elapsed_text}",
+        "⏳ 正在结算本局贡献...",
+    ]
+    await _send_plain(matcher, event, "\n".join(quick_lines), fast=True)
+
     th = letter_stats.thresholds_for(gid)
     settlement = board.settle(
         limits=th.limits,
@@ -231,9 +241,8 @@ async def _maybe_finish_board(
     )
     await _payout_settlement(event, gid, settlement)
 
-    # 通关结算始终出图（bypass prefer_text）；一条消息：文案 + 分成图 + 看板图
-    text = "\n".join([*parts, format_settlement_message(settlement)])
-    msg = Message(text)
+    # 第二波：通关结算始终出图（bypass prefer_text）；分成图 + 终局看板图
+    msg = Message()
     try:
         split_im = await render_settlement_split(settlement)
         msg += MessageSegment.image(await asyncio.to_thread(image_b64, split_im))
