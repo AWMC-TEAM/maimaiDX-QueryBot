@@ -11,7 +11,7 @@ import asyncio
 import json
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Optional
@@ -57,6 +57,9 @@ _BG = (18, 24, 42, 255)
 _PANEL = (28, 36, 58, 255)
 _ACCENT = (124, 129, 255, 255)
 _FAIL = (255, 123, 134, 255)
+_BUSINESS_FAIL = (255, 183, 77, 255)
+_SERVER_ERROR = (176, 132, 255, 255)
+_CLIENT_ERROR = (83, 191, 255, 255)
 _TEXT = (237, 242, 255, 255)
 _MUTED = (156, 171, 201, 255)
 _GRID = (255, 255, 255, 48)
@@ -64,6 +67,16 @@ _GRID = (255, 255, 255, 48)
 _cache_lock = asyncio.Lock()
 _cache_payload: Optional[dict] = None
 _cache_at = 0.0
+_failure_cache_lock = asyncio.Lock()
+_failure_cache_payload: Optional[dict] = None
+_failure_cache_at = 0.0
+
+FAILURE_CATEGORY_META = {
+    "failure": ("官方总失败率", _FAIL),
+    "businessFail": ("业务错误", _BUSINESS_FAIL),
+    "serverError": ("服务端/转发错误", _SERVER_ERROR),
+    "clientError": ("客户端 4xx", _CLIENT_ERROR),
+}
 
 
 def _status_base() -> str:
@@ -78,6 +91,13 @@ def _status_slug() -> str:
 
 def _cache_seconds() -> float:
     return max(0.0, float(getattr(maiconfig, "awmc_status_cache_seconds", 30.0) or 0.0))
+
+
+def _failure_rate_url() -> str:
+    return str(
+        getattr(maiconfig, "awmc_failure_rate_url", None)
+        or "https://api.wmc.pub/usage/failure-rate"
+    ).strip()
 
 
 def _monitor_sort_score(name: str) -> int:
@@ -345,6 +365,206 @@ def latest_sampled_bucket(
     return None
 
 
+def normalize_failure_rate_payload(payload: dict) -> dict[str, Any]:
+    """规范化 AWMC 全局失败率 API，空调用桶与空错误分类直接省略。"""
+    if not isinstance(payload, dict):
+        raise RuntimeError("失败率接口返回格式异常")
+    raw_series = payload.get("series")
+    if not isinstance(raw_series, list):
+        raise RuntimeError("失败率接口缺少 series")
+
+    points: list[dict[str, Any]] = []
+    totals = {"calls": 0, "businessFail": 0, "serverError": 0, "clientError": 0}
+    for row in raw_series:
+        if not isinstance(row, dict):
+            continue
+        try:
+            calls = max(0, int(row.get("calls") or 0))
+        except (TypeError, ValueError):
+            continue
+        if calls <= 0:
+            continue
+
+        counts: dict[str, int] = {}
+        for key in ("businessFail", "serverError", "clientError"):
+            try:
+                counts[key] = max(0, int(row.get(key) or 0))
+            except (TypeError, ValueError):
+                counts[key] = 0
+            totals[key] += counts[key]
+        totals["calls"] += calls
+
+        try:
+            bucket = datetime.fromtimestamp(
+                int(row.get("bucketUnix")), timezone.utc
+            ).astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
+        except (TypeError, ValueError, OSError, OverflowError):
+            parsed = str(row.get("ts") or "").replace("Z", "+00:00")
+            try:
+                bucket = datetime.fromisoformat(parsed)
+                if bucket.tzinfo is not None:
+                    bucket = bucket.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
+            except ValueError:
+                continue
+
+        official_fail = counts["businessFail"] + counts["serverError"]
+        points.append(
+            {
+                "bucket": bucket,
+                "calls": calls,
+                **counts,
+                "failure": 100.0 * official_fail / calls,
+                "businessFailRate": 100.0 * counts["businessFail"] / calls,
+                "serverErrorRate": 100.0 * counts["serverError"] / calls,
+                "clientErrorRate": 100.0 * counts["clientError"] / calls,
+            }
+        )
+
+    categories = [
+        key
+        for key in ("businessFail", "serverError", "clientError")
+        if totals[key] > 0
+    ]
+    totals["failure"] = totals["businessFail"] + totals["serverError"]
+    return {
+        "points": points,
+        "categories": categories,
+        "totals": totals,
+        "days": max(1, int(payload.get("days") or 7)),
+        "bucket_minutes": max(1, int(payload.get("bucketMinutes") or 30)),
+        "definitions": payload.get("definitions") or {},
+    }
+
+
+def _failure_axis_ceiling(values: list[float]) -> float:
+    peak = max(values, default=0.0)
+    for ceiling in (1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0):
+        if peak <= ceiling:
+            return ceiling
+    return 100.0
+
+
+def draw_failure_breakdown_chart(data: dict[str, Any]) -> Image.Image:
+    """绘制官方总失败率与实际存在的错误分类；空分类不进入图例。"""
+    points = list(data.get("points") or [])
+    categories = list(data.get("categories") or [])
+    days = int(data.get("days") or 7)
+    bucket_minutes = int(data.get("bucket_minutes") or 30)
+
+    width, height = 1360, 720
+    im = Image.new("RGBA", (width, height), _BG)
+    dr = ImageDraw.Draw(im)
+    dt = DrawText(dr, SIYUAN)
+    dr.rounded_rectangle((28, 28, width - 28, height - 28), radius=24, fill=_PANEL)
+    dt.draw(56, 48, 34, "AWMC 全局调用失败率", _ACCENT, "lt", 2, (255, 255, 255, 230))
+    dt.draw(
+        56,
+        94,
+        18,
+        f"{bucket_minutes} 分钟切分 · 近 {days} 天 · 空时段和全空分类已省略",
+        _MUTED,
+        "lt",
+    )
+
+    line_keys = ["failure", *categories]
+    legend_x = 56
+    for key in line_keys:
+        label, color = FAILURE_CATEGORY_META[key]
+        dr.rounded_rectangle((legend_x, 126, legend_x + 26, 134), radius=4, fill=color)
+        dt.draw(legend_x + 34, 130, 15, label, _TEXT, "lm")
+        legend_x += max(154, len(label) * 18 + 64)
+
+    left, top, right, bottom = 92, 172, width - 64, height - 104
+    rate_key = {
+        "failure": "failure",
+        "businessFail": "businessFailRate",
+        "serverError": "serverErrorRate",
+        "clientError": "clientErrorRate",
+    }
+    values = [float(row.get(rate_key[key]) or 0.0) for row in points for key in line_keys]
+    ceiling = _failure_axis_ceiling(values)
+    for i in range(5):
+        yy = int(top + (bottom - top) * i / 4)
+        pct = ceiling * (4 - i) / 4
+        dr.line((left, yy, right, yy), fill=_GRID, width=1)
+        dt.draw(left - 12, yy, 15, f"{pct:g}%", _MUTED, "rm")
+    dr.line((left, top, left, bottom), fill=_ACCENT, width=2)
+    dr.line((left, bottom, right, bottom), fill=_ACCENT, width=2)
+
+    if not points:
+        dt.draw((left + right) // 2, (top + bottom) // 2, 24, "暂无调用样本", _MUTED, "mm")
+        return im
+
+    n = len(points)
+    x_at = lambda idx: left if n == 1 else int(left + (right - left) * idx / (n - 1))
+    all_coords: dict[str, list[tuple[int, int]]] = {}
+    for key in line_keys:
+        coords: list[tuple[int, int]] = []
+        for i, row in enumerate(points):
+            value = max(0.0, min(ceiling, float(row.get(rate_key[key]) or 0.0)))
+            coords.append((x_at(i), int(bottom - value / ceiling * (bottom - top))))
+        all_coords[key] = coords
+
+    overall = all_coords["failure"]
+    if len(overall) >= 2:
+        dr.polygon(
+            overall + [(overall[-1][0], bottom), (overall[0][0], bottom)],
+            fill=(255, 123, 134, 30),
+        )
+    # 总失败率先画粗底线，分类再覆盖细线；数值重合时两种颜色仍可辨认。
+    for key in line_keys:
+        _label, color = FAILURE_CATEGORY_META[key]
+        coords = all_coords[key]
+        if len(coords) >= 2:
+            dr.line(coords, fill=color, width=5 if key == "failure" else 3)
+        marker_step = max(1, n // 24)
+        for i, (px, py) in enumerate(coords):
+            if i % marker_step == 0 or i == n - 1:
+                radius = 4 if key == "failure" else 3
+                dr.ellipse((px - radius, py - radius, px + radius, py + radius), fill=color)
+
+    label_indices = sorted({0, n - 1, n // 4, n // 2, 3 * n // 4})
+    for i in label_indices:
+        dt.draw(x_at(i), bottom + 12, 14, points[i]["bucket"].strftime("%m-%d %H:%M"), _MUTED, "mt")
+
+    totals = data.get("totals") or {}
+    parts = [
+        f"调用 {int(totals.get('calls') or 0)}",
+        f"官方失败 {int(totals.get('failure') or 0)}",
+    ]
+    for key in categories:
+        parts.append(f"{FAILURE_CATEGORY_META[key][0]} {int(totals.get(key) or 0)}")
+    dt.draw(56, height - 62, 17, " · ".join(parts), _TEXT, "lt")
+    return im
+
+
+def failure_rate_caption(data: dict[str, Any]) -> str:
+    points = list(data.get("points") or [])
+    totals = data.get("totals") or {}
+    if not points:
+        return ""
+    latest = points[-1]
+    parts = [
+        "📊 AWMC 全局调用失败率",
+        f"最近样本 {float(latest.get('failure') or 0.0):.1f}%（官方口径）",
+        (
+            f"近 {int(data.get('days') or 7)} 天：调用 {int(totals.get('calls') or 0)} · "
+            f"官方失败 {int(totals.get('failure') or 0)}"
+        ),
+    ]
+    categories = list(data.get("categories") or [])
+    if categories:
+        parts.append(
+            "分类："
+            + " · ".join(
+                f"{FAILURE_CATEGORY_META[key][0]} {int(totals.get(key) or 0)}"
+                for key in categories
+            )
+        )
+    parts.append("HTTP 4xx 单独展示，不计入接口的官方 failureRate")
+    return "\n".join(parts)
+
+
 def draw_failure_rate_chart(
     series: list[tuple[datetime, Optional[float], int, int]],
     *,
@@ -577,34 +797,53 @@ async def fetch_status_bundle(*, force: bool = False) -> tuple[dict, dict]:
         return page, heartbeat
 
 
+async def fetch_failure_rate_payload(*, force: bool = False) -> dict:
+    """拉取 AWMC 全局失败率 API；使用与状态页相同的短缓存时长。"""
+    global _failure_cache_payload, _failure_cache_at
+    ttl = _cache_seconds()
+    now = time.monotonic()
+    async with _failure_cache_lock:
+        if (
+            not force
+            and _failure_cache_payload is not None
+            and ttl > 0
+            and now - _failure_cache_at < ttl
+        ):
+            return _failure_cache_payload
+        timeout = httpx.Timeout(
+            max(3.0, float(getattr(maiconfig, "awmc_status_timeout_seconds", 8.0) or 8.0))
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(_failure_rate_url())
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("失败率接口返回格式异常")
+        _failure_cache_payload = payload
+        _failure_cache_at = time.monotonic()
+        return payload
+
+
 async def build_live_status_payload(*, force: bool = False) -> dict[str, Any]:
-    """组装舞萌状态：近 48h 服务器失败率图 + 服务器文本段。
-
-    失败率按 ``account_operation_log`` 全量账号操作统计（发票 / maiu 上传 /
-    绑定等；含 returnCode=0），无数据时段省略；服务器列表仍来自 Status API。
-    """
-    from .maimaidx_account_db import account_db
-
+    """组装舞萌状态：AWMC 全局失败率分类图 + Uptime 服务器状态。"""
     page, heartbeat = await fetch_status_bundle(force=force)
     ingest_heartbeat_history(heartbeat)
-    series = await asyncio.to_thread(
-        account_db.get_account_failure_buckets,
-        hours=HISTORY_HOURS,
-        minutes=BUCKET_MINUTES,
-    )
-    chart = draw_failure_rate_chart(
-        series,
-        title="服务器失败率",
-        subtitle=(
-            f"半小时切分 · 近 {HISTORY_HOURS} 小时 · 账号全量"
-            f"（发票/maiu/绑定等 · 无数据已省略）"
-        ),
-    )
+    failure_data: dict[str, Any] = {
+        "points": [], "categories": [], "totals": {}, "days": 7, "bucket_minutes": 30
+    }
+    try:
+        failure_data = normalize_failure_rate_payload(
+            await fetch_failure_rate_payload(force=force)
+        )
+    except Exception as exc:
+        log.warning(f"[status-api] 全局失败率拉取失败，省略图表：{type(exc).__name__}: {exc}")
+    chart = draw_failure_breakdown_chart(failure_data) if failure_data["points"] else None
     return {
         "chart": chart,
-        "chart_b64": image_to_base64(chart),
-        "series": series,
-        "series_source": "account",
+        "chart_b64": image_to_base64(chart) if chart is not None else None,
+        "failure_data": failure_data,
+        "failure_caption": failure_rate_caption(failure_data),
+        "series_source": "https://api.wmc.pub/usage/failure-rate",
         "server_sections": build_server_status_sections(page, heartbeat),
     }
 

@@ -99,7 +99,7 @@ for _serial_account_matcher in (
     account_queue,
 ):
     setattr(_serial_account_matcher, '_maimaidx_serial_user_operation', True)
-# 舞萌状态只读公开 Uptime，不占用机台串行锁。
+# 舞萌状态只读公开 Uptime 与全局失败率 API，不占用机台串行锁。
 
 _RECALL_FAILED_NOTICE = "⚠️ Bot 无法撤回该凭据消息，请立即手动撤回。\n"
 _QRCODE_RECALL_TIMEOUT_SECONDS = 3.0
@@ -931,29 +931,12 @@ def _forward_image_node(user_id: str, nickname: str, image_b64: str, caption: st
 
 async def _deliver_live_status_forward(bot: Bot, event: MessageEvent, payload: dict) -> None:
     """发送「失败率图 + 服务器状态」合并转发。"""
-    from ..libraries.maimaidx_status_api import latest_sampled_bucket
-
     nickname = str(getattr(maiconfig, "botName", None) or "AWMC Bot")
-    series = payload.get("series") or []
-    latest = latest_sampled_bucket(series)
-    filled = sum(1 for _b, rate, _f, total in series if rate is not None and total > 0)
-    total_ops = sum(int(total) for _b, _r, _f, total in series)
-    total_fail = sum(int(fail) for _b, _r, fail, total in series if total > 0)
-    if latest:
-        caption = (
-            f"🖥️ 服务器失败率\n"
-            f"最近样本 {latest[1]:.1f}%（{latest[2]}/{latest[3]}）\n"
-            f"近 48h：失败 {total_fail}/{total_ops} · {filled} 个有数据时段（已省略空档）\n"
-            f"含发票 / maiu 上传 / 绑定等账号操作；returnCode=0 计失败"
-        )
-    else:
-        caption = (
-            "🖥️ 服务器失败率\n"
-            "近 48 小时暂无账号操作记录；有绑定/上传/发票后会自动进入曲线"
-        )
-    nodes = [
-        _forward_image_node(str(event.self_id), nickname, payload["chart_b64"], caption)
-    ]
+    caption = str(payload.get("failure_caption") or "")
+    chart_b64 = payload.get("chart_b64")
+    nodes = []
+    if chart_b64:
+        nodes.append(_forward_image_node(str(event.self_id), nickname, chart_b64, caption))
     for section in payload.get("server_sections") or []:
         if str(section).strip():
             nodes.append(build_forward_node(str(event.self_id), nickname, section))
@@ -971,10 +954,11 @@ async def _deliver_live_status_forward(bot: Bot, event: MessageEvent, payload: d
         log.warning(
             f"[LiveStatus] 合并转发失败，回退普通消息：{type(exc).__name__}: {exc}"
         )
-        await maimai_live_status.send(
-            MessageSegment.image(payload["chart_b64"]) + "\n" + caption,
-            reply_message=True,
-        )
+        if chart_b64:
+            await maimai_live_status.send(
+                MessageSegment.image(chart_b64) + ("\n" + caption if caption else ""),
+                reply_message=True,
+            )
         for section in payload.get("server_sections") or []:
             await maimai_live_status.send(section, reply_message=False)
 
@@ -1295,7 +1279,7 @@ async def _():
         "AWMC 账号功能（已合并到 QueryBot）\n"
         "mai绑定 / maibind：绑定或认领舞萌账号\n"
         "mai状态 / mymai：查看账号详细状态，缓存失效时引导刷新二维码\n"
-        "舞萌状态 / mais：服务器失败率折线图（账号全量，无数据省略）+ 实时状态\n"
+        "舞萌状态 / mais：AWMC 全局失败率分类图（空分类省略）+ 实时状态\n"
         "mai绑定水鱼 [Token] / maibindfish：无参数时交互引导，最多重试 3 次\n"
         "lxbind：落雪 OAuth（推荐）；maibindlx <导入Token> 为兼容方式\n"
         "maiu：仅水鱼；maiul：仅落雪；maiua：水鱼和落雪全部上传\n"
@@ -1517,7 +1501,7 @@ async def _(
 
 @maimai_live_status.handle()
 async def _(bot: Bot, event: MessageEvent):
-    """舞萌状态 / mais：服务器失败率折线图 + 全部服务器实时状态。"""
+    """舞萌状态 / mais：AWMC 全局失败率分类图 + 全部服务器实时状态。"""
     try:
         payload = await build_live_status_payload()
     except Exception as exc:

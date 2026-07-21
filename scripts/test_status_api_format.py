@@ -22,6 +22,11 @@ names = {
     "_STATUS_LABELS",
     "_STATUS_ICONS",
     "_TYPE_WEIGHT",
+    "_FAIL",
+    "_BUSINESS_FAIL",
+    "_SERVER_ERROR",
+    "_CLIENT_ERROR",
+    "FAILURE_CATEGORY_META",
     "_status_base",
     "_status_slug",
     "_monitor_sort_score",
@@ -38,6 +43,9 @@ names = {
     "collect_monitor_catalog",
     "bucket_failure_rates",
     "latest_sampled_bucket",
+    "normalize_failure_rate_payload",
+    "_failure_axis_ceiling",
+    "failure_rate_caption",
     "build_server_status_sections",
     "ingest_heartbeat_history",
     "_load_history",
@@ -60,6 +68,7 @@ namespace: dict[str, Any] = {
     "Optional": Optional,
     "datetime": datetime,
     "timedelta": timedelta,
+    "timezone": __import__("datetime").timezone,
     "Path": Path,
     "json": __import__("json"),
     "defaultdict": __import__("collections").defaultdict,
@@ -134,6 +143,67 @@ assert abs(filled[1][1] - 50.0) < 1e-6
 latest = namespace["latest_sampled_bucket"](series)
 assert latest is not None and abs(latest[1] - 50.0) < 1e-6
 
+failure_payload = {
+    "days": 7,
+    "bucketMinutes": 30,
+    "series": [
+        {
+            "bucketUnix": 1784421000,
+            "calls": 20,
+            "businessFail": 2,
+            "serverError": 1,
+            "clientError": 0,
+        },
+        {
+            "bucketUnix": 1784422800,
+            "calls": 0,
+            "businessFail": 0,
+            "serverError": 0,
+            "clientError": 0,
+        },
+        {
+            "bucketUnix": 1784424600,
+            "calls": 10,
+            "businessFail": 0,
+            "serverError": 0,
+            "clientError": 1,
+        },
+    ],
+}
+normalized = namespace["normalize_failure_rate_payload"](failure_payload)
+assert len(normalized["points"]) == 2  # calls=0 的空桶省略
+assert normalized["categories"] == ["businessFail", "serverError", "clientError"]
+assert normalized["totals"] == {
+    "calls": 30,
+    "businessFail": 2,
+    "serverError": 1,
+    "clientError": 1,
+    "failure": 3,
+}
+assert abs(normalized["points"][0]["failure"] - 15.0) < 1e-6
+assert normalized["points"][0]["bucket"].hour == 8  # UTC 00:30 -> UTC+8 08:30
+caption = namespace["failure_rate_caption"](normalized)
+assert "业务错误 2" in caption
+assert "服务端/转发错误 1" in caption
+assert "客户端 4xx 1" in caption
+assert "4xx 单独展示" in caption
+
+only_server = namespace["normalize_failure_rate_payload"](
+    {
+        "series": [
+            {
+                "bucketUnix": 1784421000,
+                "calls": 5,
+                "businessFail": 0,
+                "serverError": 1,
+                "clientError": 0,
+            }
+        ]
+    }
+)
+assert only_server["categories"] == ["serverError"]  # 全空分类省略
+assert namespace["_failure_axis_ceiling"]([0.0, 3.2]) == 5.0
+
 # 再次吞入相同心跳不应翻倍计数
 history2 = namespace["ingest_heartbeat_history"](heartbeat, now=now)
 series2 = namespace["bucket_failure_rates"](
@@ -169,10 +239,17 @@ try:
                 now=live_now,
             )
             assert len(live_series) == 96
+            failure_res = await client.get("https://api.wmc.pub/usage/failure-rate")
+            failure_res.raise_for_status()
+            failure_data = namespace["normalize_failure_rate_payload"](failure_res.json())
+            assert failure_data["days"] >= 1
+            assert failure_data["bucket_minutes"] >= 1
             print(
                 "live filled",
                 sum(1 for r in live_series if r[1] is not None),
                 "/96",
+                "failure points",
+                len(failure_data["points"]),
             )
 
     asyncio.run(_live())

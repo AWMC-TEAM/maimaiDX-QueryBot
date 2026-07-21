@@ -151,6 +151,8 @@ AWMC_TICKET_POLL_TIMEOUT_SECONDS=120
 AWMC_TICKET_MAX_POLL_TIMEOUT_SECONDS=600
 AWMC_TICKET_SECONDS_PER_REQUEST=80
 AWMC_TICKET_SETTLEMENT_DELAY_SECONDS=2
+# mais：全局失败率分类数据（默认即此地址）
+AWMC_FAILURE_RATE_URL=https://api.wmc.pub/usage/failure-rate
 # 高负载计费：60 秒前 30 个真实功能请求免费，第 31 个起加收 1 BREAK。
 MAIMAIDX_BUSY_SURCHARGE_ENABLED=true
 MAIMAIDX_BUSY_WINDOW_SECONDS=60
@@ -354,6 +356,7 @@ BOTNAME=maimai
 | `maiua` | 同时上传水鱼与落雪 |
 | `发票` / `fp <2/3/5>` / `mai查票` | 票券操作（默认倍率 × 10 BREAK；3 倍票消耗 30 BREAK） |
 | `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
+| `舞萌状态` / `mais` | AWMC 全局失败率分类图与服务器实时状态（空时段、空分类省略） |
 | `迁移Koishi 检查/确认 <数据库>` | 超级管理员预检/导入 Koishi maiBot 数据 |
 
 绑定后执行 `更新pc数` 会直接使用已保存账号，不再要求重复发送二维码。

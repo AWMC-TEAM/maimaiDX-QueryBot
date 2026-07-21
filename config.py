@@ -79,6 +79,8 @@ class Config(BaseModel):
     # 舞萌状态附带的 Uptime Kuma 公开状态页（https://wiki.awmc.team/dev/status-api）。
     awmc_status_page_base: str = 'https://status.awmc.cc'
     awmc_status_page_slug: str = 'maimai'
+    # mais 失败率统计 API；与实时 Uptime 状态页分开。
+    awmc_failure_rate_url: str = 'https://api.wmc.pub/usage/failure-rate'
     awmc_status_cache_seconds: float = 30.0
     awmc_status_timeout_seconds: float = 8.0
     # 自动识别消息图片中的舞萌二维码；普通图片静默忽略。
