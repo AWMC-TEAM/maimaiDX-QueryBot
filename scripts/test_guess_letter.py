@@ -88,8 +88,9 @@ ns = {
     "Set": Set,
     "Tuple": Tuple,
     "Union": Union,
-    "match_guess_answer": lambda text, answers: any(
-        str(text).strip().lower() == str(a).strip().lower() for a in answers
+    "match_guess_answer": lambda text, answers, *, allow_latin_typo=True: any(
+        str(text).strip().lower() in re.sub(r"[^a-z0-9]", "", str(a).lower())
+        for a in answers
     ),
     "format_guess_answer_rate_limit": lambda remain: (
         f"嘿嘿，你的答案被我吃掉啦！({remain:.1f}秒后才能发送新的答案）"
@@ -193,6 +194,16 @@ assert "m" in out_board.revealed
 assert out_board.finished
 assert out_board.contributions["u1"].song_opens == 1
 assert out_board.contributions["u1"].letter_completes == 1
+
+# 开字母必须关闭三字符的一处错字容忍：输入 the 不能误开只有 she/tie 的歌。
+mgr_strict = LetterGuessManager()
+false_hit = LetterSong(music_id="the-1", title="SHE LOVES YOU", answers=["SHE LOVES YOU", "tie"])
+real_hit = LetterSong(music_id="the-2", title="THE BRIGHT SIDE", answers=["THE BRIGHT SIDE"])
+strict_board = LetterBoard(songs=[false_hit, real_hit])
+mgr_strict.Group[4] = strict_board
+_, _, strict_hit, _, _ = mgr_strict.open_song(4, "the", solver="严格匹配侠")
+assert strict_hit is real_hit
+assert not false_hit.solved
 
 mgr2 = LetterGuessManager()
 stuck = LetterSong(music_id="c", title="AB", answers=["AB"])

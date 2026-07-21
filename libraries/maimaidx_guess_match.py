@@ -20,7 +20,12 @@ def normalize_guess_text(text: str, strictness: int = 1) -> str:
     return text
 
 
-def _is_relaxed_latin_match(guess: str, answer: str) -> bool:
+def _is_relaxed_latin_match(
+    guess: str,
+    answer: str,
+    *,
+    allow_typo: bool = True,
+) -> bool:
     """Allow a Latin fragment; only a 3-char fragment may contain one typo."""
     if (
         len(guess) < 3
@@ -31,6 +36,8 @@ def _is_relaxed_latin_match(guess: str, answer: str) -> bool:
         return False
     if guess in answer:
         return True
+    if not allow_typo:
+        return False
 
     # Keep typo tolerance narrowly scoped to the requested short-fragment case
     # (for example, "man" matching the "men" in "goodmen"). Longer guesses
@@ -57,6 +64,7 @@ def match_guess_answer(
     answers: List[str],
     *,
     pic_difficulty: Optional[int] = None,
+    allow_latin_typo: bool = True,
 ) -> bool:
     raw = guess_text.strip()
     if not raw:
@@ -78,7 +86,11 @@ def match_guess_answer(
             continue
         if norm_guess == norm_ans:
             return True
-        if not ans_s.isdigit() and _is_relaxed_latin_match(norm_guess, norm_ans):
+        if not ans_s.isdigit() and _is_relaxed_latin_match(
+            norm_guess,
+            norm_ans,
+            allow_typo=allow_latin_typo,
+        ):
             return True
         if (
             pic_difficulty is not None

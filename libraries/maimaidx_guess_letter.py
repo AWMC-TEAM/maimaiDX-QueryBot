@@ -757,7 +757,14 @@ class LetterGuessManager:
         for song in board.songs:
             if song.solved:
                 continue
-            if match_guess_answer(text, song.answers):
+            # 开字母是抢答玩法，短字符串的一字符容错会让 ``the`` 误中
+            # ``she`` / ``tie`` 等实际并不包含输入内容的曲名或别名。
+            # 保留大小写、标点归一化和真实子串匹配，但禁止错字近似命中。
+            if match_guess_answer(
+                text,
+                song.answers,
+                allow_latin_typo=False,
+            ):
                 song.solved = True
                 song.solved_by = solver or "开歌"
                 # 猜中时把该曲剩余字母也记入已开集合，便于展示
