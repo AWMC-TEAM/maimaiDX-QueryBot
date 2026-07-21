@@ -50,7 +50,7 @@ DEFAULT_CONFIG: Dict[str, str] = {
     'upload_fish_cost': '2',
     'upload_lx_cost': '2',
     'upload_all_cost': '3',
-    'ticket_cost_per_multiplier': '3',
+    'ticket_cost_per_multiplier': '10',
     'ticket_unused_penalty': '20',
     'transfer_fee': '0',
     'lottery_cost': '2',
@@ -397,18 +397,18 @@ class BreakDatabase:
         self._restore_uncapped_streak_default()
 
     def _migrate_ticket_cost_default(self) -> None:
-        """将上一版发票默认价从倍率 ×2 迁移为倍率 ×3。"""
+        """将旧版发票默认价（倍率 ×2/×3）迁移为倍率 ×10。"""
         row = self._conn.execute(
             'SELECT value FROM break_config WHERE key = ?',
             ('ticket_cost_per_multiplier',),
         ).fetchone()
-        if row and str(row['value']) == '2':
+        if row and str(row['value']) in {'2', '3'}:
             self._conn.execute(
                 'UPDATE break_config SET value = ? WHERE key = ?',
                 (DEFAULT_CONFIG['ticket_cost_per_multiplier'], 'ticket_cost_per_multiplier'),
             )
             self._conn.commit()
-            log.info('[BREAK] 已将发票价格迁移为倍率 ×3')
+            log.info('[BREAK] 已将发票价格迁移为倍率 ×10')
 
     def _migrate_analysis_max_cost_default(self) -> None:
         """将首版 Token 计费封顶从 6 BREAK 迁移为 20 BREAK。"""

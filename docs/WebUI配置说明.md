@@ -157,12 +157,12 @@ https://bot.example.com/ops/maimai/api/...
 | `upload_fish_cost` | 2 | 上传水鱼价格 |
 | `upload_lx_cost` | 2 | 上传落雪价格 |
 | `upload_all_cost` | 3 | 同时上传价格 |
-| `ticket_cost_per_multiplier` | 3 | 发票每倍率单价 |
+| `ticket_cost_per_multiplier` | 10 | 发票每倍率单价 |
 | `transfer_fee` | 0 | BREAK 转账手续费 |
 | `lottery_cost` | 2 | BREAK 抽奖每次成本 |
 
 还可查看近 30 日产出、消耗、查分量、分析量和活跃用户，以及最近
-BREAK 逐笔流水。每日首次免费的上传/发票也会保留 `delta=0` 记录。
+BREAK 逐笔流水。每日首次免费的上传也会保留 `delta=0` 记录。
 
 ### 用户协议
 

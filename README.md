@@ -352,7 +352,7 @@ BOTNAME=maimai
 | `maiu` / `导` | 仅上传水鱼 |
 | `maiul` | 仅上传落雪 |
 | `maiua` | 同时上传水鱼与落雪 |
-| `发票` / `fp <2/3/5>` / `mai查票` | 票券操作（默认倍率 × 3 BREAK，允许倍率可由 ENV 配置） |
+| `发票` / `fp <2/3/5>` / `mai查票` | 票券操作（默认倍率 × 10 BREAK；3 倍票消耗 30 BREAK） |
 | `mai地图` / `maiping` | 游玩地区 / API 健康检查 |
 | `迁移Koishi 检查/确认 <数据库>` | 超级管理员预检/导入 Koishi maiBot 数据 |
 
