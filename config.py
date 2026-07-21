@@ -12,6 +12,8 @@ from loguru import logger as log
 from nonebot import get_driver, get_plugin_config
 from pydantic import BaseModel
 
+from .libraries.maimaidx_attribution import ATTRIBUTION, project_message, short_footer
+
 driver = get_driver()
 
 
@@ -194,25 +196,21 @@ except Exception as exc:
         raise RuntimeError(message) from exc
     log.error(message + "；已按配置允许继续使用现有本地数据")
 
-BOT_QQ_GROUP = '1072033605'
-UPSTREAM_REPO_URL = 'https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx'
-FORK_TEAM_URL = 'https://github.com/AWMC-TEAM'
-IMAGE_DESIGNER = 'Yuri-YuzuChaN & BlueDeer233'
+BOT_QQ_GROUP = str(ATTRIBUTION['group'])
+UPSTREAM_REPO_URL = str(ATTRIBUTION['upstream_url'])
+FORK_TEAM_URL = str(ATTRIBUTION['fork_url'])
+IMAGE_DESIGNER = str(ATTRIBUTION['image_designer'])
 
 
 def project_attribution_message() -> str:
     """项目地址 / 关于：完整致谢文案。"""
-    return (
-        f'本机器人基于 项目地址：{UPSTREAM_REPO_URL}\n\n'
-        f'由 AWMC TEAM 进行深度重制，{FORK_TEAM_URL}。\n\n'
-        f'QQ Group {BOT_QQ_GROUP} | AWMC BOT Made By AWMC TEAM'
-    )
+    return project_message()
 
 
 def footer_generated(bot_name: Optional[str] = None) -> str:
     """图片 / 文本回复底部短署名。"""
     name = bot_name or maiconfig.botName
-    return f'QQ Group {BOT_QQ_GROUP} | {name} Bot Made By AWMC TEAM'
+    return short_footer(name)
 
 
 def footer_designed_generated(designer: str = IMAGE_DESIGNER, bot_name: Optional[str] = None) -> str:

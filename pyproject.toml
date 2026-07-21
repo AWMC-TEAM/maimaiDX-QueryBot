@@ -4,9 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nonebot-plugin-maimaidx"
-version = "26.8.1"
+version = "26.8.2"
 authors = [
   { name="Yuri-YuzuChaN", email="806235364@qq.com" },
+]
+maintainers = [
+  { name="AWMC TEAM" },
 ]
 description = "maimaidx plugin for nonebot2"
 readme = "README.md"
@@ -42,8 +45,10 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx"
-"Bug Tracker" = "https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx/issues"
+"Homepage" = "https://github.com/AWMC-TEAM/maimaiDX-QueryBot"
+"Source" = "https://github.com/AWMC-TEAM/maimaiDX-QueryBot"
+"Upstream" = "https://github.com/Yuri-YuzuChaN/maimaiDX"
+"Bug Tracker" = "https://github.com/AWMC-TEAM/maimaiDX-QueryBot/issues"
 
 [tool.setuptools.package-dir]
 "nonebot_plugin_maimaidx" = "."

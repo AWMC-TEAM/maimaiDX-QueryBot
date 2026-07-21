@@ -21,7 +21,7 @@ __plugin_meta__ = PluginMetadata(
     usage='请使用 帮助maimaiDX 指令查看使用方法',
     type='application',
     config=Config,
-    homepage='https://github.com/Yuri-YuzuChaN/nonebot-plugin-maimaidx',
+    homepage='https://github.com/AWMC-TEAM/maimaiDX-QueryBot',
     supported_adapters={'~onebot.v11', '~qq'}
 )
 

@@ -1,6 +1,12 @@
-# nonebot-plugin-maimaidx
+# maimaiDX QueryBot
 
-基于 [Yuri-YuzuChaN/maimaiDX](https://github.com/Yuri-YuzuChaN/maimaiDX) 修改的 nonebot2 舞萌 DX 查分插件，由 [AWMC TEAM](https://github.com/AWMC-TEAM) 维护。
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![NoneBot2](https://img.shields.io/badge/NoneBot2-2.x-EA5252)](https://nonebot.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+> **衍生项目声明：本项目基于 [Yuri-YuzuChaN/maimaiDX](https://github.com/Yuri-YuzuChaN/maimaiDX) 修改。**
+
+面向 NoneBot2 的舞萌 DX 查询与账号服务插件，由 [AWMC TEAM](https://github.com/AWMC-TEAM) 维护。原项目版权与贡献归原作者及其贡献者所有，详细说明见 [NOTICE](NOTICE)。
 
 ## 功能特性
 
@@ -23,6 +29,14 @@
 
 ```bash
 pip install nonebot-plugin-maimaidx
+```
+
+从当前仓库安装开发版：
+
+```bash
+git clone https://github.com/AWMC-TEAM/maimaiDX-QueryBot.git
+cd maimaiDX-QueryBot
+pip install -e .
 ```
 
 开发版可将本仓库文件覆盖到 bot 的插件目录。另需安装 Playwright Chromium 与 ffmpeg（猜铺面录视频）：
@@ -247,6 +261,12 @@ BOTNAME=maimai
 # MAIMAIDX_TAG_ANALYSIS_BG=mai/pic/custom_tag_bg.png
 ```
 
+### 页脚完整性保护
+
+项目来源、维护团队、QQ群和固定署名保存在 RSA-SHA256 签名清单中，插件导入时会验证签名；清单被直接改动时会拒绝启动。`BOTNAME` 仍是公开配置项，可按部署实例自定义。
+
+签名私钥不进入仓库。维护者更新固定署名时，应使用离线保存的私钥重新签名。由于本项目是开源软件，任何人都能删除校验代码并建立分支，因此该机制用于检测未经授权的原地篡改，不能从技术上禁止第三方修改其自行维护的副本。
+
 ## 命令列表
 
 ### 基础查询
@@ -358,6 +378,15 @@ Koishi 数据迁移时，将完整数据库放进 `MAIMAIDX_KOISHI_MIGRATION_DIR
 
 ## 开发
 
+提交改动前建议运行：
+
+```bash
+python scripts/test_footer_integrity.py
+python -m compileall -q .
+```
+
+参与方式与提交约定见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题请参阅 [SECURITY.md](SECURITY.md)。
+
 ### 目录结构
 
 ```
@@ -382,7 +411,7 @@ nonebot_plugin_maimaidx/
 
 ## 致谢
 
-- 原项目：[Yuri-YuzuChaN/maimaiDX](https://github.com/Yuri-YuzuChaN/maimaiDX)
+- **本项目基于修改的原项目：[Yuri-YuzuChaN/maimaiDX](https://github.com/Yuri-YuzuChaN/maimaiDX)**
 - 维护：[AWMC TEAM](https://github.com/AWMC-TEAM/maimaiDX-QueryBot)
 - 数据源：[Diving-Fish/maimaidx-prober](https://github.com/Diving-Fish/maimaidx-prober)
 - 定数数据：dxdata.json 社区维护版本
