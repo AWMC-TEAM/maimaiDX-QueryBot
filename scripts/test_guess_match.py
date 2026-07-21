@@ -1,5 +1,12 @@
 """猜歌文本匹配回归测试（不依赖 NoneBot）。"""
 
+from pathlib import Path
+import sys
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
 from libraries.maimaidx_guess_match import match_guess_answer
 
 
