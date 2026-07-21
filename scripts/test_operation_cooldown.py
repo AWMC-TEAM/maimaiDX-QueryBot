@@ -80,6 +80,8 @@ assert "操作已确认" not in runtime_source
 assert "你已有一个操作正在进行" not in runtime_source
 assert "操作已确认" not in account_source
 assert "📤 已受理，正在上传到" in account_source
+assert "def _upload_can_start_now(" in account_source
+assert "if _upload_can_start_now(" in account_source
 assert "async def _refresh_b50_cache_after_upload(" in account_source
 assert "await get_user_records(" in account_source
 assert "await get_user_b50(" in account_source
@@ -89,6 +91,12 @@ assert "await _refresh_b50_cache_after_upload(key, fish=fish, lxns=lxns)" in acc
 assert "二维码缓存已过期，请重新发送最新 SGWCMAID" in account_source
 assert "maiu_cache_listener" not in playcount_source
 assert "_MAIU_UPLOAD_GRACE_SECONDS" not in playcount_source
+
+letter_source = (ROOT / "command" / "mai_letter.py").read_text(encoding="utf-8")
+assert "正在结算本局贡献" not in letter_source
+assert "settlement_lines.extend(feedback.goal_tips)" in letter_source
+assert "settlement_lines.extend(feedback.record_tips)" in letter_source
+assert 'msg = Message("\\n".join(settlement_lines) + "\\n")' in letter_source
 
 assert "negative BREAK balance" in runtime_source
 assert "已暂停其他功能" in runtime_source

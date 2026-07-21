@@ -247,6 +247,11 @@ assert preflight_pos < request_pos
 assert "await matcher.finish(preflight_error, reply_message=False)" in upload_src
 assert "async def _notify_upload_accepted(" in upload_src
 assert "📤 已受理，正在上传到" in upload_src
+assert "def _upload_can_start_now(" in upload_src
+ready_pos = upload_src.index("if _upload_can_start_now(")
+notify_pos = upload_src.index("await _notify_upload_accepted(", ready_pos)
+request_pos = upload_src.index("result = await _upload(", notify_pos)
+assert ready_pos < notify_pos < request_pos
 assert "format_processing_estimate(seconds, samples)" in upload_src
 
 lxns_client_src = (ROOT / "libraries" / "maimaidx_lxns_client.py").read_text(

@@ -216,7 +216,7 @@ async def _maybe_finish_board(
     matcher, event: MessageEvent, gid, board: LetterBoard, parts: list[str]
 ) -> None:
     """
-    通关结算：先立刻发结束文案，再渲染并发送分成榜图 + 终局看板图。
+    通关结算：结束文案、达标/破纪录提示、分成榜图和终局看板合并发送。
     人多文字模式只影响局中看板更新；通关结算始终强制出图。
     「不玩了」中途结束不走本路径。
     """
@@ -229,14 +229,12 @@ async def _maybe_finish_board(
         await matcher.finish()
         return
 
-    # 第一波：立刻发文字反馈（不等渲染/落库）；含相对上一局用时 diff
+    # 保留相对上一局用时 diff，稍后与结算图、达标和纪录一起发送。
     prev_elapsed = letter_stats.last_clear_elapsed(gid)
-    quick_lines = [
+    settlement_lines = [
         *parts,
         format_finish_elapsed_line(board.elapsed(), prev_elapsed),
-        "⏳ 正在结算本局贡献...",
     ]
-    await _send_plain(matcher, event, "\n".join(quick_lines), fast=True)
 
     th = letter_stats.thresholds_for(gid)
     settlement = board.settle(
@@ -258,14 +256,11 @@ async def _maybe_finish_board(
     )
     await _payout_settlement(event, gid, settlement)
 
-    # 达标 / 破纪录：各短跟一条，不塞进结算图
-    for tip in feedback.goal_tips:
-        await _send_plain(matcher, event, tip, fast=True)
-    for tip in feedback.record_tips:
-        await _send_plain(matcher, event, tip, fast=True)
+    settlement_lines.extend(feedback.goal_tips)
+    settlement_lines.extend(feedback.record_tips)
 
-    # 第二波：通关结算始终出图（bypass prefer_text）；分成图 + 终局看板图
-    msg = Message()
+    # 通关结算始终出图（bypass prefer_text），全部内容只占一条群消息。
+    msg = Message("\n".join(settlement_lines) + "\n")
     try:
         split_im = await render_settlement_split(settlement)
         msg += MessageSegment.image(await asyncio.to_thread(image_b64, split_im))

@@ -1893,6 +1893,37 @@ def _upload_preflight_error(
     return None
 
 
+def _upload_can_start_now(
+    event: MessageEvent,
+    *,
+    fish: bool,
+    lxns: bool,
+    qrcode_arg: str = "",
+) -> bool:
+    """是否已有可立即开始上传的数据，避免把等待新 SGID 说成已受理。"""
+    if extract_sgwcmaid_qrcode(qrcode_arg):
+        return True
+
+    key = _user_key(event)
+    binding = account_db.get(key)
+    if binding is None:
+        return False
+
+    # 仅落雪 OAuth 可以复用新鲜 PC 缓存，不依赖 SGID。
+    if lxns and not fish and _has_lxns_oauth(event):
+        try:
+            qqid = int(key)
+        except ValueError:
+            qqid = 0
+        if qqid and _lxns_scores_from_pc_cache(qqid):
+            return True
+
+    if not binding.qrcode:
+        return False
+    cache_valid, _ = _sgid_cache_state(binding)
+    return cache_valid
+
+
 def auto_upload_channels(
     *, fish_token: str = "", lxns_token: str = "", has_lxns_oauth: bool = False
 ) -> tuple[bool, bool]:
@@ -2023,9 +2054,13 @@ async def _(
     raw = _arg_text(args)
     if raw and not extract_sgwcmaid_qrcode(raw):
         await matcher.finish("上传失败：二维码格式无效", reply_message=True)
-    # 先贴表情再撤回凭据，让用户立刻看到「已开始处理」。
+    # 先贴表情再撤回凭据，让用户立刻看到「已开始处理」。缓存已过期时
+    # 尚处于等待新 SGID 阶段，不能提前发送“已受理”。
     await react_processing(bot, event)
-    await _notify_upload_accepted(matcher, event, fish=fish, lxns=lxns)
+    if _upload_can_start_now(
+        event, fish=fish, lxns=lxns, qrcode_arg=raw
+    ):
+        await _notify_upload_accepted(matcher, event, fish=fish, lxns=lxns)
     recall_notice = ""
     if extract_sgwcmaid_qrcode(raw):
         recall_notice = await _recall_qrcode_message(bot, event)
