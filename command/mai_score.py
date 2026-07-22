@@ -63,6 +63,7 @@ from ..libraries.maimaidx_progress_report import (
     generate_progress_report,
     generate_progress_report_between,
 )
+from ..libraries.maimaidx_reaction import react_processing
 from ..libraries.maimaidx_gain_recommend import generate_today_gain_recommendation_image
 from ..libraries.maimaidx_floor import generate_floor_query
 from ..libraries.maimaidx_friend_battle import (
@@ -299,6 +300,7 @@ async def _(
 
 @refresh_b50.handle()
 async def _refresh_b50(
+    bot: Bot,
     event: MessageEvent,
     message: Message = CommandArg(),
     user_id: Optional[int] = Depends(get_at_qq),
@@ -316,6 +318,7 @@ async def _refresh_b50(
     from ..libraries.maimaidx_break import break_billing
     from ..libraries.maimaidx_error import LxnsDataError
 
+    await react_processing(bot, event)
     if not bool(getattr(maiconfig, 'maimaidx_compact_messages', True)):
         await refresh_b50.send('正在从查分器同步最新成绩并生成 b50，请稍候…', reply_message=True)
     try:
