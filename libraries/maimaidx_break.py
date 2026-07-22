@@ -41,6 +41,7 @@ DEFAULT_CONFIG: Dict[str, str] = {
     # 恢复旧版第 1～5 天曲线；之后按 streak_bonus_growth 继续增长，不封顶。
     'streak_bonus': '3,5,8,12,20',
     'streak_bonus_growth': '1',
+    'makeup_checkin_costs': '30,60,90',
     'bonus_group_1072033605': '0.25',
     'bonus_thursday': '0.5',
     'bonus_group_first': '0.5',
@@ -105,6 +106,18 @@ CREATE TABLE IF NOT EXISTS break_group_checkin (
     first_qqid  INTEGER NOT NULL,
     PRIMARY KEY (group_id, date)
 );
+CREATE TABLE IF NOT EXISTS break_makeup_checkin (
+    qqid         INTEGER NOT NULL,
+    target_date  TEXT NOT NULL,
+    used_month   TEXT NOT NULL,
+    monthly_no   INTEGER NOT NULL,
+    cost         INTEGER NOT NULL,
+    streak       INTEGER NOT NULL,
+    created_at   REAL NOT NULL,
+    PRIMARY KEY (qqid, target_date)
+);
+CREATE INDEX IF NOT EXISTS idx_break_makeup_month
+    ON break_makeup_checkin(qqid, used_month);
 CREATE TABLE IF NOT EXISTS break_config (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL
@@ -223,6 +236,18 @@ class CheckinResult:
     base_max: int = 2
     bonus_labels: List[str] = field(default_factory=list)
     already_checked: bool = False
+
+
+@dataclass
+class MakeupCheckinResult:
+    qqid: int
+    target_date: str
+    monthly_no: int
+    monthly_limit: int
+    cost: int
+    balance: int
+    streak: int
+    next_cost: Optional[int] = None
 
 
 @dataclass
@@ -358,6 +383,49 @@ def calculate_checkin_reward(
             * max(1, int(reward_multiplier))
         )
     )
+
+
+def parse_makeup_checkin_costs(raw: str) -> tuple[int, ...]:
+    """补签阶梯价格；无效配置回退为每月三次 30/60/90。"""
+    values: list[int] = []
+    for part in str(raw or '').replace('，', ',').split(','):
+        try:
+            value = int(part.strip())
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            values.append(value)
+    return tuple(values) or (30, 60, 90)
+
+
+def calculate_makeup_streak(
+    last_checkin_date: Optional[str],
+    current_streak: int,
+    target_date: date,
+    today: date,
+    *,
+    previous_checkin_date: Optional[date] = None,
+    previous_streak: int = 0,
+) -> tuple[str, int]:
+    """补昨天后的 last_checkin_date 与连续天数，兼容今天已先签到的情况。"""
+    last = date.fromisoformat(last_checkin_date) if last_checkin_date else None
+    if last == target_date:
+        raise ValueError('昨天已经签到过，无需补签。')
+    if last == today:
+        streak = (
+            max(0, int(previous_streak)) + 2
+            if previous_checkin_date == date.fromordinal(target_date.toordinal() - 1)
+            else 2
+        )
+        return today.isoformat(), streak
+    if last is None or last < target_date:
+        streak = (
+            max(0, int(current_streak)) + 1
+            if last == date.fromordinal(target_date.toordinal() - 1)
+            else 1
+        )
+        return target_date.isoformat(), streak
+    raise ValueError('签到日期状态异常，请联系管理员处理。')
 
 
 class BreakDatabase:
@@ -1430,6 +1498,141 @@ class BreakDatabase:
             bonus_labels=bonus_labels,
         )
 
+    def _makeup_checkin_costs(self) -> tuple[int, ...]:
+        return parse_makeup_checkin_costs(
+            self.get_config(
+                'makeup_checkin_costs', DEFAULT_CONFIG['makeup_checkin_costs']
+            )
+        )
+
+    def _checkin_exists_on(self, qqid: int, target: date) -> bool:
+        target_text = target.isoformat()
+        ordinary = self._conn.execute(
+            """SELECT 1 FROM break_log
+               WHERE qqid = ? AND reason = 'checkin'
+                 AND date(created_at, 'unixepoch', 'localtime') = ?
+               LIMIT 1""",
+            (qqid, target_text),
+        ).fetchone()
+        if ordinary:
+            return True
+        makeup = self._conn.execute(
+            'SELECT 1 FROM break_makeup_checkin WHERE qqid = ? AND target_date = ?',
+            (qqid, target_text),
+        ).fetchone()
+        return makeup is not None
+
+    def _latest_checkin_before(self, qqid: int, target: date) -> tuple[Optional[date], int]:
+        target_text = target.isoformat()
+        ordinary = self._conn.execute(
+            """SELECT date(created_at, 'unixepoch', 'localtime') AS checkin_date, meta
+               FROM break_log
+               WHERE qqid = ? AND reason = 'checkin'
+                 AND date(created_at, 'unixepoch', 'localtime') < ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (qqid, target_text),
+        ).fetchone()
+        candidates: list[tuple[date, int]] = []
+        if ordinary and ordinary['checkin_date']:
+            try:
+                meta = json.loads(ordinary['meta'] or '{}')
+            except (TypeError, ValueError, json.JSONDecodeError):
+                meta = {}
+            candidates.append(
+                (date.fromisoformat(str(ordinary['checkin_date'])), int(meta.get('streak') or 0))
+            )
+        makeup = self._conn.execute(
+            """SELECT target_date, streak FROM break_makeup_checkin
+               WHERE qqid = ? AND target_date < ?
+               ORDER BY target_date DESC LIMIT 1""",
+            (qqid, target_text),
+        ).fetchone()
+        if makeup:
+            candidates.append(
+                (date.fromisoformat(str(makeup['target_date'])), int(makeup['streak']))
+            )
+        return max(candidates, default=(None, 0), key=lambda item: item[0] or date.min)
+
+    def makeup_yesterday(self, qqid: int) -> MakeupCheckinResult:
+        """消耗 BREAK 补昨天，仅修复连续签到，不补发昨天奖励。"""
+        self._ensure_user(qqid)
+        today = date.today()
+        target = date.fromordinal(today.toordinal() - 1)
+        used_month = today.strftime('%Y-%m')
+        costs = self._makeup_checkin_costs()
+        with self._lock:
+            if self._checkin_exists_on(qqid, target):
+                raise ValueError('昨天已经签到过，无需补签。')
+            used = int(
+                self._conn.execute(
+                    """SELECT COUNT(*) AS count FROM break_makeup_checkin
+                       WHERE qqid = ? AND used_month = ?""",
+                    (qqid, used_month),
+                ).fetchone()['count']
+            )
+            if used >= len(costs):
+                raise ValueError(f'本月补签次数已用完（{len(costs)}/{len(costs)}）。')
+            cost = costs[used]
+            user = self.get_user_row(qqid)
+            balance = int(user.get('balance', 0))
+            if balance < cost:
+                raise BreakInsufficientError(cost, balance, qqid=qqid)
+
+            previous_date, previous_streak = self._latest_checkin_before(qqid, target)
+            last_date, streak = calculate_makeup_streak(
+                user.get('last_checkin_date'),
+                int(user.get('streak', 0)),
+                target,
+                today,
+                previous_checkin_date=previous_date,
+                previous_streak=previous_streak,
+            )
+            now = time.time()
+            monthly_no = used + 1
+            try:
+                self._conn.execute(
+                    """INSERT INTO break_makeup_checkin
+                       (qqid, target_date, used_month, monthly_no, cost, streak, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (qqid, target.isoformat(), used_month, monthly_no, cost, streak, now),
+                )
+                self._conn.execute(
+                    """UPDATE break_users SET balance = balance - ?, streak = ?,
+                       last_checkin_date = ?, updated_at = ? WHERE qqid = ?""",
+                    (cost, streak, last_date, now, qqid),
+                )
+                self._ensure_daily(qqid)
+                self._conn.execute(
+                    """UPDATE break_daily_usage SET break_spent = break_spent + ?
+                       WHERE qqid = ? AND date = ?""",
+                    (cost, qqid, self._today()),
+                )
+                self._append_log(
+                    qqid,
+                    -cost,
+                    'checkin_makeup',
+                    meta={
+                        'target_date': target.isoformat(),
+                        'monthly_no': monthly_no,
+                        'streak': streak,
+                        'reward': 0,
+                    },
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            return MakeupCheckinResult(
+                qqid=qqid,
+                target_date=target.isoformat(),
+                monthly_no=monthly_no,
+                monthly_limit=len(costs),
+                cost=cost,
+                balance=balance - cost,
+                streak=streak,
+                next_cost=costs[monthly_no] if monthly_no < len(costs) else None,
+            )
+
 
 break_db = BreakDatabase()
 
@@ -1822,6 +2025,7 @@ def format_account_profile_sections(
         reason_map = {
             'query': '查分',
             'checkin': '签到',
+            'checkin_makeup': '补签',
             'today_luck': '今日舞萌',
             'b50_analysis': '分析b50',
             'busy_request_surcharge': '高负载请求附加费',
@@ -1858,4 +2062,22 @@ def format_checkin_result(result: CheckinResult) -> str:
         f'✨ 今日加成：{bonus}\n'
         f'💰 获得：{result.reward} BREAK\n'
         f'💳 当前余额：{result.balance} BREAK'
+    )
+
+
+def format_makeup_checkin_result(result: MakeupCheckinResult) -> str:
+    next_line = (
+        f'🎟 本月已用 {result.monthly_no}/{result.monthly_limit} 次；'
+        f'下次需 {result.next_cost} BREAK'
+        if result.next_cost is not None
+        else f'🎟 本月已用 {result.monthly_no}/{result.monthly_limit} 次，次数已用完'
+    )
+    return (
+        '✅ AWMC 补签成功！\n'
+        '━━━━━━━━━━━━━━\n'
+        f'📅 已补日期：{result.target_date}（昨天）\n'
+        f'🔥 连续签到：{result.streak} 天\n'
+        f'💳 消耗：{result.cost} BREAK · 余额 {result.balance} BREAK\n'
+        f'{next_line}\n'
+        '补签仅修复连续签到，不补发昨天的签到奖励。'
     )

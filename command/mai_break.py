@@ -16,6 +16,7 @@ from ..libraries.maimaidx_break import (
     format_account_profile_sections,
     format_analysis_pricing_help,
     format_checkin_result,
+    format_makeup_checkin_result,
     get_account_profile,
 )
 from ..libraries.maimaidx_guess_score import guess_score
@@ -35,6 +36,13 @@ require('nonebot_plugin_apscheduler')
 from nonebot_plugin_apscheduler import scheduler  # noqa: E402
 
 awmc_checkin = on_command('AWMC签到', aliases={'签到', 'awmc签到'})
+awmc_makeup_checkin = on_command(
+    'AWMC补签', aliases={'补签', 'awmc补签', '签到补签'}
+)
+for _checkin_matcher in (awmc_checkin, awmc_makeup_checkin):
+    setattr(_checkin_matcher, '_maimaidx_serial_user_operation', True)
+# 补签本身已有固定阶梯价格，不再叠加高负载附加费。
+setattr(awmc_makeup_checkin, '_maimaidx_busy_surcharge_exempt', True)
 my_awmc = on_command(
     '我的AWMC', aliases={'我的awmc', 'AWMC状态', 'awmc状态', '我的账号'}
 )
@@ -98,6 +106,7 @@ async def _():
     text = (
         '【AWMC BREAK 系统】\n'
         '· AWMC签到 — 每日签到获取 BREAK（基础 1~2，连续签到奖励不封顶）\n'
+        '· AWMC补签 — 补昨天，每月最多 3 次，依次消耗 30/60/90 BREAK\n'
         '· 今日舞萌 — 人品值四舍五入后 ÷10，每日领取一次 BREAK\n'
         '· 猜歌 — 每次猜对奖励 1 BREAK，无每日上限\n'
         '· 转账BREAK @用户 数量 — 转给其他用户\n'
@@ -392,6 +401,19 @@ async def _(event: MessageEvent):
     qqid = int(event.get_user_id())
     result = break_db.checkin(qqid, group_id)
     await awmc_checkin.finish(format_checkin_result(result), reply_message=True)
+
+
+@awmc_makeup_checkin.handle()
+async def _(event: MessageEvent):
+    await _require_break_agreement(awmc_makeup_checkin, event)
+    qqid = int(billing_user_id(event))
+    try:
+        result = break_db.makeup_yesterday(qqid)
+    except Exception as exc:
+        await awmc_makeup_checkin.finish(f'补签失败：{exc}', reply_message=True)
+    await awmc_makeup_checkin.finish(
+        format_makeup_checkin_result(result), reply_message=True
+    )
 
 
 @my_awmc.handle()
