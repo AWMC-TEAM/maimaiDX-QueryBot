@@ -197,9 +197,10 @@ assert fake_db.saved[1]["scope"] == "read_player write_player"
 # 落雪 OAuth 主路径失败后不得再静默回退 update_lx（会二次占用已消耗的二维码并长时间挂起）。
 upload_src = (ROOT / "command" / "mai_account.py").read_text(encoding="utf-8")
 assert 'lines.extend(["", _format_ticket_status(charge)])' in upload_src
-assert 'if type(matcher) is upload_fish:\n        return True, False' in upload_src
-assert 'if type(matcher) is upload_lx:\n        return False, True' in upload_src
-assert 'if type(matcher) is upload_all:\n        return True, True' in upload_src
+assert 'if isinstance(matcher, upload_fish):' in upload_src
+assert 'if isinstance(matcher, upload_lx):' in upload_src
+assert 'if isinstance(matcher, upload_all):' in upload_src
+assert 'stored = matcher.state.get(_UPLOAD_MODE_STATE_KEY)' in upload_src
 assert "不再回退 update_lx" in upload_src
 assert "OAuth Token 已失效且自动刷新失败" in upload_src
 assert "仅无 OAuth 时才用导入 Token" in upload_src

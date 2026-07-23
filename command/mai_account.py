@@ -1846,12 +1846,31 @@ async def _upload(
         return failure_message + f"\nRef_ID: {ref}"
 
 
+_UPLOAD_MODE_STATE_KEY = "maimaidx_upload_mode"
+
+
 def _upload_mode(matcher: Matcher) -> tuple[bool, bool]:
-    if type(matcher) is upload_fish:
+    """Resolve and persist the upload mode across ``got`` session resumes.
+
+    NoneBot may resume a waiting matcher with a generated subclass, so exact
+    ``type(matcher) is ...`` checks are not reliable on the QR-code reply.
+    """
+    stored = matcher.state.get(_UPLOAD_MODE_STATE_KEY)
+    if stored == "fish":
         return True, False
-    if type(matcher) is upload_lx:
+    if stored == "lxns":
         return False, True
-    if type(matcher) is upload_all:
+    if stored == "all":
+        return True, True
+
+    if isinstance(matcher, upload_fish):
+        matcher.state[_UPLOAD_MODE_STATE_KEY] = "fish"
+        return True, False
+    if isinstance(matcher, upload_lx):
+        matcher.state[_UPLOAD_MODE_STATE_KEY] = "lxns"
+        return False, True
+    if isinstance(matcher, upload_all):
+        matcher.state[_UPLOAD_MODE_STATE_KEY] = "all"
         return True, True
     raise ValueError("未知上传指令")
 
@@ -2072,16 +2091,17 @@ async def _(
     raw = _arg_text(args)
     if raw and not extract_sgwcmaid_qrcode(raw):
         await matcher.finish("上传失败：二维码格式无效", reply_message=True)
-    # 先贴表情再撤回凭据，让用户立刻看到「已开始处理」。缓存已过期时
+    # 凭据安全优先：先撤回，再贴处理表情和执行任何网络请求。缓存已过期时
     # 尚处于等待新 SGID 阶段，不能提前发送“已受理”。
+    qrcode = extract_sgwcmaid_qrcode(raw)
+    recall_notice = ""
+    if qrcode:
+        recall_notice = await _recall_qrcode_message(bot, event)
     await react_processing(bot, event)
     if _upload_can_start_now(
         event, fish=fish, lxns=lxns, qrcode_arg=raw
     ):
         await _notify_upload_accepted(matcher, event, fish=fish, lxns=lxns)
-    recall_notice = ""
-    if extract_sgwcmaid_qrcode(raw):
-        recall_notice = await _recall_qrcode_message(bot, event)
     timing_key = upload_workflow_key(fish=fish, lxns=lxns)
     started_at = time.perf_counter()
     result = await _upload(event, fish=fish, lxns=lxns, qrcode_arg=raw)
@@ -2118,11 +2138,11 @@ async def _(
     if preflight_error:
         finish_pending(pending_key)
         await matcher.finish(preflight_error, reply_message=False)
-    await react_processing(bot, event)
     qrcode = extract_sgwcmaid_qrcode(raw)
     recall_notice = ""
     if qrcode:
         recall_notice = await _recall_qrcode_message(bot, event)
+    await react_processing(bot, event)
     if qrcode:
         await _notify_upload_accepted(matcher, event, fish=fish, lxns=lxns)
         timing_key = upload_workflow_key(fish=fish, lxns=lxns)

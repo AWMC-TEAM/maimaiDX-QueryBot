@@ -21,4 +21,16 @@ assert upload_source.count("await _recall_qrcode_message(bot, event)") == 2
 assert "await bot.delete_msg(message_id=event.message_id)" not in upload_source
 assert upload_source.count('recall_notice = ""') == 2
 
+# QR credentials must be recalled before reactions/network work, and resumed
+# ``got`` matchers must not rely on exact runtime type equality.
+for marker in ('@upload_fish.handle()', '@upload_fish.got("upload_qrcode")'):
+    handler = upload_source[upload_source.index(marker):]
+    handler = handler[:handler.index("\n\n@", 1) if "\n\n@" in handler[1:] else len(handler)]
+    assert handler.index("await _recall_qrcode_message(bot, event)") < handler.index(
+        "await react_processing(bot, event)"
+    )
+assert "type(matcher) is upload_" not in source
+assert "isinstance(matcher, upload_fish)" in source
+assert "matcher.state[_UPLOAD_MODE_STATE_KEY]" in source
+
 print("upload qrcode recall timeout tests: ok")
