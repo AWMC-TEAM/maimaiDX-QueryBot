@@ -108,6 +108,7 @@ _TICKET_QUEUE_UNIT_TIMING_KEY = "ticket_queue:seconds_per_request"
 _pending_ticket_retries: dict[str, tuple[int, float]] = {}
 _DIVING_FISH_PROBER_URL = "https://www.diving-fish.com/maimaidx/prober/"
 _FISH_TOKEN_MIN_LENGTH = 127
+_post_upload_tasks: set[asyncio.Task] = set()
 _FISH_TOKEN_MAX_LENGTH = 132
 _ACCOUNT_SETUP_GUIDE = (
     "尚未建立账号记录，请按以下步骤完成：\n"
@@ -1702,11 +1703,7 @@ async def _upload(
                     int(key), billing_service, cost,
                     meta={"operation": operation, "fish": False, "lxns": True, "source": "pc"},
                 )
-                await _refresh_b50_cache_after_upload(key, fish=False, lxns=True)
-                try:
-                    await fetch_and_store_user_scores(int(key), source="upload")
-                except Exception:
-                    log.warning(f"[DataStorage] 自动存档失败 user={key}")
+                _schedule_post_upload_maintenance(key, fish=False, lxns=True)
                 ref = _log(
                     key, operation, "success",
                     f"charged={charge.charged},free={charge.free},source=pc,count={len(pc_scores)}",
@@ -1838,11 +1835,7 @@ async def _upload(
             int(key), billing_service, cost,
             meta={"operation": operation, "fish": fish, "lxns": lxns},
         )
-        await _refresh_b50_cache_after_upload(key, fish=fish, lxns=lxns)
-        try:
-            await fetch_and_store_user_scores(int(key), source="upload")
-        except Exception:
-            log.warning(f"[DataStorage] 自动存档失败 user={key}")
+        _schedule_post_upload_maintenance(key, fish=fish, lxns=lxns)
         ref = _log(key, operation, "success", f"charged={charge.charged},free={charge.free}")
         return "上传完成\n" + "\n".join(results) + f"\n{_charge_text(charge)}\nRef_ID: {ref}"
     except Exception as exc:
@@ -2039,6 +2032,31 @@ async def _refresh_b50_cache_after_upload(
             )
         finally:
             clear_fetch_meta()
+
+
+async def _post_upload_maintenance(
+    user_key: str, *, fish: bool, lxns: bool
+) -> None:
+    """上传结算后的缓存刷新与存档；不阻塞用户收到最终结果。"""
+    await _refresh_b50_cache_after_upload(user_key, fish=fish, lxns=lxns)
+    try:
+        await fetch_and_store_user_scores(int(user_key), source="upload")
+    except Exception as exc:
+        log.warning(
+            f"[DataStorage] 上传后后台自动存档失败 user={user_key}: "
+            f"{_exception_detail(exc)}"
+        )
+
+
+def _schedule_post_upload_maintenance(
+    user_key: str, *, fish: bool, lxns: bool
+) -> None:
+    task = asyncio.create_task(
+        _post_upload_maintenance(user_key, fish=fish, lxns=lxns),
+        name=f"maimaidx-post-upload-{user_key}",
+    )
+    _post_upload_tasks.add(task)
+    task.add_done_callback(_post_upload_tasks.discard)
 
 
 @upload_fish.handle()

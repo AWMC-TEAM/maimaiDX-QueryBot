@@ -86,8 +86,10 @@ assert "async def _refresh_b50_cache_after_upload(" in account_source
 assert "await get_user_records(" in account_source
 assert "await get_user_b50(" in account_source
 assert "force_source=source, force_refresh=True" in account_source
-assert "await _refresh_b50_cache_after_upload(key, fish=False, lxns=True)" in account_source
-assert "await _refresh_b50_cache_after_upload(key, fish=fish, lxns=lxns)" in account_source
+assert "_schedule_post_upload_maintenance(key, fish=False, lxns=True)" in account_source
+assert "_schedule_post_upload_maintenance(key, fish=fish, lxns=lxns)" in account_source
+assert "async def _post_upload_maintenance(" in account_source
+assert "task.add_done_callback(_post_upload_tasks.discard)" in account_source
 assert "二维码缓存已过期，请重新发送最新 SGWCMAID" in account_source
 assert "maiu_cache_listener" not in playcount_source
 assert "_MAIU_UPLOAD_GRACE_SECONDS" not in playcount_source

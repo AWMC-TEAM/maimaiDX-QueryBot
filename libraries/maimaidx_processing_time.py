@@ -9,6 +9,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Optional
 
+from .maimaidx_sqlite import configure_sqlite_connection
+
 
 DB_DIR = Path(__file__).resolve().parent.parent / "data" / "timing"
 DB_PATH = DB_DIR / "processing_time.db"
@@ -32,6 +34,7 @@ class ProcessingTimeEstimator:
         self._sample_limit = max(3, int(sample_limit))
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        configure_sqlite_connection(self._conn)
         with self._lock:
             self._conn.executescript(_SCHEMA)
             self._conn.commit()

@@ -9,6 +9,7 @@ from threading import Lock
 from typing import Optional
 
 from ..config import log
+from .maimaidx_sqlite import configure_sqlite_connection
 
 DB_DIR = Path(__file__).parent.parent / 'data' / 'qq_bind'
 DB_FILE = DB_DIR / 'qq_bind.db'
@@ -20,6 +21,7 @@ class QqBindDatabase:
         self._lock = Lock()
         self._conn = sqlite3.connect(DB_FILE, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        configure_sqlite_connection(self._conn)
         self._init_schema()
 
     def _init_schema(self) -> None:

@@ -17,6 +17,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Optional
 
+from .maimaidx_sqlite import configure_sqlite_connection
+
 
 DB_DIR = Path(__file__).resolve().parent.parent / "data" / "admin"
 DB_PATH = DB_DIR / "admin.db"
@@ -161,6 +163,7 @@ class AdminAuditDatabase:
         self._lock = RLock()
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        configure_sqlite_connection(self._conn)
         with self._lock:
             self._conn.executescript(_SCHEMA)
             self._conn.commit()
@@ -415,16 +418,28 @@ class AdminAuditDatabase:
             self._conn.commit()
 
     def record_message(self, group_id: str, user_id: str) -> None:
+        self.record_messages([(group_id, user_id, 1, time.time())])
+
+    def record_messages(
+        self, entries: list[tuple[str, str, int, float]]
+    ) -> None:
+        """批量落盘群消息计数，避免每条普通聊天都单独 fsync。"""
+        if not entries:
+            return
         day = time.strftime("%Y-%m-%d", time.localtime())
-        now = time.time()
+        rows = [
+            (str(group_id), str(user_id), day, max(1, int(count)), float(last_at))
+            for group_id, user_id, count, last_at in entries
+        ]
         with self._lock:
-            self._conn.execute(
+            self._conn.executemany(
                 """INSERT INTO group_message_daily
                    (group_id, user_id, date, message_count, last_at)
-                   VALUES (?, ?, ?, 1, ?)
+                   VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(group_id, user_id, date) DO UPDATE SET
-                       message_count=message_count+1, last_at=excluded.last_at""",
-                (str(group_id), str(user_id), day, now),
+                       message_count=message_count+excluded.message_count,
+                       last_at=MAX(last_at, excluded.last_at)""",
+                rows,
             )
             self._conn.commit()
 

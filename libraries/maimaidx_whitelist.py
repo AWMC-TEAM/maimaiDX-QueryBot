@@ -11,6 +11,8 @@ from typing import List, Optional
 
 from loguru import logger as log
 
+from .maimaidx_sqlite import configure_sqlite_connection
+
 WL_DIR = Path(__file__).parent.parent / "data" / "whitelist"
 WL_FILE = WL_DIR / "whitelist.db"
 
@@ -36,6 +38,7 @@ class WhitelistDatabase:
         WL_DIR.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(WL_FILE), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        configure_sqlite_connection(self._conn)
         self._create_tables()
 
     def _create_tables(self):

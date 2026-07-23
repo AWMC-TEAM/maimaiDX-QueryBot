@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Optional
 
@@ -41,14 +42,67 @@ _message_recorder = on_message(priority=99, block=False)
 _ban_notified: dict[str, float] = {}
 _debt_notified: dict[str, float] = {}
 _DEBT_NOTICE_COOLDOWN_SECONDS = 300
+_MESSAGE_STATS_FLUSH_SECONDS = 2.0
+_message_stats_pending: dict[tuple[str, str], tuple[int, float]] = {}
+_message_stats_flush_task: Optional[asyncio.Task] = None
+
+
+async def _flush_message_stats(*, delay: bool = True) -> None:
+    """将普通群消息计数合并为单事务，并在线程中落盘。"""
+    global _message_stats_flush_task
+    cancelled = False
+    pending: dict[tuple[str, str], tuple[int, float]] = {}
+    try:
+        if delay:
+            await asyncio.sleep(_MESSAGE_STATS_FLUSH_SECONDS)
+        if not _message_stats_pending:
+            return
+        pending = _message_stats_pending.copy()
+        _message_stats_pending.clear()
+        rows = [
+            (group_id, user_id, count, last_at)
+            for (group_id, user_id), (count, last_at) in pending.items()
+        ]
+        await asyncio.to_thread(admin_audit.record_messages, rows)
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
+    except Exception as exc:
+        for key, (count, last_at) in pending.items():
+            queued_count, queued_at = _message_stats_pending.get(key, (0, 0.0))
+            _message_stats_pending[key] = (
+                queued_count + count,
+                max(queued_at, last_at),
+            )
+        log.warning(f"群消息统计批量落盘失败：{type(exc).__name__}: {exc}")
+    finally:
+        _message_stats_flush_task = None
+        if _message_stats_pending and not cancelled:
+            _message_stats_flush_task = asyncio.create_task(
+                _flush_message_stats(), name="maimaidx-message-stats-flush"
+            )
 
 
 @get_driver().on_startup
 async def _cleanup_admin_audit() -> None:
     retention_days = int(getattr(maiconfig, "maimaidx_audit_retention_days", 90))
-    result = admin_audit.cleanup(retention_days)
+    result = await asyncio.to_thread(admin_audit.cleanup, retention_days)
     if any(result.values()):
         log.info(f'管理审计过期数据已清理：{result}')
+
+
+@get_driver().on_shutdown
+async def _flush_admin_audit_on_shutdown() -> None:
+    global _message_stats_flush_task
+    task = _message_stats_flush_task
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    _message_stats_flush_task = None
+    await _flush_message_stats(delay=False)
 
 
 def _matcher_module_name(matcher: Matcher) -> str:
@@ -144,12 +198,19 @@ def _event_request_key(bot: Bot, event: Event) -> str:
 
 @_message_recorder.handle()
 async def _(event: Event):
+    global _message_stats_flush_task
     if not bool(getattr(maiconfig, "maimaidx_message_stats_enabled", True)):
         return
     gid = get_event_group_id(event)
     if gid is None:
         return
-    admin_audit.record_message(str(gid), str(event.get_user_id()))
+    key = (str(gid), str(event.get_user_id()))
+    count, _ = _message_stats_pending.get(key, (0, 0.0))
+    _message_stats_pending[key] = (count + 1, time.time())
+    if _message_stats_flush_task is None or _message_stats_flush_task.done():
+        _message_stats_flush_task = asyncio.create_task(
+            _flush_message_stats(), name="maimaidx-message-stats-flush"
+        )
 
 
 @run_preprocessor
@@ -175,7 +236,13 @@ async def _audit_and_ban_preprocessor(
             ban_keys.append(billing_key)
     except Exception:
         pass
-    ban = next((row for key in ban_keys if (row := admin_audit.get_active_ban(key))), None)
+    def find_active_ban():
+        return next(
+            (row for key in ban_keys if (row := admin_audit.get_active_ban(key))),
+            None,
+        )
+
+    ban = await asyncio.to_thread(find_active_ban)
     if ban and not is_plugin_admin(uid):
         event_key = str(getattr(event, "message_id", "") or getattr(event, "id", "") or f"{uid}:{int(time.time())}")
         now = time.time()
@@ -259,7 +326,8 @@ async def _audit_and_ban_preprocessor(
                     **meta, "charged": surcharge, "balance": break_db.get_balance(payer)
                 }
 
-    ref_id = admin_audit.start_trace(
+    ref_id = await asyncio.to_thread(
+        admin_audit.start_trace,
         command=_command_name(matcher, event, state),
         user_id=uid,
         group_id=str(get_event_group_id(event) or ""),
@@ -270,8 +338,12 @@ async def _audit_and_ban_preprocessor(
     state["__maimaidx_ref_token"] = admin_audit.set_current_ref(ref_id)
     busy_charge = state.get("__maimaidx_busy_charge")
     if busy_charge:
-        admin_audit.add_step(
-            "break.busy_surcharge", "success", busy_charge, ref_id=ref_id
+        await asyncio.to_thread(
+            admin_audit.add_step,
+            "break.busy_surcharge",
+            "success",
+            busy_charge,
+            ref_id=ref_id,
         )
 
 
@@ -286,7 +358,7 @@ async def _audit_postprocessor(
     ref_id = state.get("__maimaidx_ref_id")
     if not ref_id:
         return
-    trace = admin_audit.get_trace(str(ref_id))
+    trace = await asyncio.to_thread(admin_audit.get_trace, str(ref_id))
     if trace and trace.get("status") != "running":
         token = state.get("__maimaidx_ref_token")
         if token is not None:
@@ -300,11 +372,13 @@ async def _audit_postprocessor(
         "StopPropagation",
     }
     if exception is None or type(exception).__name__ in normal_control:
-        admin_audit.finish_trace(str(ref_id), "success")
+        await asyncio.to_thread(admin_audit.finish_trace, str(ref_id), "success")
     elif isinstance(exception, IgnoredException):
-        admin_audit.finish_trace(str(ref_id), "ignored")
+        await asyncio.to_thread(admin_audit.finish_trace, str(ref_id), "ignored")
     else:
-        admin_audit.finish_trace(str(ref_id), "error", error=exception)
+        await asyncio.to_thread(
+            admin_audit.finish_trace, str(ref_id), "error", error=exception
+        )
     token = state.get("__maimaidx_ref_token")
     if token is not None:
         try:

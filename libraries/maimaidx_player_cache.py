@@ -21,6 +21,7 @@ from typing import List, Optional, Tuple
 from ..config import log, maiconfig
 from .maimaidx_data_storage import DailySnapshot, ScoreRecord, data_storage
 from .maimaidx_model import PlayInfoDev, UserInfo
+from .maimaidx_sqlite import configure_sqlite_connection
 
 DB_DIR = Path(__file__).parent.parent / "data" / "player_cache"
 DB_FILE = DB_DIR / "player_cache.db"
@@ -239,6 +240,7 @@ class PlayerCacheDB:
         DB_DIR.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(DB_FILE), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        configure_sqlite_connection(self._conn)
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS player_cache (
                 cache_key TEXT PRIMARY KEY,

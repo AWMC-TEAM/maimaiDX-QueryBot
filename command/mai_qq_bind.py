@@ -1,5 +1,6 @@
 """官方 QQ openid 绑定水鱼查分 QQ：qbind / qunbind / qbind状态 / 我的id / 群成员记录"""
 
+import asyncio
 import time
 from typing import Optional
 
@@ -34,7 +35,7 @@ async def _record_qq_group_member(event: MessageEvent):
         return
     if _event_group_id(event) is None:
         return
-    record_from_event(event)
+    await asyncio.to_thread(record_from_event, event)
 
 
 def _parse_qq_arg(text: str) -> Optional[int]:

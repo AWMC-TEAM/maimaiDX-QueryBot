@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from ..config import BOT_QQ_GROUP, log
 from .maimaidx_error import BreakInsufficientError
+from .maimaidx_sqlite import configure_sqlite_connection
 
 DB_DIR = Path(__file__).resolve().parent.parent / 'data' / 'break'
 DB_PATH = DB_DIR / 'break.db'
@@ -447,6 +448,7 @@ class BreakDatabase:
         DB_DIR.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        configure_sqlite_connection(self._conn)
         self._conn.executescript(_CREATE_SQL)
         self._conn.commit()
         self._seed_config()
@@ -562,14 +564,20 @@ class BreakDatabase:
         self._conn.commit()
 
     def _ensure_user(self, qqid: int) -> None:
-        now = time.time()
-        self._conn.execute(
-            """INSERT OR IGNORE INTO break_users
-               (qqid, balance, streak, created_at, updated_at)
-               VALUES (?, 0, 0, ?, ?)""",
-            (qqid, now, now),
-        )
-        self._conn.commit()
+        with self._lock:
+            exists = self._conn.execute(
+                'SELECT 1 FROM break_users WHERE qqid = ?', (qqid,)
+            ).fetchone()
+            if exists:
+                return
+            now = time.time()
+            self._conn.execute(
+                """INSERT OR IGNORE INTO break_users
+                   (qqid, balance, streak, created_at, updated_at)
+                   VALUES (?, 0, 0, ?, ?)""",
+                (qqid, now, now),
+            )
+            self._conn.commit()
 
     def _today(self) -> str:
         return date.today().isoformat()

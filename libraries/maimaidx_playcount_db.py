@@ -8,6 +8,8 @@ from typing import Dict, List, Optional
 
 from loguru import logger as log
 
+from .maimaidx_sqlite import configure_sqlite_connection
+
 DB_DIR = Path(__file__).parent.parent / "data" / "playcount"
 DB_FILE = DB_DIR / "playcount.db"
 
@@ -56,6 +58,7 @@ class PlayCountDatabase:
         DB_DIR.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(DB_FILE), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        configure_sqlite_connection(self._conn)
         self._create_tables()
 
     def _create_tables(self):

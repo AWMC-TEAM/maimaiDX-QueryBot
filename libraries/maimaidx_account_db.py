@@ -18,6 +18,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Optional
 
+from .maimaidx_sqlite import configure_sqlite_connection
+
 # 发票失败详情里标记上游返回码：returnCode=0 / "returnCode": null 等。
 _RETURN_CODE_ZERO_RE = re.compile(
     r"""returnCode\s*[=:]\s*0\b|"returnCode"\s*:\s*0\b""",
@@ -105,6 +107,7 @@ class AccountDatabase:
         self._lock = RLock()
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        configure_sqlite_connection(self._conn)
         with self._lock:
             self._conn.executescript(_SCHEMA)
             self._migrate()

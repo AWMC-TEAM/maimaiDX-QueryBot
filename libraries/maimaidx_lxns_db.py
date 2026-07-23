@@ -21,6 +21,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Optional
 
+from .maimaidx_sqlite import configure_sqlite_connection
+
 DB_DIR = Path(__file__).resolve().parent.parent / 'data' / 'lxns'
 DB_PATH = DB_DIR / 'lxns.db'
 
@@ -76,6 +78,7 @@ class LxnsDatabase:
         DB_DIR.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        configure_sqlite_connection(self._conn)
         self._conn.execute(_CREATE_SQL)
         self._conn.commit()
         self._migrate()

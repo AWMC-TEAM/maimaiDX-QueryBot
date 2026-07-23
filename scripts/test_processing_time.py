@@ -3,12 +3,19 @@
 import importlib.util
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 
 root = Path(__file__).resolve().parent.parent
 path = root / "libraries" / "maimaidx_processing_time.py"
-spec = importlib.util.spec_from_file_location("processing_time_test", path)
+package_name = "processing_time_test_package"
+package = types.ModuleType(package_name)
+package.__path__ = [str(path.parent)]
+sys.modules[package_name] = package
+spec = importlib.util.spec_from_file_location(
+    f"{package_name}.maimaidx_processing_time", path
+)
 assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module

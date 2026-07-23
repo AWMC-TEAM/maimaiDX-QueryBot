@@ -9,6 +9,7 @@ from threading import Lock
 from typing import List, Optional
 
 from ..config import log
+from .maimaidx_sqlite import configure_sqlite_connection
 
 DB_DIR = Path(__file__).parent.parent / 'data' / 'qq_member'
 DB_FILE = DB_DIR / 'members.db'
@@ -20,6 +21,7 @@ class QqMemberRegistry:
         self._lock = Lock()
         self._conn = sqlite3.connect(DB_FILE, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        configure_sqlite_connection(self._conn)
         with self._lock:
             self._conn.executescript(
                 '''
