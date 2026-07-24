@@ -70,7 +70,7 @@ async def _build_chart_preview_nodes(music, self_id: int, nickname: str) -> List
     nodes.append(_pmyx_node(self_id, nickname, f"ID {music.id} 的谱面预览链接："))
     for i, diff_name in enumerate(diff_names):
         if i < len(music.ds):
-            url = f"https://v.awmc.cc/preview?song={song_id}&kind={kind}&diff={i + 2}"
+            url = f"https://v.wmc.pub/preview?song={song_id}&kind={kind}&diff={i + 2}"
             nodes.append(_pmyx_node(self_id, nickname, f"{diff_name} {url}"))
     return nodes
 
@@ -506,5 +506,5 @@ async def _(event: MessageEvent, match=RegexMatched()):
         return
     kind = 'standard' if music.type == 'SD' else 'dx'
     preview_id = music.id[1:] if music.type == 'DX' and music.id.startswith('1') else music.id
-    url = f"https://v.awmc.cc/preview?song={preview_id}&kind={kind}&diff={diff_map[diff_name]}"
+    url = f"https://v.wmc.pub/preview?song={preview_id}&kind={kind}&diff={diff_map[diff_name]}"
     await chart_preview.finish(f"{music.title} {diff_name}谱预览：\n{url}", reply_message=True)
