@@ -63,6 +63,7 @@ command_source = Path("command/mai_announcement.py").read_text(encoding="utf-8")
 init_source = Path("command/__init__.py").read_text(encoding="utf-8")
 account_source = Path("command/mai_account.py").read_text(encoding="utf-8")
 playcount_source = Path("command/mai_playcount.py").read_text(encoding="utf-8")
+admin_runtime_source = Path("command/mai_admin_runtime.py").read_text(encoding="utf-8")
 assert "announcement_db.unseen_current" in command_source
 assert "announcement_db.claim_optional_current" in command_source
 assert "await asyncio.sleep(1)" in command_source
@@ -76,6 +77,7 @@ assert "_maimaidx_debt_exempt" in command_source
 assert account_source.count("enforce_current_announcement(bot, event)") == 2
 assert "_maimaidx_announcement_exempt" in playcount_source
 assert "enforce_current_announcement(bot, event)" in playcount_source
+assert 'setattr(_message_recorder, "_maimaidx_passive_recorder", True)' in admin_runtime_source
 assert init_source.index("mai_announcement") < init_source.index("mai_admin_runtime")
 
 print("announcement tests: ok")

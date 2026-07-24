@@ -39,6 +39,7 @@ ban_list_cmd = on_command("封禁列表", permission=PLUGIN_ADMIN_ONLY)
 admin_web_cmd = on_command("管理面板", aliases={"WebUI"}, permission=PLUGIN_ADMIN_ONLY)
 
 _message_recorder = on_message(priority=99, block=False)
+setattr(_message_recorder, "_maimaidx_passive_recorder", True)
 _ban_notified: dict[str, float] = {}
 _debt_notified: dict[str, float] = {}
 _DEBT_NOTICE_COOLDOWN_SECONDS = 300
