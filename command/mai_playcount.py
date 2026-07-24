@@ -77,10 +77,12 @@ qrcode_auto_listener = on_regex(
     priority=1,
     block=True,
 )
+setattr(qrcode_auto_listener, '_maimaidx_announcement_exempt', True)
 
 # 普通图片静默扫码；仅识别到有效舞萌二维码后才接管并处理消息。
 image_qrcode_auto_listener = on_message(priority=2, block=False)
 setattr(image_qrcode_auto_listener, '_maimaidx_deferred_audit', True)
+setattr(image_qrcode_auto_listener, '_maimaidx_announcement_exempt', True)
 
 async def get_at_qq(message: MessageEvent) -> Optional[int]:
     for item in message.message:
@@ -460,6 +462,18 @@ async def _process_auto_qrcode(
             await asyncio.wait_for(react_processing(bot, event), timeout=2.0)
         except asyncio.TimeoutError:
             log.warning('[QrcodeAuto] 处理表情响应超时（2.00s）')
+        try:
+            await bot.send(
+                event,
+                '⚠️ Bot 无法撤回原凭据消息，请立即手动撤回。',
+            )
+        except Exception:
+            pass
+
+    from .mai_announcement import enforce_current_announcement
+
+    if not await enforce_current_announcement(bot, event):
+        return
 
     from .mai_agreement import agreement_prompt, has_user_agreed
 

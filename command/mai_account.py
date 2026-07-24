@@ -2097,6 +2097,10 @@ async def _(
     recall_notice = ""
     if qrcode:
         recall_notice = await _recall_qrcode_message(bot, event)
+        from .mai_announcement import enforce_current_announcement
+
+        if not await enforce_current_announcement(bot, event):
+            await matcher.finish(recall_notice, reply_message=False)
     await react_processing(bot, event)
     if _upload_can_start_now(
         event, fish=fish, lxns=lxns, qrcode_arg=raw
@@ -2142,6 +2146,11 @@ async def _(
     recall_notice = ""
     if qrcode:
         recall_notice = await _recall_qrcode_message(bot, event)
+        from .mai_announcement import enforce_current_announcement
+
+        if not await enforce_current_announcement(bot, event):
+            finish_pending(pending_key)
+            await matcher.finish(recall_notice, reply_message=False)
     await react_processing(bot, event)
     if qrcode:
         await _notify_upload_accepted(matcher, event, fish=fish, lxns=lxns)
